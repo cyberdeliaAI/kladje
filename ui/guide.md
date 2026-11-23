@@ -19,7 +19,7 @@ HTTPS images require permission in **View → Remote Images for This Document**.
 
 Relative Markdown links can include a section, as in `[Notes](meeting%20notes.md#decisions)`. A second heading with the same name gets the suffix `-1`. External links open with the system handler.
 
-Use **⌘1–⌘6** on macOS for heading levels and **⌘0** for a paragraph. Tab to the splitter, resize with the arrow keys, press Enter to center it or Escape to return to the source. In the editor, Escape followed by Tab moves keyboard focus out of the writing area. In Find and Replace, use Tab or Shift-Tab to move between fields, options and buttons. Space activates a focused button.
+Use **⌘1–⌘6** on macOS for heading levels and **⌘⌥0** for a paragraph. **⌘0** restores default text size. Tab to the splitter, resize with the arrow keys, press Enter to center it or Escape to return to the source. In the editor, Escape followed by Tab moves keyboard focus out of the writing area. In Find and Replace, use Tab or Shift-Tab to move between fields, options and buttons. Space activates a focused button.
 
 [ref]: https://github.github.com/gfm/
 
@@ -111,3 +111,12 @@ Use **View** to toggle line numbers, wrapping or a narrower writing width. The f
 Paste a clipboard image into the source editor and confirm **Save Image**. For an untitled draft, first choose where to save the document. Kladje stores a new PNG, JPEG, GIF or WebP of up to 4 MiB in the adjacent `assets/` folder and selects the image description. Undo removes the link. The image remains in the folder, so other documents can still use it. Move that folder with the document.
 
 Choose **File → Compare with Disk** to see both text snapshots and the first differing line. You can select and copy from either pane. Closing the comparison returns to your edits. Save As keeps a separate copy if you want to keep both versions. Comparison ignores line-ending and encoding differences and supports up to 512 KiB on disk and 524,288 UTF-16 code units in the editor.
+
+
+## Writing shortcuts
+
+Use **Kladje → Settings…** (⌘,) on macOS or **File → Settings…** on other desktops to change automatic pairing, URL paste, rich-text conversion, reading time or image confirmation. Normal paste keeps plain text by default. With URL paste enabled, select a label and paste an HTTP or HTTPS address. With rich-text conversion enabled, paste formatted content to insert Markdown. Shift with the platform’s plain-paste shortcut bypasses these conversions. **Edit → Copy as Formatted Text** puts both Markdown source and formatted HTML on the clipboard.
+
+Use Tab and Shift-Tab to select adjacent GFM table cells. Choose **View → Fold or Unfold at Cursor** on a heading. **⌘E** opens Find with the current selection; **⌘⇧C** toggles inline code. Fenced JavaScript, TypeScript, HTML and CSS have editor syntax colors. A closed initial frontmatter block stays in the file and is excluded from the prose word total.
+
+Click a standard list checkbox in the preview or focus it and press Space to change its Markdown marker. Undo restores it. Checkboxes stay read-only in exports, tables and documents containing raw HTML. The status bar shows the encoding and line endings of the current document. Optional reading time uses 200 words per minute.

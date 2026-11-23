@@ -1,5 +1,7 @@
 import { StateField } from "@codemirror/state";
 
+import {frontmatterLines} from "./markdown-language.mjs";
+
 const segmenter = typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, {granularity: "word"}) : null;
 export const countLimit = 256 * 1024;
 
@@ -7,7 +9,7 @@ export function codePoints(text) {
   return text.length - (text.match(/[\u{10000}-\u{10ffff}]/gu)?.length || 0);
 }
 
-function wordCount(text) {
+export function wordCount(text) {
   if (!segmenter) return (text.match(/[\p{L}\p{N}][\p{L}\p{M}\p{N}]*/gu) || []).length;
   let words = 0;
   for (const part of segmenter.segment(text)) if (part.isWordLike) words++;
@@ -17,10 +19,12 @@ function wordCount(text) {
 function measure(doc, ranges) {
   let words = 0, pairs = 0;
   const repeated = new Map();
+  const metadata = frontmatterLines(doc);
   for (const [first, last] of ranges) {
+    let line = first - 1;
     for (const text of doc.iterLines(first, last + 1)) {
       pairs += text.length - codePoints(text);
-      if (!text.length) continue;
+      if (++line <= metadata || !text.length) continue;
       let count = repeated.get(text);
       if (count === undefined) {
         count = wordCount(text);
@@ -50,7 +54,7 @@ export const counts = StateField.define({
   update(value, tr) {
     if (!tr.docChanged) return value;
     if (tr.newDoc.length > countLimit) return null;
-    if (!value) return initial(tr.newDoc);
+    if (!value || frontmatterLines(tr.startState.doc) !== frontmatterLines(tr.newDoc)) return initial(tr.newDoc);
     const before = [], after = [];
     tr.changes.iterChangedRanges((a, b, c, d) => {
       addRange(before, tr.startState.doc, a, b);
