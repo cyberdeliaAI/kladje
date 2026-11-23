@@ -1,12 +1,16 @@
 // Kladje — a light, fast Markdown editor.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod window_geometry;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{
+    CheckMenuItem, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, Submenu,
+    SubmenuBuilder,
+};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use kladje::markdown::{Renderer, Target, PREVIEW_ID_PREFIX};
@@ -210,6 +214,67 @@ fn quit(app: AppHandle) {
     app.exit(0);
 }
 
+struct CheckItems(Vec<CheckMenuItem<tauri::Wry>>);
+
+#[tauri::command]
+fn set_menu_checks(items: State<'_, CheckItems>, checked: Vec<String>) -> Result<(), String> {
+    for item in &items.0 {
+        let on = checked.contains(&item.id().0);
+        item.set_checked(on).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+struct RecentMenu(Submenu<tauri::Wry>);
+
+#[tauri::command]
+fn set_recent_menu(
+    app: AppHandle,
+    menu: State<'_, RecentMenu>,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    let update = || -> tauri::Result<()> {
+        for item in menu.0.items()? {
+            menu.0.remove(&item)?;
+        }
+        for path in paths.iter().take(10) {
+            let name = Path::new(path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(path);
+            let duplicate = paths.iter().any(|other| {
+                other != path && Path::new(other).file_name() == Path::new(path).file_name()
+            });
+            let label = if duplicate { path.as_str() } else { name };
+            let item = MenuItem::with_id(
+                &app,
+                format!("recent:{path}"),
+                label.replace('&', "&&"),
+                true,
+                None::<&str>,
+            )?;
+            menu.0.append(&item)?;
+        }
+        if !paths.is_empty() {
+            menu.0.append(&PredefinedMenuItem::separator(&app)?)?;
+        }
+        menu.0.append(&MenuItem::with_id(
+            &app,
+            "clear_recent",
+            "Clear Recent Documents",
+            !paths.is_empty(),
+            None::<&str>,
+        )?)?;
+        Ok(())
+    };
+    update().map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+fn document_headings(markdown: String) -> Result<Vec<kladje::markdown::Heading>, String> {
+    kladje::markdown::headings(&markdown)
+}
+
 fn build_menu(app: &AppHandle) -> tauri::Result<()> {
     let item = |id: &str, text: &str, accelerator: Option<&str>| {
         let mut builder = MenuItemBuilder::with_id(id, text);
@@ -224,9 +289,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(&item("export_pdf", "PDF / Print…", Some("CmdOrCtrl+P"))?)
         .build()?;
 
+    let recent = SubmenuBuilder::new(app, "Open Recent").build()?;
+    app.manage(RecentMenu(recent.clone()));
     let mut file = SubmenuBuilder::new(app, "File")
         .item(&item("new", "New", Some("CmdOrCtrl+N"))?)
         .item(&item("open", "Open…", Some("CmdOrCtrl+O"))?)
+        .item(&recent)
         .separator()
         .item(&item("save", "Save", Some("CmdOrCtrl+S"))?)
         .item(&item("save_as", "Save As…", Some("CmdOrCtrl+Shift+S"))?)
@@ -251,6 +319,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .paste()
         .select_all()
         .separator()
+        .item(&item(
+            "jump_heading",
+            "Jump to Heading…",
+            Some("CmdOrCtrl+Shift+J"),
+        )?)
         .item(&item("find", "Find and Replace…", Some("CmdOrCtrl+F"))?)
         .build()?;
 
@@ -284,27 +357,34 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .separator()
         .item(&item("codeblock", "Code Block", Some("CmdOrCtrl+Alt+C"))?)
         .item(&item("table", "Table", Some("CmdOrCtrl+Alt+T"))?)
+        .item(&item("table_row", "Insert Table Row Below", None)?)
         .item(&item("rule", "Horizontal Rule", None)?)
         .build()?;
 
+    let mut checks = Vec::new();
+    let mut check = |id: &str, label: &str, accelerator: Option<&str>| -> tauri::Result<_> {
+        let item = CheckMenuItem::with_id(app, id, label, true, false, accelerator)?;
+        checks.push(item.clone());
+        Ok(item)
+    };
     let theme = SubmenuBuilder::new(app, "Appearance")
-        .item(&item("theme_auto", "Match System", None)?)
-        .item(&item("theme_light", "Light", None)?)
-        .item(&item("theme_dark", "Dark", None)?)
+        .item(&check("theme_auto", "Match System", None)?)
+        .item(&check("theme_light", "Light", None)?)
+        .item(&check("theme_dark", "Dark", None)?)
         .build()?;
 
     let view = SubmenuBuilder::new(app, "View")
-        .item(&item(
+        .item(&check(
             "view_editor",
             "Editor Only",
             Some("CmdOrCtrl+Alt+1"),
         )?)
-        .item(&item(
+        .item(&check(
             "view_split",
             "Editor and Preview",
             Some("CmdOrCtrl+Alt+2"),
         )?)
-        .item(&item(
+        .item(&check(
             "view_preview",
             "Preview Only",
             Some("CmdOrCtrl+Alt+3"),
@@ -315,7 +395,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             "Remote Images for This Document…",
             None,
         )?)
-        .item(&item("sync_scroll", "Toggle Scroll Sync", None)?)
+        .item(&check("sync_scroll", "Toggle Scroll Sync", None)?)
+        .item(&check("gutter", "Line Numbers", None)?)
+        .item(&check("wrap", "Wrap Long Lines", None)?)
+        .item(&check("measure", "Limit Writing Width", None)?)
         .item(&item("zoom_in", "Larger Text", Some("CmdOrCtrl+="))?)
         .item(&item("zoom_out", "Smaller Text", Some("CmdOrCtrl+-"))?)
         .item(&item("zoom_reset", "Default Text Size", None)?)
@@ -325,6 +408,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .fullscreen()
         .build()?;
 
+    app.manage(CheckItems(checks));
     let mut menu = MenuBuilder::new(app);
     if cfg!(target_os = "macos") {
         // The standard Quit item would end the app without giving the window a
@@ -410,6 +494,11 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             setup,
             take_pending_open,
+            set_recent_menu,
+            set_menu_checks,
+            window_geometry::window_bounds,
+            window_geometry::restore_window_bounds,
+            document_headings,
             render,
             read_file,
             write_file,
