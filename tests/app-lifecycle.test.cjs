@@ -30,17 +30,42 @@ async function app(initial = {}, configure = () => {}) {
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
-    selection: () => EditorSelection.single(0), textLength: () => text.length, location: () => ({offset:0,top:1}), restoreLocation() {}, setPairing() {}, setWritingModes() {}, pasteUrl() { return false; }, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
+    setFrozen() {}, selection: () => EditorSelection.single(0), textLength: () => text.length, location: () => ({offset:0,top:1}), restored:[], restoreLocation(p) {this.restored.push(p.offset);}, setPairing() {}, setWritingModes() {}, pasteUrl() { return false; }, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
     getText: () => text, setText(v) { text = v; }, replaceText(v) { text = v; change(); },
     insertImage(relative) { text += " IMAGE " + relative; change(); },
     cursor: () => ({ line: 1, column: 1, lines: 1 }), scroller: element(), remeasure() {}, focus() {},
   };
+  let history;
+  const children = [];
   const api = {
-    window_bounds: () => null, set_recent_menu() {}, set_menu_checks() {},
+    take_fragment() {}, document_ready() {}, accept_reload() {}, begin_close:()=>true, cancel_close() {},
+    update_history({change,seed}) {
+      history ||= structuredClone(seed);
+      if (change.kind === "touch" && change.resume) history.lastPath = change.path;
+      if (change.kind === "touch") history.paths = [change.path,...history.paths.filter(p=>p!==change.path)].slice(0,10);
+      if (change.kind === "remove") history.paths = history.paths.filter(p=>p!==change.path);
+      if (change.kind === "clear") history = {paths:[],places:[]};
+      if (change.kind === "position") history.places = [change.place,...history.places.filter(p=>p.path!==change.place.path)];
+      history.places = history.places.filter(p=>history.paths.includes(p.path));
+      return structuredClone(history);
+    },
+    async open_document_window({request}) {
+      let launch = request;
+      if (request.kind === "open" || request.kind === "template") {
+        const file = await api.read_file(request);
+        launch = request.kind === "open" ? {...request,file} : {...request,content:file.content};
+      }
+      children.push(await app(Object.fromEntries(values), child => {
+        child.api.setup = () => ({launch});
+        child.api.update_history = api.update_history;
+      }));
+    },
+    quit_vote({allow,epoch}) { if (!allow) events["cancel-quit"]({payload:epoch}); },
+    window_bounds: () => null, set_menu_checks() {},
     setup: () => ({ pendingOpen: disk.path }), take_pending_open: () => null, read_file: () => ({ ...disk }),
     file_version: () => disk.version, render: () => "", log_message: ({ message }) => { if (message === "ready") ready.resolve(); },
     recovery_list: () => [], recovery_clear() {}, recovery_write() {},
-    write_file: ({content}) => { disk.content = content; return {version: disk.version, confirmed: true}; }, quit() {},
+    write_file: ({content}) => { disk.content = content; return {version: disk.version, confirmed: true}; }, quit() { return events["prepare-quit"]({payload:{epoch:1,rememberWindow:true}}); },
   };
   const dialog = { message: () => "Cancel", ask: () => false };
   configure({ api, dialog, disk });
@@ -72,7 +97,7 @@ async function app(initial = {}, configure = () => {}) {
     pendingTimers.delete(entry[0]);
     return entry[1].fn();
   }
-  return { disk, api, calls, dialog, events, get, values, fire, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
+  return { children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
 }
 
 test("actual Save and Quit wait for outstanding I/O and retain later edits", async () => {
@@ -87,7 +112,7 @@ test("actual Save and Quit wait for outstanding I/O and retain later edits", asy
   await Promise.all([first, quit]);
   assert.equal(a.disk.content, "A");
   assert.equal(a.text(), "B");
-  assert.ok(!a.calls.some(([name]) => name === "quit"));
+  assert.equal(a.calls.findLast(([name]) => name === "quit_vote")[1].allow, false);
   assert.ok(a.get("doc-name").title.includes("edited"));
 });
 
@@ -114,7 +139,7 @@ test("keeping local edits retains the original disk baseline on the next Save", 
   assert.equal(a.disk.content,"external");
   assert.equal(a.text(),"local");
   await a.menu("quit");
-  assert.ok(!a.calls.some(([name]) => name === "quit"));
+  assert.equal(a.calls.findLast(([name]) => name === "quit_vote")[1].allow, false);
 });
 
 test("rapid Saves write in order before the requested window close", async () => {
@@ -172,14 +197,14 @@ test("Save As asks about encoding, cancellation preserves the original binding",
   a.edit("漢字");
   await a.menu("save_as");
   assert.equal(saved.length, 0);
-  assert.equal(a.values.get("kladje.lastPath"), JSON.stringify(a.disk.path));
+  assert.equal(a.history().lastPath, a.disk.path);
   a.dialog.ask = (_, {title}) => title === "Encoding conversion";
   await a.menu("save_as");
   assert.equal(saved.length, 1);
   assert.equal(saved[0].format.encoding, "utf8");
   assert.equal(saved[0].expected, null);
   assert.equal(a.disk.content, "original");
-  assert.equal(a.values.get("kladje.lastPath"), JSON.stringify(copy));
+  assert.equal(a.history().lastPath, copy);
   assert.equal(a.get("notice").textContent, "Saved");
   a.edit("next");
   assert.notEqual(a.get("notice").textContent, "Saved");
@@ -313,7 +338,7 @@ test("remote image consent expires when another document opens", async () => {
   a.dialog.open = () => "/notes/next.md";
   a.api.read_file = () => ({...a.disk, path: "/notes/next.md", content: "second"});
   await a.menu("open");
-  const latest = a.calls.filter(([name]) => name === "render").at(-1)[1];
+  const latest = a.children[0].calls.filter(([name]) => name === "render").at(-1)[1];
   assert.equal(latest.remote,false);
   assert.equal(latest.source,"/notes/next.md");
 });
@@ -352,8 +377,9 @@ test("a delayed preview cannot replace a newer revision", async () => {
 });
 
 test("cancelling image insertion into an untitled draft preserves the draft", async () => {
-  const a = await app();
-  await a.menu("new");
+  const parent = await app();
+  await parent.menu("new");
+  const a = parent.children[0];
   a.edit("untitled work");
   const before = a.calls.length;
   a.dialog.ask = () => false;
@@ -368,9 +394,8 @@ test("startup drains Finder documents delivered before event registration in ord
     api.take_pending_open = () => paths.shift() || null;
     api.read_file = ({path}) => ({...disk, path, content: path});
   });
-  assert.deepEqual(a.calls.filter(([name]) => name === "read_file").map(([,args]) => args.path),
-    [a.disk.path, "/notes/two.md", "/notes/three.md"]);
-  assert.equal(a.text(), "/notes/three.md");
+  assert.equal(a.text(), a.disk.path);
+  assert.deepEqual(a.children.map(w=>w.text()), ["/notes/two.md", "/notes/three.md"]);
 });
 
 test("a failed obsolete render cannot hide a newer preview", async () => {
@@ -414,7 +439,7 @@ test("recent documents deduplicate, cap at ten, and clear paths and saved positi
     await a.menu("open");
   }
   await a.menu("recent:/notes/4.md");
-  const paths = JSON.parse(a.values.get("kladje.recent"));
+  const paths = a.history().paths;
   assert.equal(paths.length,10);
   assert.equal(paths[0],"/notes/4.md");
   assert.equal(new Set(paths).size,10);
@@ -438,10 +463,10 @@ test("a missing recent file and a cancelled Locate keep dirty work and recovery"
   a.dialog.message = () => "Locate…";
   a.dialog.open = () => null;
   await a.menu("recent:"+path);
-  assert.ok(JSON.parse(a.values.get("kladje.recent")).includes(path));
+  assert.ok(a.history().paths.includes(path));
   a.dialog.message = () => "Remove from Recent";
   await a.menu("recent:"+path);
-  assert.ok(!JSON.parse(a.values.get("kladje.recent")).includes(path));
+  assert.ok(!a.history().paths.includes(path));
   assert.equal(a.text(),"unsaved text");
   assert.equal(a.disk.content,"original");
 });
@@ -454,7 +479,7 @@ test("Open Recent respects Cancel and only a confirmed Save As adds its new path
   assert.equal(a.text(),"A changed");
   a.dialog.save = () => "/notes/c.md"; a.api.file_version = () => null;
   await a.menu("save_as");
-  assert.equal(JSON.parse(a.values.get("kladje.recent"))[0],"/notes/c.md");
+  assert.equal(a.history().paths[0],"/notes/c.md");
 });
 
 test("invalid preferences fall back and toggles update storage and native checkmarks", async () => {
@@ -469,20 +494,16 @@ test("invalid preferences fall back and toggles update storage and native checkm
   assert.ok(last.includes("gutter") && !last.includes("wrap"));
 });
 
-test("remembered positions restore only for matching disk content", async () => {
+test("Close records the clean document position, and a new window restores only a matching digest", async () => {
   const a = await app();
-  const restored=[];
-  a.view.location=()=>({offset:4,top:2});
-  a.view.restoreLocation=p=>restored.push(p.offset);
-  a.dialog.open=()=>"/notes/b.md";
-  a.api.read_file=({path})=>({...a.disk,path});
-  await a.menu("open");
-  await a.menu("recent:"+a.disk.path);
-  assert.deepEqual(restored,[4]);
-  await a.menu("open");
-  a.disk.version={...a.disk.version,digest:"replacement"};
-  await a.menu("recent:"+a.disk.path);
-  assert.equal(restored.length,2); // B was restored before changing A on disk.
+  a.view.location = () => ({offset:4, top:2});
+  await a.menu("close_window");
+  const {places} = a.history();
+  assert.equal(places[0].offset,4);
+  for (const [digest, expected] of [["a",[4]], ["changed",[]]]) {
+    const w = await app({"kladje.places":JSON.stringify(places)}, ({disk}) => { disk.version.digest = digest; });
+    assert.deepEqual(w.view.restored,expected);
+  }
 });
 
 test("heading search pages through repeated titles and filtering resets the page", async () => {
@@ -535,10 +556,12 @@ test("cancel untitled paste and preserve edits or cursor movement during screens
   assert.equal(a.text(), original);
   assert.match(a.get("notice").textContent, /Saved assets/);
   await a.menu("new");
-  a.edit("new draft");
-  a.dialog.save = () => null;
-  await imagePaste(a).done;
-  assert.equal(a.text(), "new draft");
+  const other = a.children[0];
+  other.edit("new draft");
+  other.dialog.ask = () => true;
+  other.dialog.save = () => null;
+  await imagePaste(other).done;
+  assert.equal(other.text(), "new draft");
   assert.equal(a.calls.filter(([cmd]) => cmd === "paste_image").length, 1);
 });
 
@@ -582,33 +605,26 @@ test("local template creates an unbound recoverable draft without changing the t
   a.edit("existing draft");
   await a.menu("new_template");
   assert.equal(a.text(), "existing draft");
-  a.dialog.message = () => "Don't Save";
-  await a.menu("new_template");
-  assert.equal(a.text(), "# Template\n");
-  assert.match(a.get("doc-name").title, /Not saved yet.*edited/);
-  const recovery = a.calls.filter(([cmd]) => cmd === "recovery_write").at(-1);
+  const other = a.children[0];
+  assert.equal(other.text(), "# Template\n");
+  assert.match(other.get("doc-name").title, /Not saved yet.*edited/);
+  const recovery = other.calls.filter(([cmd]) => cmd === "recovery_write").at(-1);
   assert.equal(recovery[1].draft.path, null);
-  assert.ok(!JSON.parse(a.values.get("kladje.recent")).includes("/notes/template.md"));
+  assert.ok(!a.history().paths.includes("/notes/template.md"));
   let defaultPath;
-  a.dialog.save = options => { defaultPath = options.defaultPath; return null; };
-  await a.menu("save");
+  other.dialog.save = options => { defaultPath = options.defaultPath; return null; };
+  await other.menu("save");
   assert.equal(defaultPath, "Untitled.md");
   assert.equal(a.disk.content, "original");
 });
 
-test("template rereads the saved source when the discard dialog saves back to the chosen file", async () => {
+test("a template reads the saved source while its owner keeps unsaved edits", async () => {
   const a = await app();
   a.dialog.open = () => a.disk.path;
-  a.dialog.message = () => "Save";
-  a.api.write_file = ({content}) => {
-    a.disk.content = content;
-    a.disk.version = {...a.disk.version, digest:"saved"};
-    return {version:a.disk.version, confirmed:true};
-  };
-  a.edit("new template text");
+  a.edit("unsaved template text");
   await a.menu("new_template");
-  assert.equal(a.text(), "new template text");
-  assert.match(a.get("doc-name").title, /Not saved yet.*edited/);
+  assert.equal(a.children[0].text(), "original");
+  assert.equal(a.text(), "unsaved template text");
 });
 
 test("comparison treats CRLF as the same text and a missing disk version leaves edits intact", async () => {
@@ -747,4 +763,52 @@ test("a delayed sidebar outline cannot replace the headings of a newer revision"
   assert.match(a.get("heading-list").children[0].textContent,/Current/);
   await a.menu("document_outline");
   assert.equal(a.get("outline").open,false);
+});
+
+test("a provisional discard freezes the approved editor and cancellation retains its recovery and save binding", async () => {
+  const a = await app();
+  a.edit("keep this after Cancel");
+  a.dialog.message = () => "Don't Save";
+  await a.events["prepare-quit"]({payload:{epoch:17}});
+  assert.equal(a.get("app").inert,true);
+  assert.ok(a.calls.some(([n,v])=>n==="quit_vote" && v.epoch===17 && v.allow && v.draft));
+  assert.ok(!a.calls.some(([n])=>n==="destroy" || n==="recovery_clear"));
+  await a.menu("save");
+  assert.equal(a.disk.content,"original");
+  a.events["cancel-quit"]({payload:17});
+  await a.menu("save");
+  assert.equal(a.disk.content,"keep this after Cancel");
+});
+
+test("a save failure during coordinated Quit vetoes exit and leaves the window editable", async () => {
+  const a = await app();
+  a.edit("unsaved revision");
+  a.dialog.message = (_, options) => options.title==="Unsaved changes" ? "Save" : "OK";
+  a.api.write_file = () => {throw Error("disk full");};
+  await a.events["prepare-quit"]({payload:{epoch:8}});
+  assert.equal(a.calls.findLast(([n])=>n==="quit_vote")[1].allow,false);
+  assert.equal(a.get("app").inert,false);
+  assert.equal(a.disk.content,"original");
+  assert.equal(a.text(),"unsaved revision");
+});
+
+test("multi-file drops keep source edits and open each Markdown file in its own editor", async () => {
+  const a = await app();
+  a.edit("private source");
+  a.api.read_file = ({path})=>({...a.disk,path,content:path});
+  await a.events.drop({payload:{type:"drop",paths:["/a.md","/b.md"]}});
+  assert.deepEqual(a.children.map(w=>w.text()),["/a.md","/b.md"]);
+  assert.equal(a.text(),"private source");
+});
+
+test("a restored startup draft and an incoming Finder file retain separate document identities", async () => {
+  const a = await app({},({api,dialog,disk}) => {
+    const draft = {...disk,id:"aa".repeat(16),name:"draft",content:"recovered text",revision:7};
+    api.recovery_list = ()=>[draft];
+    api.recovery_claim = ()=>draft;
+    dialog.message = ()=>"Restore";
+  });
+  assert.equal(a.text(),"recovered text");
+  assert.equal(a.children[0].text(),"original");
+  assert.equal(a.children[0].calls.some(([cmd])=>cmd==="recovery_list"),false);
 });

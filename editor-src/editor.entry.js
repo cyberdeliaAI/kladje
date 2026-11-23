@@ -66,6 +66,7 @@ function create(parent, options = {}) {
   const { onChange, onSelection, placeholderText = "" } = options;
   let cleanDoc = null;
   const layout = new Compartment();
+  const input = new Compartment();
   const pairs = new Compartment();
   const modes = new Compartment();
   let modeExtensions = [];
@@ -84,6 +85,7 @@ function create(parent, options = {}) {
     indentUnit.of("    "),
     counts,
     layout.of(layoutExtensions),
+    input.of([]),
     pairs.of(pairKeys),
     modes.of(modeExtensions),
     codeFolding(),
@@ -154,6 +156,11 @@ function create(parent, options = {}) {
   };
 
   const api = {
+    setFrozen(frozen) {
+      view.dispatch({effects:input.reconfigure(frozen ? [
+        EditorState.readOnly.of(true), EditorView.editable.of(false), EditorState.changeFilter.of(() => false),
+      ] : [])});
+    },
     insertTableRow() {
       const change = tableRowChange(view.state);
       if (!change) return false;

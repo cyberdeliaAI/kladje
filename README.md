@@ -1,11 +1,12 @@
 <h1><img src="docs/kladje-wordmark-panel.svg" alt="Kladje" width="240"></h1>
 
-Kladje is a single-document Markdown editor with a live preview. Write in the source pane, read in the preview, or keep both in view with synchronized scrolling. It uses CodeMirror for editing, Rust for rendering and file operations, and Tauri 2 for the native window and menus.
+Kladje is a lightweight Markdown editor with a live preview and one native window per document. Write in the source pane, read in the preview, or keep both in view with synchronized scrolling. It uses CodeMirror for editing, Rust for rendering and file operations, and Tauri 2 for native windows and menus.
 
-The P0 document-safety baseline and P1 single-document workflows have been exercised on Apple silicon macOS. Windows and Linux native validation is pending.
+The P0 document-safety baseline and P1 single-document workflows have been exercised on Apple silicon macOS. Windows and Linux desktop interaction still requires native validation.
 
 ## What you can do
 
+- Open several documents side by side. On macOS, **⌘T** opens a new document in a native tab. Opening the same file again brings its window forward. Each document has its own undo history, save status and recovery draft.
 - Pair brackets and quotes, paste a URL over selected text, and use **Writing Settings** to enable rich-text paste or estimated reading time. Copy selected Markdown as formatted text from **Edit**.
 - Edit Markdown with native menu shortcuts, heading and list commands, undo and redo, and Find and Replace. Open **Help → Markdown Guide** for an editable guide.
 - Reopen any of the last ten files from **File → Open Recent**. Search headings with **⌘⇧J** on macOS or keep **View → Document Outline** open beside the source.
@@ -43,6 +44,8 @@ Run the Rust and JavaScript regression suites from the repository root
 cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml
 npm test
 ```
+
+On a logged-in Mac with Accessibility automation enabled, `node scripts/macos-qa/run.mjs --windows` builds an isolated app and tests Finder, native tabs, multi-window Quit and recovery after forced termination.
 
 The Rust suite exercises rendering, import, export, file formats, atomic saves and recovery. The JavaScript tests control the timing of disk reads and writes while driving document, menu and window events.
 
