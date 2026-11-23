@@ -63,7 +63,28 @@
   let config = { syntaxCssLight: "", syntaxCssDark: "", idPrefix: "" };
   let viewMode = store.get("view", window.matchMedia("(max-width: 640px)").matches ? "editor" : "split");
   let themeSetting = store.get("theme", "auto");
-  let syncEnabled = store.get("sync", true);
+  function storedFlag(key, fallback) {
+    const value = store.get(key, fallback);
+    return typeof value === "boolean" ? value : fallback;
+  }
+  if (!["auto", "light", "dark"].includes(themeSetting)) themeSetting = "auto";
+  let syncEnabled = storedFlag("sync", true);
+  let gutter = storedFlag("gutter", false), wrap = storedFlag("wrap", true), measure = storedFlag("measure", true);
+  let checkUpdate = Promise.resolve();
+  function syncChecks() {
+    const checked = ["view_" + viewMode, "theme_" + themeSetting];
+    for (const [id, enabled] of Object.entries({sync_scroll:syncEnabled, gutter, wrap, measure})) {
+      if (enabled) checked.push(id);
+    }
+    checkUpdate = checkUpdate.then(() => invoke("set_menu_checks", {checked})).catch(report);
+  }
+  function applyEditorLayout() {
+    editor.configureLayout({gutter, wrap});
+    els.app.dataset.measure = String(measure);
+    els.app.dataset.wrap = String(wrap);
+    anchors = null;
+    syncChecks();
+  }
   let zoom = store.get("zoom", 1);
   let initializing = true;
   let busy = false; // a dialog or file operation is in progress
@@ -98,6 +119,66 @@
       }
     }
     return parts.join(sep);
+  }
+
+  function recentPaths() {
+    const saved = store.get("recent", []);
+    if (!Array.isArray(saved)) return [];
+    return [...new Set(saved.filter(path => typeof path === "string" && path.length <= 32768 &&
+      /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(path) && !/[\x00-\x1f]/.test(path)))].slice(0, 10);
+  }
+
+  let recentUpdate = Promise.resolve();
+  function syncRecentMenu() {
+    const paths = recentPaths();
+    recentUpdate = recentUpdate.then(() => invoke("set_recent_menu", {paths})).catch(report);
+    return recentUpdate;
+  }
+
+  function rememberPath(path) {
+    if (!path) return;
+    const paths = recentPaths();
+    if (paths[0] === path) return;
+    store.set("recent", [path, ...paths.filter(item => item !== path)].slice(0, 10));
+    store.set("places", savedPlaces());
+    syncRecentMenu();
+  }
+
+  function savedPlaces() {
+    const places = store.get("places", []);
+    const paths = recentPaths();
+    return Array.isArray(places) ? places.filter(p => p && paths.includes(p.path)).slice(0, 10) : [];
+  }
+
+  function rememberPlace() {
+    if (!doc.path || !doc.version || session.isDirty() || !recentPaths().includes(doc.path)) return;
+    const place = {path: doc.path, digest: doc.version.digest, ...editor.location()};
+    store.set("places", [place, ...savedPlaces().filter(p => p.path !== doc.path)].slice(0,10));
+  }
+
+  window.addEventListener("storage", event => {
+    if (event.key === "kladje.recent" || event.key === null) syncRecentMenu();
+  });
+
+  async function openRecent(path) {
+    if (!recentPaths().includes(path)) return;
+    try {
+      return await openOrImport(path, {throwOnRead: true});
+    } catch (error) {
+      // A permission or format error should keep the entry available.
+      if (await invoke("file_version", {path})) return showError(error);
+    }
+    const answer = await T.dialog.message(`“${basename(path)}” is unavailable. Choose its new location or remove it from Open Recent.`, {
+      title: "Recent Document", buttons: {yes: "Locate…", no: "Remove from Recent", cancel: "Cancel"},
+    });
+    if (answer === "Cancel") return;
+    if (answer === "Locate…" || answer === "Yes") {
+      if (!await chooseAndOpen() || recentPaths()[0] === path && doc.path === path) return;
+    } else if (answer !== "Remove from Recent" && answer !== "No") return;
+    store.set("recent", recentPaths().filter(item => item !== path));
+    store.set("places", savedPlaces());
+    if (store.get("lastPath", null) === path) store.remove("lastPath");
+    await syncRecentMenu();
   }
 
   let noticeTimer = 0;
@@ -169,15 +250,8 @@
   }
 
   const number = new Intl.NumberFormat("en-US");
-  let statsDocument, statsRevision, words = 0, characters = 0;
   function updateStats() {
-    if (statsDocument !== session.document || statsRevision !== session.document.revision) {
-      const text = editor.getText();
-      words = (text.match(/\S+/g) || []).length;
-      characters = text.length;
-      statsDocument = session.document;
-      statsRevision = session.document.revision;
-    }
+    const counts = editor.statistics();
     const c = editor.cursor();
     const selection = c.selected ? ` · ${number.format(c.selected)} selected` : "";
     els.stats.innerHTML = "";
@@ -186,7 +260,7 @@
     position.textContent = `Ln ${number.format(c.line)}, Col ${c.column}${selection}  ·  `;
     els.stats.append(
       position,
-      `${number.format(words)} ${words === 1 ? "word" : "words"}  ·  ${number.format(characters)} characters`,
+      counts ? `${number.format(counts.words)} ${counts.words === 1 ? "word" : "words"}  ·  ${number.format(counts.characters)} characters` : `${number.format(c.lines)} lines`,
     );
   }
 
@@ -203,6 +277,7 @@
 
   function setTheme(setting) {
     themeSetting = setting;
+    syncChecks();
     store.set("theme", setting);
     applyTheme();
   }
@@ -210,6 +285,7 @@
   function setView(mode) {
     viewMode = ["editor", "split", "preview"].includes(mode) ? mode : "split";
     els.app.dataset.view = viewMode;
+    syncChecks();
     store.set("view", viewMode);
     for (const button of els.viewSwitch.children) {
       button.setAttribute("aria-pressed", String(button.dataset.view === viewMode));
@@ -222,7 +298,7 @@
   }
 
   function setZoom(value) {
-    zoom = Math.min(1.8, Math.max(0.7, Math.round(value * 10) / 10));
+    zoom = Math.min(1.8, Math.max(0.7, Math.round((Number.isFinite(value) ? value : 1) * 10) / 10));
     store.set("zoom", zoom);
     document.documentElement.style.setProperty("--zoom", zoom);
     anchors = null;
@@ -230,7 +306,7 @@
   }
 
   function setSplit(percent) {
-    const clamped = Math.min(80, Math.max(20, percent));
+    const clamped = Math.min(80, Math.max(20, Number.isFinite(percent) ? percent : 50));
     els.panes.style.setProperty("--split", clamped + "%");
     els.divider.setAttribute("aria-valuenow", String(Math.round(clamped)));
     store.set("split", clamped);
@@ -419,6 +495,80 @@
     if (event.target.tagName === "IMG") markMissing(event.target);
   }, true);
 
+  const outline = $("outline");
+  const headingFilter = $("heading-filter");
+  const headingList = $("heading-list");
+  let headingRows = [], outlineSnapshot, headingPage = 0;
+  function filterHeadings() {
+    const needle = headingFilter.value.normalize().toLocaleLowerCase().trim();
+    const matches = headingRows.filter(h => h.text.normalize().toLocaleLowerCase().includes(needle));
+    const start = headingPage * 100;
+    const options = matches.slice(start, start + 100).map(h => {
+      const option = document.createElement("option");
+      option.value = h.line;
+      option.textContent = `H${h.level}  ${h.text || "(untitled heading)"} · line ${h.line}`;
+      return option;
+    });
+    headingList.replaceChildren(...options);
+    headingList.selectedIndex = options.length ? 0 : -1;
+    $("heading-go").disabled = !options.length;
+    $("heading-pages").hidden = matches.length <= 100;
+    $("heading-prev").disabled = headingPage === 0;
+    $("heading-next").disabled = start + 100 >= matches.length;
+    $("heading-count").textContent = matches.length > 100 ? `Headings ${start + 1}–${start + options.length} of ${matches.length}` :
+      matches.length ? `${matches.length} heading${matches.length === 1 ? "" : "s"}` : "No matching headings";
+  }
+  async function jumpToHeading() {
+    if (initializing || outline.open) return;
+    const snapshot = session.snapshot();
+    const rows = await invoke("document_headings", {markdown: snapshot.content});
+    if (!session.isCurrent(snapshot) || outline.open) return;
+    headingRows = rows;
+    outlineSnapshot = snapshot;
+    headingPage = 0;
+    headingFilter.value = "";
+    filterHeadings();
+    outline.showModal();
+    headingFilter.focus();
+  }
+  async function chooseHeading() {
+    const line = Number(headingList.value);
+    if (!line || !outlineSnapshot) return;
+    const snapshot = outlineSnapshot;
+    outline.close();
+    if (!session.isCurrent(snapshot)) return;
+    if (viewMode === "preview" && await renderNow() && session.isCurrent(snapshot)) {
+      const heading = els.preview.querySelector(`:is(h1,h2,h3,h4,h5,h6)[data-sourcepos^="${line}:"]`);
+      if (heading) {
+        heading.setAttribute("tabindex", "-1");
+        heading.focus({preventScroll:true});
+        heading.scrollIntoView({block:"start"});
+        return;
+      }
+    }
+    if (!session.isCurrent(snapshot)) return;
+    if (viewMode === "preview") setView("editor");
+    editor.goToLine(line);
+    editor.focus();
+  }
+  headingFilter.addEventListener("input", () => { headingPage = 0; filterHeadings(); });
+  for (const [id, step] of [["heading-prev", -1], ["heading-next", 1]]) {
+    $(id).addEventListener("click", () => { headingPage += step; filterHeadings(); headingList.focus(); });
+  }
+  headingFilter.addEventListener("keydown", event => {
+    if (event.key === "ArrowDown") { event.preventDefault(); headingList.focus(); }
+  });
+  headingList.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      chooseHeading().catch(showError);
+    }
+  });
+  headingList.addEventListener("dblclick", () => chooseHeading().catch(showError));
+  $("heading-form").addEventListener("submit", event => { event.preventDefault(); chooseHeading().catch(showError); });
+  $("heading-cancel").addEventListener("click", () => outline.close());
+  outline.addEventListener("close", () => { if (!outline.open) { headingRows = []; outlineSnapshot = null; headingList.replaceChildren(); } });
+
   function jumpFragment(fragment) {
     let id;
     try { id = decodeURIComponent(fragment); } catch { id = fragment; }
@@ -551,6 +701,8 @@
   // ---------------------------------------------------------------- documents
 
   function loadDocument({ path = null, name = null, content = "", version = null, dirty = false, id = draftId(), recovered = false, format = null, revision = 0 }) {
+    rememberPlace();
+    if (outline.open) outline.close();
     clearRecovery();
     doc.id = id;
     doc.remote = false;
@@ -567,23 +719,27 @@
     els.previewPane.scrollTop = 0;
     anchors = null;
     activePane = "editor";
-    if (path) store.set("lastPath", path);
-    else store.remove("lastPath");
+    if (path && !recovered) store.set("lastPath", path);
+    else if (!path) store.remove("lastPath");
     if (dirty && !recovered) saveRecovery();
     refreshChrome();
     renderNow();
     if (viewMode !== "preview") editor.focus();
   }
 
-  async function openPath(path, { silent = false } = {}) {
+  async function openPath(path, { silent = false, throwOnRead = false } = {}) {
     let file;
     try {
       file = await invoke("read_file", { path });
     } catch (error) {
+      if (throwOnRead) throw error;
       if (!silent) await showError(error);
       return false;
     }
     if (!await replaceDocument(file)) return false;
+    rememberPath(path);
+    const place = savedPlaces().find(p => p.path === path && p.digest === file.version?.digest);
+    if (place) editor.restoreLocation(place);
     if (file.format.encoding === "latin1") notify("Opened as Latin-1 · its encoding will be preserved", 9000);
     return true;
   }
@@ -689,7 +845,8 @@
     doc.ignoredVersion = null;
     doc.path = path;
     doc.name = basename(path);
-    store.set("lastPath", path);
+    if (confirmed && moved) rememberPath(path);
+    if (recentPaths().includes(path)) store.set("lastPath", path);
     if (confirmed) doc.recovered = false;
     if (!confirmed) session.requireSave();
     const clean = confirmed && session.acknowledge(snapshot);
@@ -718,7 +875,7 @@
         { name: "All files", extensions: ["*"] },
       ],
     });
-    if (path) await openOrImport(path);
+    return path ? (await openOrImport(path)) !== false : false;
   }
 
   async function importPath(path) {
@@ -727,6 +884,7 @@
       title: "Word Import", okLabel: "Import Markdown", cancelLabel: "Cancel",
     })) return false;
     if (!await replaceDocument({ name: `${stem(path)}.md`, content: markdown, dirty: true })) return false;
+    rememberPath(path);
     notify(`Imported ${basename(path)} — save it to keep the Markdown version.`);
   }
 
@@ -740,8 +898,8 @@
     if (path) await importPath(path);
   }
 
-  const openOrImport = (path) =>
-    ["html", "htm", "xhtml", "docx"].includes(extension(path)) ? importPath(path) : openPath(path);
+  const openOrImport = (path, options) =>
+    ["html", "htm", "xhtml", "docx"].includes(extension(path)) ? importPath(path) : openPath(path, options);
 
   async function tryOpen(path) {
     try {
@@ -910,9 +1068,14 @@
   let closing = false;
   async function finishClose(close) {
     if (closing || !await confirmDiscard()) return;
+    rememberPlace();
     closing = true;
     els.editorPane.inert = true;
     try {
+      try {
+        const bounds = await invoke("window_bounds");
+        if (bounds) store.set("bounds", bounds);
+      } catch (error) { report(error); }
       await clearRecovery();
       await close();
     } catch (error) {
@@ -929,6 +1092,13 @@
   const actions = {
     new: () => runFileAction(() => replaceDocument({})),
     open: () => runFileAction(chooseAndOpen),
+    clear_recent: () => runFileAction(async () => {
+      store.remove("places");
+      store.remove("recent");
+      store.remove("lastPath");
+      await syncRecentMenu();
+    }),
+    jump_heading: jumpToHeading,
     save: () => queuedSave(false),
     save_as: () => queuedSave(true),
     import: () => runFileAction(chooseAndImport),
@@ -969,15 +1139,20 @@
     quote: () => editor.toggleList("quote"),
     codeblock: () =>
       editor.insertBlock((selected) => ({ text: "```\n" + selected + "\n```", selectFrom: 3, selectTo: 3 })),
+    table_row: () => { if (!editor.insertTableRow()) notify("Place the cursor inside a Markdown table."); },
     table: () => editor.insertBlock(() => ({ text: TABLE, selectFrom: 2, selectTo: 10 })),
     rule: () => editor.insertBlock(() => ({ text: "---", selectFrom: 3, selectTo: 3 })),
 
     view_editor: () => setView("editor"),
     view_split: () => setView("split"),
     view_preview: () => setView("preview"),
+    gutter: () => { gutter = !gutter; store.set("gutter", gutter); applyEditorLayout(); },
+    wrap: () => { wrap = !wrap; store.set("wrap", wrap); applyEditorLayout(); },
+    measure: () => { measure = !measure; store.set("measure", measure); applyEditorLayout(); },
     sync_scroll: () => {
       syncEnabled = !syncEnabled;
       store.set("sync", syncEnabled);
+      syncChecks();
       notify(syncEnabled ? "Scroll sync on" : "Scroll sync off", 2000);
       if (syncEnabled) syncFromEditor();
     },
@@ -991,11 +1166,12 @@
 
   const EDITING = new Set([
     "undo", "redo", "bold", "italic", "strike", "code", "link", "h1", "h2", "h3", "h4", "h5", "h6", "h0",
-    "bullet", "numbered", "task", "quote", "codeblock", "table", "rule",
+    "bullet", "numbered", "task", "quote", "codeblock", "table", "table_row", "rule",
   ]);
 
   async function runAction(id) {
-    const action = actions[id];
+    if (!closing && id.startsWith("recent:")) return runFileAction(() => openRecent(id.slice(7))).catch(showError);
+    const action = Object.hasOwn(actions, id) && actions[id];
     if (!action || closing) return;
     if (EDITING.has(id) && (initializing || viewMode === "preview")) return; // nothing to edit in
     try {
@@ -1011,6 +1187,7 @@
   async function start() {
     els.editorPane.inert = true;
     setView(viewMode);
+    applyEditorLayout();
     setZoom(zoom);
     const split = store.get("split", 50);
     if (split !== 50) setSplit(split);
@@ -1024,6 +1201,11 @@
     }
     applyTheme();
 
+    const bounds = store.get("bounds", null);
+    if (bounds && typeof bounds === "object") {
+      try { await invoke("restore_window_bounds", {bounds}); }
+      catch (error) { store.remove("bounds"); report(error); }
+    }
     const initialDocument = runFileAction(openInitialDocument);
     await T.event.listen("menu", (event) => runAction(event.payload));
     const drainOpenRequests = () => runFileAction(async () => {
@@ -1051,6 +1233,7 @@
     }
 
     await initialDocument;
+    await syncRecentMenu();
     await pendingDocuments;
     initializing = false;
     els.editorPane.inert = closing;

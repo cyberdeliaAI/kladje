@@ -7,6 +7,8 @@ The P0 document-safety baseline and P1 single-document workflows have been exerc
 ## What you can do
 
 - Edit Markdown with native menu shortcuts, heading and list commands, undo and redo, and Find and Replace. Open **Help → Markdown Guide** for an editable guide.
+- Reopen any of the last ten files from **File → Open Recent**. Search headings with **⌘⇧J** on macOS, including in editor-only view.
+- Toggle line numbers, wrapping and writing width in **View**. Use **Format → Insert Table Row Below** to extend an existing Markdown table.
 - Preview tables, task lists, footnotes, strikethrough, fenced code with syntax highlighting, and math. Switch between editor, preview and split views in light or dark mode.
 - Open Markdown and plain text, import HTML or Word documents as editable Markdown, export HTML, and print or save a PDF through the system print dialog.
 - Use **Format → Insert Local Image** or drop a PNG, JPEG, GIF or WebP into the document. Edit the selected description to supply alt text.
@@ -48,7 +50,7 @@ The Rust suite exercises rendering, import, export, file formats, atomic saves a
 - Recovery is periodic. Edits made since the last completed snapshot can be lost on a crash. Network shares, removable media and physical power-loss behavior still need testing.
 - Standalone HTML embeds permitted local raster images and reports omissions. Word import preserves supported text, headings, lists and tables. Embedded media, page layout and review annotations are omitted.
 - Native PDF printing on macOS requires macOS 11 or later.
-- Live preview and printing pause above 262,144 UTF-16 code units. Editing, explicit saving and recovery remain available. Open Recent and Jump to Heading are planned for P2.
+- Live preview and printing pause above 262,144 UTF-16 code units. Editing, explicit saving and recovery remain available. Heading search supports source files up to 4 MiB. Live word totals use the same size limit as preview.
 
 ## Planning documents
 

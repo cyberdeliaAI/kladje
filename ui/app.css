@@ -165,6 +165,10 @@ html, body {
   padding: 30px 0 45vh;
   caret-color: var(--accent);
 }
+#app[data-measure="false"] #editor-pane .cm-content,
+#app[data-wrap="false"] #editor-pane .cm-content { max-width: none; }
+#app[data-wrap="false"] #editor-pane .cm-content { width: max-content; min-width: 100%; }
+#editor-pane .cm-gutters { background: var(--bg-editor); color: var(--text-faint); border-color: var(--border); }
 #editor-pane .cm-line { padding: 0 34px; }
 #editor-pane .cm-cursor { border-left: 2px solid var(--accent); margin-left: -1px; }
 #editor-pane .cm-selectionBackground { background: var(--selection); }
@@ -333,3 +337,12 @@ html, body {
     --md-caution: #cf222e;
   }
 }
+
+dialog { width: min(28rem, 90vw); max-height: 90vh; overflow: auto; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; box-shadow: 0 12px 36px #0003; }
+dialog::backdrop { background: #0005; }
+dialog h2 { font-size: 1.2rem; margin: 0 0 .65rem; }
+dialog input, dialog select { display: block; width: 100%; font: inherit; margin: .5rem 0; }
+dialog select { max-height: 35vh; }
+.dialog-actions { display: flex; justify-content: end; gap: .5rem; }
+dialog button { font: inherit; padding: .3rem .65rem; }
+@media print { dialog { display: none !important; } }
