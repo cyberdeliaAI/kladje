@@ -98,6 +98,10 @@ Hidden until opened.
 
 ## Returning to your writing
 
+**File → New** and **File → Open** each open a separate document window. Opening a file that is already open brings its window forward. On macOS, **File → New Tab** (⌘T) opens a document in the current native tab group. **Window → Move Tab to New Window** detaches it.
+
+**Close Window** (⌘W on macOS) asks about changes in that window. **Quit** asks about each unsaved document. Cancel keeps all windows and their edits available. A Save you already approved stays on disk. After an unexpected exit, choose **Restore** for each draft you want to reopen.
+
 **File → Open Recent** remembers ten documents on this device. Choose **Clear Recent Documents** to forget their paths and saved places. If a file moved, choose **Locate…** when you reopen it. An unchanged document restores its last saved editing position.
 
 Press **⌘⇧J** on macOS (Ctrl+Shift+J elsewhere) to search headings. Type part of a heading, press the down arrow to select a match, and press Enter to jump. Escape returns to the document.

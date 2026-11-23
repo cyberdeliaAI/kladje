@@ -40,9 +40,9 @@ pub struct Decoded {
 #[derive(Serialize)]
 pub struct Opened {
     path: PathBuf,
-    content: String,
+    pub content: String,
     format: TextFormat,
-    version: Version,
+    pub version: Version,
 }
 
 pub fn markdown_path(path: &Path) -> Result<(), String> {

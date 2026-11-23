@@ -139,7 +139,7 @@ The combined P1–P3 suite passed 94 tests on Apple silicon. Native acceptance c
 
 **Risks and exit gate.** Long-term API commitments, indexing and secondary rendering engines can dominate development. Keep arbitrary plugins, vault graphs and collaborative accounts outside the planned release. A future proposal needs a named user task, measured demand, compatibility plan, maintenance budget and owner approval before implementation.
 
-**Current decision.** Defer all P4 candidates. Recent, heading navigation, relative document links and templates now cover the common single-document tasks. Observe repeated unmet needs before introducing multiple document identities, indexing, a second diagram renderer or third-party code.
+**Decision at the P3 checkpoint.** Defer the P4 candidates pending product approval. Recent, heading navigation, relative document links and templates now cover the common single-document tasks. Observe repeated unmet needs before introducing multiple document identities, indexing, a second diagram renderer or third-party code.
 
 ## Independent review follow-up
 
@@ -156,17 +156,15 @@ Apple silicon release WebKit exercised source URL paste, opt-in rich paste, undo
 
 ### Independent document windows
 
-The isolated `node scripts/macos-qa/run.mjs --windows` build creates two Tauri windows with a common macOS tabbing identifier and separate editor histories. At the initial checkpoint one native Format → Bold changed both documents. After targeting both the native emitter and the JavaScript listener, the active draft alone changed. The sibling retained its exact source. Production still opens one document window. A second window is enabled only in the isolated QA configuration.
+The integrated PR #7 baseline was the starting point for production multi-document support. Each document has a native Tauri window, its own CodeMirror editor and one recovery lease per draft. New, Open, Open Recent, templates, imports, Finder and relative document links preserve the originating editor. Reopening an existing path, symlink or hard link focuses its owner. Rust serializes file ownership checks with Save As. The existing storage layer still decides whether publication on the chosen filesystem is safe.
 
-| Before enabling multiple documents | Design and acceptance |
-| --- | --- |
-| File identity and Finder requests | Give each window its own document session and open queue. Serialize open requests in Rust and focus the existing owner for duplicate targets, including symlink aliases. A failed open must leave both drafts intact. |
-| Undo, Save and external changes | Keep CodeMirror history, saved revision, disk version and conflict decisions per window. Exercise simultaneous Save As, editing during I/O and a change made by another application. |
-| Close and Quit | Close negotiates with one window. Quit needs a coordinator that gathers all decisions and rechecks revisions before clearing drafts or closing windows. Cancel in the second window must leave the first window and its recovery available. A direct process exit after only the front window consents is unsafe. |
-| Recovery | Two leases, two distinct generations and independent claims are covered in Rust. Assign recovered drafts to windows centrally and exercise actual crash/relaunch and cancellation with two dirty windows before enabling them. |
-| Settings, Recent and native tabs | Serialize recent and preference updates so one window cannot replace another's newer history. Refresh native checks when focus changes. Exercise macOS tab grouping, detaching and closing in different orders and with different system tab preferences. |
+Close negotiates with its own window. Quit waits for in-flight operations, freezes each editor before its decision and retains provisionally discarded drafts until every window agrees. An explicitly approved Save writes immediately. Cancel or a failed Save keeps the windows open. Startup offers each recoverable draft independently. A draft whose path another window owns restores without a writable binding.
 
-A native tab group solves presentation. It cannot arbitrate which draft to save or discard. This work is the next document-management priority, with a two-dirty-window acceptance gate.
+The macOS acceptance driver uses the shipping window configuration and an isolated app identity. It exercises Finder batch opens, hard-link reopening, active-only menu and undo, shared preferences and Recent, native tab creation and detachment, external changes, two dirty windows with a late Cancel, a forced process termination, restoration of both drafts and successful Save/Discard on Quit. Run `node scripts/macos-qa/run.mjs --windows` on a logged-in Mac with Accessibility automation access. The app never changes the system tabbing preference.
+
+The Apple silicon run passed 61 JavaScript tests, 65 regular Rust tests and the separate mounted exFAT test. Eleven native multi-document checks passed, including Finder delivery after closing the initial window. The broader WKWebView run passed 35 checks and recorded zero requests for blocked remote images. The 100 KiB fixture measured 33 ms to the second frame and 136 ms to settled preview at p95 over 20 edits. The 1 MiB fixture remained editable in source-only mode.
+
+Outstanding qualification includes VoiceOver through multiple Quit sheets, IME composition while switching tabs, different macOS tab preference settings, long sessions with many large documents and native interaction on Windows and Linux. File ownership coordination applies within a running Kladje instance. Separately launched processes use the existing version and recovery-lease protections.
 
 ### Further opportunities
 

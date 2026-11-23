@@ -67,16 +67,7 @@ const config = JSON.parse(fs.readFileSync(path.join(root, "src-tauri/tauri.conf.
 config.identifier = id;
 config.productName = "Kladje P1 QA";
 config.build.frontendDist = ui;
-config.app.windows[0].incognito = true;
-if (probeWindows) {
-  // Only the disposable bundle receives a second window and an extra capability.
-  config.app.windows[0].tabbingIdentifier = id;
-  config.app.windows.push({...config.app.windows[0], label:"qa-peer"});
-  const access = JSON.parse(fs.readFileSync(path.join(root,"src-tauri/capabilities/default.json")));
-  config.app.security.capabilities = ["default", {
-    identifier:"qa-peer-local", windows:["qa-peer"], permissions:access.permissions,
-  }];
-}
+config.app.windows[0].incognito = !probeWindows;
 const override = path.join(tmp, "config.json");
 fs.writeFileSync(override, JSON.stringify(config));
 const build = spawnSync(
@@ -91,6 +82,12 @@ fs.cpSync(path.join(root, "src-tauri/target/release/bundle/macos/Kladje P1 QA.ap
 });
 const executable = path.join(app, "Contents/MacOS/kladje");
 console.log("Isolated native QA folder", tmp);
+if (probeWindows) {
+  imageProbe.close();
+  const {verifyWindows} = await import("./windows.mjs");
+  await verifyWindows({app, executable, tmp, id, fixture});
+  process.exit(0);
+}
 const manual = process.argv.includes("--manual");
 const started = Date.now();
 const child = spawn("/usr/bin/open", ["-n", "-W", "-a", app, "--args", fixture], { stdio: "inherit" });
@@ -115,32 +112,6 @@ function sample() {
 try {
   while (!fs.existsSync(result) && child.exitCode === null && Date.now() - started < 180000) {
     sample();
-    if (probeWindows && hostPid && !fs.existsSync(result+".routed.txt") &&
-        ["main","qa-peer"].every(label => fs.existsSync(result+"."+label+".ready.txt"))) {
-      const click = spawnSync("osascript", ["-e", `on run argv
-        tell application "System Events"
-          set proc to first application process whose unix id is (item 1 of argv as integer)
-          tell proc
-            set frontmost to true
-            set activeName to name of window 1
-            click menu item "Bold" of menu "Format" of menu bar item "Format" of menu bar 1
-            return activeName
-          end tell
-        end tell
-      end run`,String(hostPid)], {encoding:"utf8", timeout:5000});
-      if (click.status !== 0) throw Error(click.stderr);
-      await delay(700);
-      fs.writeFileSync(result+".routed.txt",click.stdout.trim());
-    }
-    if (probeWindows && ["main","qa-peer"].every(label => fs.existsSync(result+"."+label+".observed.txt"))) {
-      const windows = ["main","qa-peer"].map(label => JSON.parse(fs.readFileSync(result+"."+label+".observed.txt")));
-      const active = fs.readFileSync(result+".routed.txt","utf8");
-      if (!windows.some(w => active === "Window probe "+w.label) || !windows.every(w =>
-        w.undoIsolated && w.ready && w.afterNativeBold === (active === "Window probe "+w.label ? "****" : "")+w.label)) {
-        throw Error("Native menu routing or undo isolation failed: "+JSON.stringify({active,windows}));
-      }
-      fs.writeFileSync(result, JSON.stringify({checks:["Native menu changed only the focused draft","Independent CodeMirror undo"], windows}));
-    }
     if (!pasteAccepted && hostPid && fs.existsSync(result + ".paste.txt")) {
       // Act only on Save Image in the isolated QA process. No keystrokes,
       // clipboard changes or interaction with the installed application.

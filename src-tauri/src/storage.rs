@@ -99,7 +99,8 @@ pub(crate) fn stage_folder(
     Ok((dir, file, folder))
 }
 
-fn target(path: &Path) -> io::Result<PathBuf> {
+/// Resolve an existing file or the canonical parent and filename of a new file.
+pub fn target(path: &Path) -> io::Result<PathBuf> {
     match fs::symlink_metadata(path) {
         Ok(_) => fs::canonicalize(path), // A dangling link is an error.
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
