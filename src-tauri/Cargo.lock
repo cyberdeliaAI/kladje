@@ -2158,6 +2158,7 @@ dependencies = [
  "libc",
  "objc2",
  "objc2-app-kit",
+ "objc2-foundation",
  "objc2-web-kit",
  "percent-encoding",
  "pulldown-latex",

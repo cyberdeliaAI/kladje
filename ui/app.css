@@ -369,3 +369,6 @@ dialog button { font: inherit; padding: .3rem .65rem; }
   .comparison-panes { grid-template-columns: minmax(0, 1fr); }
   .comparison-panes textarea { height: 18vh; }
 }
+
+#settings label { display: flex; align-items: baseline; gap: .55rem; margin: .75rem 0; }
+#settings input[type="checkbox"] { flex: none; width: auto; margin: 0; }
