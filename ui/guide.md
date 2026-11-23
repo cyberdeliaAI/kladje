@@ -120,3 +120,9 @@ Use **Kladje → Settings…** (⌘,) on macOS or **File → Settings…** on ot
 Use Tab and Shift-Tab to select adjacent GFM table cells. Choose **View → Fold or Unfold at Cursor** on a heading. **⌘E** opens Find with the current selection; **⌘⇧C** toggles inline code. Fenced JavaScript, TypeScript, HTML and CSS have editor syntax colors. A closed initial frontmatter block stays in the file and is excluded from the prose word total.
 
 Click a standard list checkbox in the preview or focus it and press Space to change its Markdown marker. Undo restores it. Checkboxes stay read-only in exports, tables and documents containing raw HTML. The status bar shows the encoding and line endings of the current document. Optional reading time uses 200 words per minute.
+
+Choose **View → Document Outline** to keep headings beside your document. Filter or select a heading and press Enter to jump. Hide or Escape returns the space to the document. Windows 800 pixels wide or smaller use the compact heading picker. Tab in the final table cell adds a blank row.
+
+Writing Settings can emphasize the current paragraph or keep the caret centered while you type. Both options start off. You can still scroll through the document and use Find.
+
+Standalone HTML exports recognize a simple, single-line `title` and `lang` at the top level of initial frontmatter. For example, `lang: nl-BE` sets the document language. An omitted or unsupported title uses the first level-one heading, then the filename. Put `<!-- pagebreak -->` on a line between paragraphs to start a new printed page.

@@ -174,3 +174,11 @@ A native tab group solves presentation. It cannot arbitrate which draft to save 
 - Opt-in autosave merits a separate trial on already-saved, conflict-free documents. Pause on a changed version, an incompatible volume or any ambiguous write. Qualify typing during Save and focus loss during Quit first.
 - Previous-save history needs an explicit location, retention limit and deletion control. Keep crash recovery independent of that decision.
 - Mermaid requires offline rendering and a second safe export path. Link and image completion would also introduce directory enumeration. Both remain deferred pending a bounded implementation and evidence of demand.
+
+### Writing polish and export
+
+The outline sidebar shares the heading picker’s parser, filter and pagination. It updates after an idle edit and discards results for obsolete documents or revisions. A narrow window uses the existing picker. Paragraph focus and typewriter scrolling are independent, off-by-default preferences. Tab from the last table cell adds a row; Backtab at the beginning preserves indentation. Metadata is excluded from selected prose counts as well as document totals.
+
+Standalone HTML takes a simple, bounded frontmatter title and language; ambiguous or compound metadata falls back to the first H1 or document name and the default language. An explicit page-break comment in its own block is available for print. A native WebKit PDF proof checks the actual page containing each heading. Large-document printing above the live-preview limit and export themes remain open.
+
+The full-volume exFAT regression exhausts the disposable 64 MiB image during staging, checks the original bytes, and compares directory entries before and after failure. A separate UI regression checks recovery and vetoes Close after the failed copy. Physical-media interruption and network filesystems still require separate qualification.

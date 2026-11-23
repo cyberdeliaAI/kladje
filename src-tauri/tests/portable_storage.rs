@@ -37,6 +37,25 @@ fn documents_on_exfat() {
     let image = kladje::images::paste(&source, "R0lGODlh").unwrap();
     assert!(image.starts_with("assets/"));
     assert_eq!(fs::read(dir.path().join(image)).unwrap(), b"GIF89a");
+    // The dedicated disk image is 64 MiB before filesystem overhead. A full
+    // 64 MiB write deterministically runs out of space during staging.
+    let names = || {
+        let mut names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = names();
+    let error = storage::protected_copy(&source, &vec![0x5a; 64 * 1024 * 1024])
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("os error 28"),
+        "expected ENOSPC, received {error}"
+    );
+    assert_eq!(names(), before, "a partial copy was left behind");
     assert_eq!(fs::read(source).unwrap(), original);
     assert!(!fresh.exists());
 }
