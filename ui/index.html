@@ -37,18 +37,6 @@
         </button>
       </div>
     </footer>
-  </div>
-  <dialog id="settings" aria-labelledby="settings-title">
-    <form method="dialog">
-      <h2 id="settings-title">Writing Settings</h2>
-      <label><input type="checkbox" id="pairing"> Pair brackets and quotes while typing</label>
-      <label><input type="checkbox" id="linkPaste"> Paste a URL over selected text as a link</label>
-      <label><input type="checkbox" id="htmlPaste"> Convert pasted rich text to Markdown</label>
-      <label><input type="checkbox" id="confirmImage"> Ask before saving pasted images beside a saved document</label>
-      <label><input type="checkbox" id="readingTime"> Show estimated reading time</label>
-      <div class="dialog-actions"><button>Done</button></div>
-    </form>
-  </dialog>
   <dialog id="outline" aria-labelledby="outline-title">
     <form id="heading-form">
       <h2 id="outline-title">Jump to Heading</h2>
@@ -57,6 +45,20 @@
       <p id="heading-count" role="status"></p>
       <div id="heading-pages" hidden><button type="button" id="heading-prev">Previous 100</button> <button type="button" id="heading-next">Next 100</button></div>
       <div class="dialog-actions"><button type="button" id="heading-cancel">Cancel</button><button id="heading-go" type="submit">Go to Heading</button></div>
+    </form>
+  </dialog>
+  </div>
+  <dialog id="settings" aria-labelledby="settings-title">
+    <form method="dialog">
+      <h2 id="settings-title">Writing Settings</h2>
+      <label><input type="checkbox" id="pairing"> Pair brackets and quotes while typing</label>
+      <label><input type="checkbox" id="linkPaste"> Paste a URL over selected text as a link</label>
+      <label><input type="checkbox" id="htmlPaste"> Convert pasted rich text to Markdown</label>
+      <label><input type="checkbox" id="confirmImage"> Ask before saving pasted images beside a saved document</label>
+      <label><input type="checkbox" id="focusParagraph"> Emphasize the current paragraph</label>
+      <label><input type="checkbox" id="typewriter"> Center the cursor while typing</label>
+      <label><input type="checkbox" id="readingTime"> Show estimated reading time</label>
+      <div class="dialog-actions"><button>Done</button></div>
     </form>
   </dialog>
   <dialog id="comparison" aria-labelledby="comparison-title" aria-describedby="comparison-summary">

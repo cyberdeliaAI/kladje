@@ -3,12 +3,13 @@
 //
 // Rebuild ui/vendor/editor.js after changing this file:  npm run build:editor
 
+import { paragraphFocus, typewriter } from "./writing-modes.mjs";
 import { inlineCodeChange } from "./inline-code.mjs";
 import { documentLanguage } from "./markdown-language.mjs";
 import { urlOverSelection } from "./smart-paste.mjs";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { adjacentTableCell, tableRowChange } from "./table-row.mjs";
-import { counts, codePoints, countLimit, wordCount } from "./statistics.mjs";
+import { counts, codePoints, countLimit, selectedProseWords } from "./statistics.mjs";
 import { EditorState, EditorSelection, Compartment, Text } from "@codemirror/state";
 import {
   EditorView,
@@ -66,6 +67,8 @@ function create(parent, options = {}) {
   let cleanDoc = null;
   const layout = new Compartment();
   const pairs = new Compartment();
+  const modes = new Compartment();
+  let modeExtensions = [];
   let pairing = true;
   const pairKeys = [closeBrackets(),keymap.of(closeBracketsKeymap)];
   let layoutExtensions = [EditorView.lineWrapping];
@@ -82,6 +85,7 @@ function create(parent, options = {}) {
     counts,
     layout.of(layoutExtensions),
     pairs.of(pairKeys),
+    modes.of(modeExtensions),
     codeFolding(),
     EditorState.phrases.of({next:"Next",previous:"Previous",replace:"Replace","replace all":"Replace all","match case":"Match case","by word":"Whole word"}),
 
@@ -156,6 +160,10 @@ function create(parent, options = {}) {
       view.dispatch(change);
       view.focus();
       return true;
+    },
+    setWritingModes(focus, center) {
+      modeExtensions = [focus ? paragraphFocus : [], center ? typewriter : []];
+      view.dispatch({effects:modes.reconfigure(modeExtensions)});
     },
     setPairing(value) { pairing=value; view.dispatch({effects:pairs.reconfigure(value?pairKeys:[])}); },
     pasteUrl(text) {
@@ -389,8 +397,7 @@ function create(parent, options = {}) {
       const selected = span > countLimit ? null : state.selection.ranges.reduce(
         (total, r) => total + codePoints(state.sliceDoc(r.from, r.to)), 0);
       const column = head - line.from > countLimit ? null : codePoints(state.sliceDoc(line.from, head)) + 1;
-      const selectedWords = span && span <= countLimit ? state.selection.ranges.reduce(
-        (total,r) => total + wordCount(state.sliceDoc(r.from,r.to)),0) : 0;
+      const selectedWords = span && span <= countLimit ? selectedProseWords(state) : 0;
       return {line: line.number, column, selected, selectedWords, lines: state.doc.lines};
     },
 

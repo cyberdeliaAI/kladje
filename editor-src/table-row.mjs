@@ -52,6 +52,9 @@ export function adjacentTableCell(state, direction) {
     if (next?.name==="TableDelimiter") next=direction>0?next.nextSibling:next.prevSibling;
     if (next && ["TableHeader","TableRow"].includes(next.name)) cell=cells(next).at(direction>0?0:-1);
   }
+  if (!cell && direction > 0) return tableRowChange(state);
+  // Backtab at the first cell must not outdent the entire table row.
+  cell ||= current[0];
   if (!cell) return null;
   return {selection:EditorSelection.range(cell.from,cell.to),scrollIntoView:true,userEvent:"select"};
 }

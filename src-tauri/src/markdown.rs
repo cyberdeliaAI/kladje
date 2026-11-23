@@ -50,6 +50,10 @@ pub struct TaskMarker {
 
 #[derive(serde::Serialize)]
 pub struct Rendered {
+    #[serde(skip)]
+    pub title: Option<String>,
+    #[serde(skip)]
+    pub language: Option<String>,
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub tasks: std::collections::HashMap<String, TaskMarker>,
     pub assets: std::collections::HashMap<String, String>,
@@ -164,16 +168,23 @@ impl Renderer {
         let arena = Arena::new();
         let root = parse_document(&arena, markdown, &opts);
 
+        let (title, language) = if target == Target::Export {
+            crate::export::document_metadata(root)
+        } else {
+            (None, None)
+        };
+
         // Only bind a source editing command when every list control was produced
         // by our Markdown renderer. Raw HTML may supply its own classes/positions.
         let mut tasks = std::collections::HashMap::new();
         if known.is_some()
-            && markdown.contains('[')
-            && !root.descendants().any(|n| {
-                matches!(
-                    n.data().value,
-                    NodeValue::HtmlBlock(_) | NodeValue::HtmlInline(_)
-                )
+            && ["[ ]", "[x]", "[X]"]
+                .iter()
+                .any(|mark| markdown.contains(mark))
+            && !root.descendants().any(|n| match &n.data().value {
+                NodeValue::HtmlBlock(block) => block.literal.trim() != "<!-- pagebreak -->",
+                NodeValue::HtmlInline(_) => true,
+                _ => false,
             })
         {
             let mut offset = 0;
@@ -219,6 +230,13 @@ impl Renderer {
 
         for node in root.descendants() {
             let mut ast = node.data_mut();
+            if let NodeValue::HtmlBlock(block) = &ast.value {
+                if block.literal.trim() == "<!-- pagebreak -->" {
+                    ast.value = NodeValue::Raw(
+                        "<div class=\"page-break\" aria-hidden=\"true\"></div>\n".into(),
+                    );
+                }
+            }
             if !matches!(
                 ast.value,
                 NodeValue::Math(_) | NodeValue::MathBlock(_) | NodeValue::CodeBlock(_)
@@ -277,24 +295,13 @@ impl Renderer {
         let mut counts = usage.lock().unwrap();
         let omitted = counts.images.saturating_sub(counts.accepted);
         Ok(Rendered {
+            title,
+            language,
             tasks,
             assets: std::mem::take(&mut counts.assets),
             html: clean,
             omitted,
         })
-    }
-
-    /// First level-1 heading of the document, used as the title of an export.
-    pub fn title_of(&self, markdown: &str) -> Option<String> {
-        let opts = comrak_options(Target::Export);
-        let arena = Arena::new();
-        let root = parse_document(&arena, markdown, &opts);
-        let heading = root
-            .children()
-            .find(|n| matches!(&n.data().value, NodeValue::Heading(h) if h.level == 1))?;
-        let text = heading.collect_text();
-        let text = text.trim();
-        (!text.is_empty()).then(|| text.to_string())
     }
 }
 
@@ -804,10 +811,18 @@ mod tests {
     fn title_comes_from_first_heading() {
         let r = Renderer::new();
         assert_eq!(
-            r.title_of("intro\n\n# The *Title*\n").as_deref(),
+            r.render_document("intro\n\n# The *Title*\n", Target::Export, None, false)
+                .unwrap()
+                .title
+                .as_deref(),
             Some("The Title")
         );
-        assert_eq!(r.title_of("no heading"), None);
+        assert_eq!(
+            r.render_document("no heading", Target::Export, None, false)
+                .unwrap()
+                .title,
+            None
+        );
     }
 
     #[test]
