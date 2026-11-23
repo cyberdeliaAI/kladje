@@ -61,9 +61,9 @@ pub fn markdown_path(path: &Path) -> Result<(), String> {
     }
 }
 
-pub fn open_document(path: &Path) -> Result<Opened, String> {
+fn open_bounded(path: &Path, limit: u64) -> Result<Opened, String> {
     markdown_path(path)?;
-    let (bytes, version) = storage::read(path)?;
+    let (bytes, version) = storage::read_bounded(path, limit)?;
     markdown_path(version.target())?;
     let decoded = decode(bytes)?;
     Ok(Opened {
@@ -72,6 +72,14 @@ pub fn open_document(path: &Path) -> Result<Opened, String> {
         format: decoded.format,
         version,
     })
+}
+
+pub fn open_document(path: &Path) -> Result<Opened, String> {
+    open_bounded(path, MAX_FILE_BYTES)
+}
+
+pub fn comparison_text(path: &Path) -> Result<String, String> {
+    open_bounded(path, 512 * 1024).map(|file| file.content)
 }
 
 pub fn read_text(path: &Path) -> Result<Decoded, String> {
@@ -257,6 +265,17 @@ pub fn write_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn comparison_reads_supported_text_with_a_separate_small_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("note.md");
+        std::fs::write(&path, b"\xff\xfeH\0i\0").unwrap();
+        assert_eq!(comparison_text(&path).unwrap(), "Hi");
+        std::fs::write(&path, vec![b'a'; 512 * 1024 + 1]).unwrap();
+        assert!(comparison_text(&path).unwrap_err().contains("512 KiB"));
+        assert_eq!(open_document(&path).unwrap().content.len(), 512 * 1024 + 1);
+    }
+
     #[test]
     fn round_trips_encodings_boms_and_line_endings() {
         for bytes in [

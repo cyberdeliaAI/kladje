@@ -26,7 +26,7 @@ fs.writeFileSync(
   path.join(ui, "qualification.js"),
   "window.qaResultPath=" +
     JSON.stringify(result) +
-    ";\n" +
+    ";\nwindow.qaPaste = " + process.argv.includes("--paste") + ";\n" +
     fs.readFileSync(new URL("webview.js", import.meta.url), "utf8"),
 );
 fs.copyFileSync(path.join(root, "src-tauri/icons/32x32.png"), path.join(tmp, "figure.png"));
@@ -87,7 +87,8 @@ const child = spawn("/usr/bin/open", ["-n", "-W", "-a", app, "--args", fixture],
 let hostPid,
   peak = 0,
   idle = {},
-  ready = false;
+  ready = false,
+  pasteAccepted = false;
 function sample() {
   const result = spawnSync("python3", [path.join(root, "scripts/macos-qa/rss.py"), executable], {
     encoding: "utf8",
@@ -104,11 +105,45 @@ function sample() {
 try {
   while (!fs.existsSync(result) && child.exitCode === null && Date.now() - started < 180000) {
     sample();
+    if (!pasteAccepted && hostPid && fs.existsSync(result + ".paste.txt")) {
+      // Act only on Save Image in the isolated QA process. No keystrokes,
+      // clipboard changes or interaction with the installed application.
+      const accept = spawnSync("osascript", ["-e", `on run argv
+        tell application "System Events"
+          set proc to first application process whose unix id is (item 1 of argv as integer)
+          tell proc
+            repeat with win in windows
+              if exists button "Save Image" of win then
+                click button "Save Image" of win
+                return "accepted"
+              end if
+              if exists sheet 1 of win then
+                if exists button "Save Image" of sheet 1 of win then
+                  click button "Save Image" of sheet 1 of win
+                  return "accepted"
+                end if
+              end if
+            end repeat
+          end tell
+        end tell
+      end run`, String(hostPid)], {encoding: "utf8", timeout: 5000});
+      if (accept.status !== 0) throw Error("Native paste confirmation: " + accept.stderr);
+      pasteAccepted = accept.stdout.trim() === "accepted";
+    }
     await delay(250);
   }
   if (!fs.existsSync(result)) throw Error("No native workflow report");
   const report = JSON.parse(fs.readFileSync(result, "utf8"));
-  if (report.error) throw Error(report.error);
+  if (report.error) throw Error(JSON.stringify({error: report.error, notice: report.notice, focus: report.focus, pasteAccepted}));
+  if (process.argv.includes("--paste")) {
+    const image = fs.readFileSync(path.join(tmp, "figure.png"));
+    const pasted = fs.readFileSync(path.join(tmp, "assets/screenshot-1.png"));
+    const exported = fs.readFileSync(result + ".html", "utf8");
+    if (!pasteAccepted || !pasted.equals(image) || !exported.includes("data:image/png;base64," + image.toString("base64"))) {
+      throw Error("The confirmed image must survive Undo on disk and be embedded byte-for-byte in standalone HTML.");
+    }
+    report.checks.push("verified pasted file after Undo and identical embedded export bytes");
+  }
   if (imageConnections) throw Error("A blocked document image initiated a network connection");
   report.unapprovedImageConnections = imageConnections;
   if (external && !linkOpened) {

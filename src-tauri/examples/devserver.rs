@@ -247,6 +247,7 @@ fn invoke(
                 )?
                 .html
         ),
+        "paste_image" => json!(kladje::images::paste(&path("source")?, &text("encoded"))?),
         "insert_image" => json!(kladje::images::insert_path(
             &path("source")?,
             &path("image")?,
@@ -260,6 +261,7 @@ fn invoke(
             recovery.write(draft).map_err(|e| e.to_string())?;
             Value::Null
         }
+        "comparison_text" => json!(fileio::comparison_text(&path("path")?)?),
         "read_file" => json!(fileio::open_document(&path("path")?)?),
         "write_file" => {
             let expected: Option<storage::Version> =
