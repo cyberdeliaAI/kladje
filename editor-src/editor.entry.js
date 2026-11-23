@@ -4,9 +4,12 @@
 // Rebuild ui/vendor/editor.js after changing this file:  npm run build:editor
 
 import { inlineCodeChange } from "./inline-code.mjs";
-import { EditorState, EditorSelection } from "@codemirror/state";
+import { tableRowChange } from "./table-row.mjs";
+import { counts, codePoints } from "./statistics.mjs";
+import { EditorState, EditorSelection, Compartment } from "@codemirror/state";
 import {
   EditorView,
+  lineNumbers,
   keymap,
   drawSelection,
   dropCursor,
@@ -56,6 +59,8 @@ const LIST_PATTERNS = {
 function create(parent, options = {}) {
   const { onChange, onSelection, placeholderText = "" } = options;
   let cleanDoc = null;
+  const layout = new Compartment();
+  let layoutExtensions = [EditorView.lineWrapping];
 
   const extensions = [
     history(),
@@ -66,7 +71,8 @@ function create(parent, options = {}) {
     EditorState.allowMultipleSelections.of(true),
     EditorState.tabSize.of(4),
     indentUnit.of("    "),
-    EditorView.lineWrapping,
+    counts,
+    layout.of(layoutExtensions),
     markdown({ base: markdownLanguage, addKeymap: false }),
     keymap.of([
       { key: "Enter", run: insertNewlineContinueMarkupCommand({ nonTightLists: false }) },
@@ -124,11 +130,27 @@ function create(parent, options = {}) {
   };
 
   const api = {
+    insertTableRow() {
+      const change = tableRowChange(view.state);
+      if (!change) return false;
+      view.dispatch(change);
+      view.focus();
+      return true;
+    },
     getText: () => view.state.doc.toString(),
+    configureLayout({wrap, gutter}) {
+      layoutExtensions = [wrap ? EditorView.lineWrapping : [], gutter ? lineNumbers() : []];
+      view.dispatch({effects: layout.reconfigure(layoutExtensions)});
+    },
+    statistics() {
+      const count = view.state.field(counts);
+      return count && {words: count.words, characters: view.state.doc.length - count.pairs};
+    },
 
     /** Replace the whole document; this starts a fresh undo history. */
     setText(text) {
       view.setState(EditorState.create({ doc: text, extensions }));
+      view.dispatch({effects: layout.reconfigure(layoutExtensions)});
       cleanDoc = view.state.doc;
       view.scrollDOM.scrollTop = 0;
     },
@@ -318,8 +340,8 @@ function create(parent, options = {}) {
       const head = state.selection.main.head;
       const line = state.doc.lineAt(head);
       let selected = 0;
-      for (const r of state.selection.ranges) selected += r.to - r.from;
-      return { line: line.number, column: head - line.from + 1, selected, lines: state.doc.lines };
+      for (const r of state.selection.ranges) selected += codePoints(state.sliceDoc(r.from, r.to));
+      return { line: line.number, column: codePoints(state.sliceDoc(line.from, head)) + 1, selected, lines: state.doc.lines };
     },
 
     get scroller() {
@@ -340,6 +362,13 @@ function create(parent, options = {}) {
       const whole = Math.min(doc.lines, Math.max(1, Math.floor(lineNumber)));
       const block = view.lineBlockAt(doc.line(whole).from);
       view.scrollDOM.scrollTop = block.top + (lineNumber - whole) * block.height;
+    },
+
+    location() { return {offset: view.state.selection.main.head, top: api.topLine()}; },
+    restoreLocation({offset, top}) {
+      if (!Number.isInteger(offset) || offset < 0 || offset > view.state.doc.length) return;
+      view.dispatch({selection: EditorSelection.cursor(offset)});
+      if (Number.isFinite(top)) api.scrollToLine(top);
     },
 
     /** Move the cursor to a line and bring it into view. */

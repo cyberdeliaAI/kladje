@@ -95,3 +95,11 @@ Hidden until opened.
 </details>
 
 [^1]: The note itself can live anywhere in the document.
+
+## Returning to your writing
+
+**File → Open Recent** remembers ten documents on this device. Choose **Clear Recent Documents** to forget their paths and saved places. If a file moved, choose **Locate…** when you reopen it. An unchanged document restores its last saved editing position.
+
+Press **⌘⇧J** on macOS (Ctrl+Shift+J elsewhere) to search headings. Type part of a heading, press the down arrow to select a match, and press Enter to jump. Escape returns to the document.
+
+Use **View** to toggle line numbers, wrapping or a narrower writing width. The footer counts Unicode code points and word-like segments of Markdown source. **Format → Insert Table Row Below** adds an empty row with the same number of columns.

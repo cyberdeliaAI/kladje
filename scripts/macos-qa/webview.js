@@ -55,6 +55,29 @@ window.addEventListener("load", async () => {
     preview.querySelector('a[data-destination*="sibling"]').click();
     await wait(() => document.activeElement.id === "uc-café-1", "cross-file fragment");
     check(text().includes("# Café"), "sibling link with encoded filename and Unicode duplicate fragment");
+    const outline = document.getElementById("outline");
+    const filter = document.getElementById("heading-filter");
+    const list = document.getElementById("heading-list");
+    for (const mode of ["editor", "preview"]) {
+      await menu("view_" + mode);
+      await menu("jump_heading");
+      await wait(() => outline.open && document.activeElement === filter, "heading search in " + mode);
+      filter.value = "café";
+      filter.dispatchEvent(new Event("input"));
+      check(Array.from(list.options, o => o.value).join(",") === "1,3", "duplicate Unicode headings in " + mode);
+      list.selectedIndex = 1;
+      list.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", cancelable: true}));
+      await wait(() => !outline.open && (mode === "editor" ? qaEditor.cursor().line === 3 :
+        document.activeElement.id === "uc-café-1"), "jump to second heading in " + mode);
+      check(document.getElementById("app").dataset.view === mode, "heading jump preserves " + mode + " view");
+    }
+    await menu("view_split");
+    await menu("gutter");
+    await wait(() => document.querySelector(".cm-lineNumbers"), "line-number preference");
+    await menu("gutter");
+    await wait(() => !document.querySelector(".cm-lineNumbers"), "hide line numbers");
+    check(true, "toggle CodeMirror line numbers");
+    qaEditor.goToLine(1);
     for (let n = 1; n <= 6; n++) {
       await menu("h" + n);
       await wait(() => text().startsWith("#".repeat(n) + " "), "heading " + n);

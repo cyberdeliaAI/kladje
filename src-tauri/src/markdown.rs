@@ -213,6 +213,41 @@ impl Renderer {
     }
 }
 
+#[derive(serde::Serialize)]
+pub struct Heading {
+    pub level: u8,
+    pub line: usize,
+    pub text: String,
+}
+
+/// Navigation uses the preview parser without rendering HTML or reading images.
+pub fn headings(markdown: &str) -> Result<Vec<Heading>, String> {
+    if markdown.len() > 4 * 1024 * 1024 {
+        return Err(
+            "Jump to Heading supports documents up to 4 MiB. Use Find in this document.".into(),
+        );
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let arena = Arena::new();
+        let root = parse_document(&arena, markdown, &comrak_options(Target::Preview));
+        root.descendants()
+            .filter_map(|node| {
+                let ast = node.data();
+                if let NodeValue::Heading(h) = &ast.value {
+                    Some(Heading {
+                        level: h.level,
+                        line: ast.sourcepos.start.line,
+                        text: node.collect_text(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }))
+    .map_err(|_| "Could not read document headings.".into())
+}
+
 fn comrak_options(target: Target) -> Options<'static> {
     let mut o = Options::default();
 
@@ -689,5 +724,20 @@ mod tests {
         }
         let html = r.render("\u{E000}0\u{E001} plain", Target::Preview);
         assert!(html.contains("plain"));
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    #[test]
+    fn uses_markdown_source_lines_and_ignores_non_headings() {
+        let src =
+            "---\n# metadata\n---\n# **Café**\n\n```md\n# example\n```\n> ## Café\n\n東京\n====\n";
+        let list = super::headings(src).unwrap();
+        let rows: Vec<_> = list
+            .iter()
+            .map(|h| (h.level, h.line, h.text.as_str()))
+            .collect();
+        assert_eq!(rows, [(1, 4, "Café"), (2, 9, "Café"), (1, 11, "東京")]);
     }
 }
