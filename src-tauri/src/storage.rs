@@ -68,6 +68,10 @@ fn stamp(target: &Path, meta: &fs::Metadata, bytes: &[u8]) -> Version {
 }
 
 pub fn read(path: &Path) -> Result<(Vec<u8>, Version), String> {
+    read_bounded(path, MAX_FILE_BYTES)
+}
+
+pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<(Vec<u8>, Version), String> {
     let resolved = target(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut options = File::options();
     options.read(true);
@@ -80,19 +84,20 @@ pub fn read(path: &Path) -> Result<(Vec<u8>, Version), String> {
         .open(&resolved)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let meta = file.metadata().map_err(|e| e.to_string())?;
-    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+    if !meta.is_file() || meta.len() > limit {
         return Err(format!(
-            "{} is not a regular file within the 64 MiB limit.",
-            path.display()
+            "{} is not a regular file within the {} KiB limit.",
+            path.display(),
+            limit / 1024
         ));
     }
     let mut bytes = Vec::new();
     (&mut file)
-        .take(MAX_FILE_BYTES + 1)
+        .take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
-        return Err("File exceeds the 64 MiB limit.".into());
+    if bytes.len() as u64 > limit {
+        return Err(format!("File exceeds the {} KiB limit.", limit / 1024));
     }
     let version = stamp(&resolved, &meta, &bytes);
     Ok((bytes, version))

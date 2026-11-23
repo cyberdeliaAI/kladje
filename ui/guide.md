@@ -103,3 +103,11 @@ Hidden until opened.
 Press **⌘⇧J** on macOS (Ctrl+Shift+J elsewhere) to search headings. Type part of a heading, press the down arrow to select a match, and press Enter to jump. Escape returns to the document.
 
 Use **View** to toggle line numbers, wrapping or a narrower writing width. The footer counts Unicode code points and word-like segments of Markdown source. **Format → Insert Table Row Below** adds an empty row with the same number of columns.
+
+## Reusing writing and images
+
+**File → New from Template** copies the text of a local Markdown or plain-text file into a new, unsaved draft. Save it where you want the new document. Relative image links resolve beside the saved draft.
+
+Paste a clipboard image into the source editor and confirm **Save Image**. For an untitled draft, first choose where to save the document. Kladje stores a new PNG, JPEG, GIF or WebP of up to 4 MiB in the adjacent `assets/` folder and selects the image description. Undo removes the link. The image remains in the folder, so other documents can still use it. Move that folder with the document.
+
+Choose **File → Compare with Disk** to see both text snapshots and the first differing line. You can select and copy from either pane. Closing the comparison returns to your edits. Save As keeps a separate copy if you want to keep both versions. Comparison ignores line-ending and encoding differences and supports up to 512 KiB on disk and 524,288 UTF-16 code units in the editor.

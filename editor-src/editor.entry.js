@@ -4,7 +4,7 @@
 // Rebuild ui/vendor/editor.js after changing this file:  npm run build:editor
 
 import { tableRowChange } from "./table-row.mjs";
-import { counts, codePoints } from "./statistics.mjs";
+import { counts, codePoints, countLimit } from "./statistics.mjs";
 import { EditorState, EditorSelection, Compartment } from "@codemirror/state";
 import {
   EditorView,
@@ -137,6 +137,8 @@ function create(parent, options = {}) {
       return true;
     },
     getText: () => view.state.doc.toString(),
+    textLength: () => view.state.doc.length,
+    selection: () => view.state.selection,
     configureLayout({wrap, gutter}) {
       layoutExtensions = [wrap ? EditorView.lineWrapping : [], gutter ? lineNumbers() : []];
       view.dispatch({effects: layout.reconfigure(layoutExtensions)});
@@ -337,9 +339,13 @@ function create(parent, options = {}) {
       const { state } = view;
       const head = state.selection.main.head;
       const line = state.doc.lineAt(head);
-      let selected = 0;
-      for (const r of state.selection.ranges) selected += codePoints(state.sliceDoc(r.from, r.to));
-      return { line: line.number, column: codePoints(state.sliceDoc(line.from, head)) + 1, selected, lines: state.doc.lines };
+      // Cursor movement should not allocate a document-sized string in a huge
+      // selection or single-line file. Omit an exact count outside the budget.
+      const span = state.selection.ranges.reduce((total, r) => total + r.to - r.from, 0);
+      const selected = span > countLimit ? null : state.selection.ranges.reduce(
+        (total, r) => total + codePoints(state.sliceDoc(r.from, r.to)), 0);
+      const column = head - line.from > countLimit ? null : codePoints(state.sliceDoc(line.from, head)) + 1;
+      return {line: line.number, column, selected, lines: state.doc.lines};
     },
 
     get scroller() {

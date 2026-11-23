@@ -1,7 +1,7 @@
 import { StateField } from "@codemirror/state";
 
 const segmenter = typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, {granularity: "word"}) : null;
-const countLimit = 256 * 1024;
+export const countLimit = 256 * 1024;
 
 export function codePoints(text) {
   return text.length - (text.match(/[\u{10000}-\u{10ffff}]/gu)?.length || 0);

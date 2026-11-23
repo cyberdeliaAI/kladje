@@ -253,11 +253,12 @@
   function updateStats() {
     const counts = editor.statistics();
     const c = editor.cursor();
-    const selection = c.selected ? ` · ${number.format(c.selected)} selected` : "";
+    const selection = c.selected === null ? " · large selection" : c.selected ? ` · ${number.format(c.selected)} selected` : "";
+    const column = c.column === null ? "" : `, Col ${c.column}`;
     els.stats.innerHTML = "";
     const position = document.createElement("span");
     position.className = "optional";
-    position.textContent = `Ln ${number.format(c.line)}, Col ${c.column}${selection}  ·  `;
+    position.textContent = `Ln ${number.format(c.line)}${column}${selection}  ·  `;
     els.stats.append(
       position,
       counts ? `${number.format(counts.words)} ${counts.words === 1 ? "word" : "words"}  ·  ${number.format(counts.characters)} characters` : `${number.format(c.lines)} lines`,
@@ -703,6 +704,7 @@
   function loadDocument({ path = null, name = null, content = "", version = null, dirty = false, id = draftId(), recovered = false, format = null, revision = 0 }) {
     rememberPlace();
     if (outline.open) outline.close();
+    if (comparison.open) comparison.close();
     clearRecovery();
     doc.id = id;
     doc.remote = false;
@@ -762,7 +764,7 @@
   }
 
   // Read and validate the candidate before asking to discard the old document.
-  async function replaceDocument(next) {
+  async function replaceDocument(next, {template = false} = {}) {
     const previousVersion = doc.version;
     if (!await confirmDiscard()) return false;
     // The discard prompt can itself Save (As) into the file we just read.
@@ -771,7 +773,7 @@
       next = await invoke("read_file", { path: next.path });
       if (!session.isCurrent(before)) return false;
     }
-    loadDocument(next);
+    loadDocument(template ? {name: "Untitled.md", content: next.content, dirty: true} : next);
     return true;
   }
 
@@ -863,6 +865,50 @@
     }
     if (result.warning) await showError(result.warning);
     return clean;
+  }
+
+  async function newFromTemplate() {
+    const path = await T.dialog.open({title: "New from Template", multiple: false,
+      filters: [{name: "Markdown or plain text", extensions: MARKDOWN_EXT}]});
+    if (!path) return;
+    const file = await invoke("read_file", {path});
+    // A template provides text only. Save must choose a new destination and
+    // recovery belongs to the new draft, never to the template's path.
+    await replaceDocument(file, {template: true});
+  }
+
+  const comparison = $("comparison");
+  const comparisonFields = [$("comparison-editor"), $("comparison-disk")];
+  comparison.addEventListener("close", () => {
+    if (!comparison.open) for (const field of comparisonFields) field.value = "";
+  });
+  async function compareWithDisk() {
+    if (!doc.path) return notify("Save the document before comparing it with disk.");
+    if (editor.textLength() > 512 * 1024) return notify("Comparison supports up to 524,288 UTF-16 code units in the editor and 512 KiB on disk.", 12000);
+    const before = session.snapshot();
+    const disk = (await invoke("comparison_text", {path: doc.path})).replace(/\r\n?/g, "\n");
+    if (!session.isCurrent(before)) return notify("The document changed. Open Compare with Disk again.");
+    const source = before.content;
+    const equal = disk === source;
+    let line = 1, start = 0;
+    if (!equal) {
+      const length = Math.min(disk.length, source.length);
+      for (let i = 0; i < length && source.charCodeAt(i) === disk.charCodeAt(i); i++) {
+        if (source[i] === "\n") { line++; start = i + 1; }
+      }
+    }
+    $("comparison-summary").textContent = equal ? "Both versions have the same text. Line endings and encoding are ignored." :
+      `First text difference at line ${line}. Both versions are read-only snapshots.`;
+    comparisonFields[0].value = source;
+    comparisonFields[1].value = disk;
+    comparison.showModal();
+    if (!equal) {
+      for (const field of comparisonFields) {
+        const end = field.value.indexOf("\n", start);
+        field.setSelectionRange(start, end === -1 ? field.value.length : end);
+        field.scrollTop = Math.max(0, line - 3) * parseFloat(getComputedStyle(field).lineHeight);
+      }
+    }
   }
 
   async function chooseAndOpen() {
@@ -971,6 +1017,43 @@
     editor.insertImage(relative);
   }
 
+  function clipboardBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(",") + 1));
+      reader.onerror = () => reject(reader.error || Error("Could not read the clipboard image."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  els.editorPane.addEventListener("paste", event => {
+    // Text and rich text with a plain-text representation use native CodeMirror paste.
+    const data = event.clipboardData;
+    if (!data || initializing || closing || data.getData("text/plain")) return;
+    const file = Array.from(data.files).find(f => f.type.startsWith("image/"));
+    if (!file) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type) || file.size > 4 * 1024 * 1024) {
+      return notify("Paste a PNG, JPEG, GIF or WebP image of up to 4 MiB.", 12000);
+    }
+    const before = session.snapshot(), selection = editor.selection();
+    const current = () => session.isCurrent(before) && editor.selection() === selection;
+    return runFileAction(async () => {
+      if (!current()) return notify("The insertion point changed. Paste the image again.");
+      const message = doc.path ? "Save this image in the assets folder beside this document and insert a relative link?" :
+        "Choose where to save this document, then store the image in the assets folder beside it?";
+      if (!await T.dialog.ask(message, {title: "Paste Image", okLabel: doc.path ? "Save Image" : "Save Document and Image", cancelLabel: "Cancel"})) return;
+      if (!current()) return notify("The insertion point changed. Paste the image again.");
+      if (!doc.path && !await save()) return;
+      const encoded = await clipboardBase64(file);
+      if (!current()) return notify("The insertion point changed. Paste the image again.");
+      const relative = await invoke("paste_image", {source: doc.path, encoded});
+      if (!current()) return notify(`Saved ${relative}. The insertion point changed, so the link was left out.`, 15000);
+      editor.insertImage(relative);
+    }).catch(showError);
+  }, true);
+
   // ---------------------------------------------------------------- crash recovery
 
   // Snapshot publication and retirement must have the same ordering, including
@@ -1037,7 +1120,7 @@
       return;
     }
     if (session.isDirty()) {
-      const reload = await T.dialog.ask(`“${doc.name}” changed on disk. Reload the disk version and discard the edits in this window? Choose Keep Edits to keep writing or use Save As.`, {
+      const reload = await T.dialog.ask(`“${doc.name}” changed on disk. Reload the disk version and discard the edits in this window? Choose Keep Edits to use File → Compare with Disk or Save As.`, {
         title: "Conflicting changes", kind: "warning", okLabel: "Reload Disk Version", cancelLabel: "Keep Edits",
       });
       if (!session.isCurrent(before)) return;
@@ -1092,6 +1175,8 @@
   const actions = {
     new: () => runFileAction(() => replaceDocument({})),
     open: () => runFileAction(chooseAndOpen),
+    new_template: () => runFileAction(newFromTemplate),
+    compare_disk: () => runFileAction(compareWithDisk),
     clear_recent: () => runFileAction(async () => {
       store.remove("places");
       store.remove("recent");
@@ -1170,6 +1255,7 @@
   ]);
 
   async function runAction(id) {
+    if ((outline.open || comparison.open) && id !== "quit") return;
     if (!closing && id.startsWith("recent:")) return runFileAction(() => openRecent(id.slice(7))).catch(showError);
     const action = Object.hasOwn(actions, id) && actions[id];
     if (!action || closing) return;

@@ -13,6 +13,8 @@ The P0 document-safety baseline and P1 single-document workflows have been exerc
 - Open Markdown and plain text, import HTML or Word documents as editable Markdown, export HTML, and print or save a PDF through the system print dialog.
 - Use **Format → Insert Local Image** or drop a PNG, JPEG, GIF or WebP into the document. Edit the selected description to supply alt text.
 - Save explicitly with **⌘S**. If you keep typing during a save, newer edits stay marked as unsaved. When another program changes the file, you can keep your edits, reload from disk, or save a separate copy.
+- Paste a clipboard PNG, JPEG, GIF or WebP into the source editor. On confirmation, Kladje saves a new numbered file in `assets/` beside the document. Undo removes the link and keeps the image file.
+- Use **File → Compare with Disk** to inspect the current text alongside the saved version. **File → New from Template** opens a local Markdown or text file as a fresh, unsaved draft.
 - Restore private drafts after an unexpected exit. Kladje keeps up to three recovery generations per document. On macOS, saving through a symlink preserves the link.
 
 ## Build the macOS app
