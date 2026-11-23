@@ -153,3 +153,24 @@ Implemented opt-out pairing and HTTP(S) link paste, opt-in HTML-to-Markdown past
 Preview updates send validated local image payloads only when needed. On Unix a bounded cache reopens a confined file handle and checks its identity and change timestamps before reuse. Coarse timestamps fall back to reading. The Windows implementation rereads the bytes. Exports always build a standalone payload. In the 1 MiB fixture a subsequent text edit returned 406 bytes versus 1,398,355 bytes of full embedded HTML. The code keeps the existing image and document limits.
 
 Apple silicon release WebKit exercised source URL paste, opt-in rich paste, undoable task toggles, folding, image storage, blocked remote loads and native browser handoff. A private AppKit pasteboard returned both Markdown and HTML. On the 100 KiB fixture, 20 edits measured 33 ms to the second frame and 116 ms to the settled preview at p95. The 1 MiB fixture remained source-only. Peak sampled host plus WebKit RSS across the run was 655 MiB. This sample does not establish long-session memory use.
+
+### Independent document windows
+
+The isolated `node scripts/macos-qa/run.mjs --windows` build creates two Tauri windows with a common macOS tabbing identifier and separate editor histories. At the initial checkpoint one native Format → Bold changed both documents. After targeting both the native emitter and the JavaScript listener, the active draft alone changed. The sibling retained its exact source. Production still opens one document window. A second window is enabled only in the isolated QA configuration.
+
+| Before enabling multiple documents | Design and acceptance |
+| --- | --- |
+| File identity and Finder requests | Give each window its own document session and open queue. Serialize open requests in Rust and focus the existing owner for duplicate targets, including symlink aliases. A failed open must leave both drafts intact. |
+| Undo, Save and external changes | Keep CodeMirror history, saved revision, disk version and conflict decisions per window. Exercise simultaneous Save As, editing during I/O and a change made by another application. |
+| Close and Quit | Close negotiates with one window. Quit needs a coordinator that gathers all decisions and rechecks revisions before clearing drafts or closing windows. Cancel in the second window must leave the first window and its recovery available. A direct process exit after only the front window consents is unsafe. |
+| Recovery | Two leases, two distinct generations and independent claims are covered in Rust. Assign recovered drafts to windows centrally and exercise actual crash/relaunch and cancellation with two dirty windows before enabling them. |
+| Settings, Recent and native tabs | Serialize recent and preference updates so one window cannot replace another's newer history. Refresh native checks when focus changes. Exercise macOS tab grouping, detaching and closing in different orders and with different system tab preferences. |
+
+A native tab group solves presentation. It cannot arbitrate which draft to save or discard. This work is the next document-management priority, with a two-dirty-window acceptance gate.
+
+### Further opportunities
+
+- A read-only changed-line view and validation of document-local relative links are the next small candidates. Use bounded inputs, preserve both versions, and reuse the confined resolver.
+- Opt-in autosave merits a separate trial on already-saved, conflict-free documents. Pause on a changed version, an incompatible volume or any ambiguous write. Qualify typing during Save and focus loss during Quit first.
+- Previous-save history needs an explicit location, retention limit and deletion control. Keep crash recovery independent of that decision.
+- Mermaid requires offline rendering and a second safe export path. Link and image completion would also introduce directory enumeration. Both remain deferred pending a bounded implementation and evidence of demand.
