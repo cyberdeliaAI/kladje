@@ -30,7 +30,7 @@ async function app(initial = {}, configure = () => {}) {
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
-    selection: () => EditorSelection.single(0), textLength: () => text.length, location: () => ({offset:0,top:1}), restoreLocation() {}, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
+    selection: () => EditorSelection.single(0), textLength: () => text.length, location: () => ({offset:0,top:1}), restoreLocation() {}, setPairing() {}, pasteUrl() { return false; }, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
     getText: () => text, setText(v) { text = v; }, replaceText(v) { text = v; change(); },
     insertImage(relative) { text += " IMAGE " + relative; change(); },
     cursor: () => ({ line: 1, column: 1, lines: 1 }), scroller: element(), remeasure() {}, focus() {},
@@ -680,4 +680,39 @@ test("unsupported volume copy needs consent and acknowledges only its saved revi
   assert.equal(a.disk.content, "original");
   assert.match(a.get("doc-name").title, /Kladje Copy abc/);
   assert.match(a.get("doc-name").title, /edited/);
+});
+
+test("rich paste is opt-in and an async conversion cannot overwrite a newer selection or edit", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  const paste = () => {
+    const event = {target:{closest:()=>true}, clipboardData:{files:[],getData:t=>t==="text/html"?"<b>one</b>":"one"},
+      preventDefault(){this.prevented=true;}, stopPropagation(){}};
+    return {event, done:a.get("editor-pane").handlers.paste(event)};
+  };
+  assert.equal(paste().event.prevented, undefined);
+  await a.menu("settings");
+  a.get("htmlPaste").checked=true;
+  a.get("htmlPaste").handlers.change();
+  a.get("settings").close();
+  a.api.clipboard_markdown=async()=>{started.resolve(); return finish.promise;};
+  a.view.pasteText=value=>a.edit(value);
+  const first=paste(); assert.equal(first.event.prevented,true);
+  await started.promise;
+  a.edit("more recent");
+  finish.resolve("**one**\n");
+  await first.done;
+  assert.equal(a.text(),"more recent");
+  assert.match(a.get("notice").textContent,/insertion point changed/);
+  await paste().done;
+  assert.equal(a.text(),"**one**");
+  assert.equal(a.disk.content,"original");
+  await a.menu("save");
+  assert.equal(a.disk.content,"**one**");
+});
+test("Close Window uses the same dirty-document veto as Quit", async () => {
+  const a = await app();
+  a.edit("retain unsaved source");
+  await a.menu("close_window");
+  assert.equal(a.text(),"retain unsaved source");
+  assert.ok(!a.calls.some(([name])=>name==="destroy"));
 });

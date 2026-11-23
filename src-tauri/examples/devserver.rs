@@ -237,14 +237,18 @@ fn invoke(
             Value::Null
         }
         "document_headings" => json!(kladje::markdown::headings(&text("markdown"))?),
-        "render" => json!(
+        "render" => json!(renderer.preview_update(
+            &text("markdown"),
+            source.as_deref(),
+            args["remote"].as_bool().unwrap_or(false),
+            serde_json::from_value(args["knownImages"].clone()).unwrap_or_default()
+        )?),
+        "clipboard_markdown" if text("html").len() <= 1024 * 1024 => {
+            json!(kladje::import::html_to_markdown(&text("html"))?)
+        }
+        "formatted_selection" if text("markdown").len() <= 256 * 1024 => json!(
             renderer
-                .render_document(
-                    &text("markdown"),
-                    Target::Preview,
-                    source.as_deref(),
-                    args["remote"].as_bool().unwrap_or(false)
-                )?
+                .render_document(&text("markdown"), Target::Export, None, false)?
                 .html
         ),
         "paste_image" => json!(kladje::images::paste(&path("source")?, &text("encoded"))?),

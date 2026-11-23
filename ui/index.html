@@ -38,6 +38,17 @@
       </div>
     </footer>
   </div>
+  <dialog id="settings" aria-labelledby="settings-title">
+    <form method="dialog">
+      <h2 id="settings-title">Writing Settings</h2>
+      <label><input type="checkbox" id="pairing"> Pair brackets and quotes while typing</label>
+      <label><input type="checkbox" id="linkPaste"> Paste a URL over selected text as a link</label>
+      <label><input type="checkbox" id="htmlPaste"> Convert pasted rich text to Markdown</label>
+      <label><input type="checkbox" id="confirmImage"> Ask before saving pasted images beside a saved document</label>
+      <label><input type="checkbox" id="readingTime"> Show estimated reading time</label>
+      <div class="dialog-actions"><button>Done</button></div>
+    </form>
+  </dialog>
   <dialog id="outline" aria-labelledby="outline-title">
     <form id="heading-form">
       <h2 id="outline-title">Jump to Heading</h2>

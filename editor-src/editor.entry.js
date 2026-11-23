@@ -4,9 +4,12 @@
 // Rebuild ui/vendor/editor.js after changing this file:  npm run build:editor
 
 import { inlineCodeChange } from "./inline-code.mjs";
-import { tableRowChange } from "./table-row.mjs";
-import { counts, codePoints, countLimit } from "./statistics.mjs";
-import { EditorState, EditorSelection, Compartment } from "@codemirror/state";
+import { documentLanguage } from "./markdown-language.mjs";
+import { urlOverSelection } from "./smart-paste.mjs";
+import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { adjacentTableCell, tableRowChange } from "./table-row.mjs";
+import { counts, codePoints, countLimit, wordCount } from "./statistics.mjs";
+import { EditorState, EditorSelection, Compartment, Text } from "@codemirror/state";
 import {
   EditorView,
   lineNumbers,
@@ -24,9 +27,9 @@ import {
   undo,
   redo,
 } from "@codemirror/commands";
-import { markdown, markdownLanguage, deleteMarkupBackward, insertNewlineContinueMarkupCommand } from "@codemirror/lang-markdown";
-import { syntaxHighlighting, indentUnit } from "@codemirror/language";
-import { search, searchKeymap, openSearchPanel, highlightSelectionMatches } from "@codemirror/search";
+import { deleteMarkupBackward, insertNewlineContinueMarkupCommand } from "@codemirror/lang-markdown";
+import { syntaxHighlighting, indentUnit, toggleFold, codeFolding } from "@codemirror/language";
+import { search, searchKeymap, openSearchPanel, SearchQuery, setSearchQuery, highlightSelectionMatches } from "@codemirror/search";
 import { tags as t, tagHighlighter } from "@lezer/highlight";
 
 // Tokens get class names; the colours live in app.css so themes are pure CSS.
@@ -46,6 +49,8 @@ const highlighter = tagHighlighter([
   { tag: [t.meta, t.labelName, t.atom], class: "md-meta" },
   { tag: t.comment, class: "md-comment" },
   { tag: [t.tagName, t.angleBracket, t.attributeName], class: "md-html" },
+  { tag: [t.keyword,t.bool,t.number], class: "md-meta" },
+  { tag: [t.propertyName,t.typeName], class: "md-html" },
   { tag: t.string, class: "md-string" },
 ]);
 
@@ -60,6 +65,9 @@ function create(parent, options = {}) {
   const { onChange, onSelection, placeholderText = "" } = options;
   let cleanDoc = null;
   const layout = new Compartment();
+  const pairs = new Compartment();
+  let pairing = true;
+  const pairKeys = [closeBrackets(),keymap.of(closeBracketsKeymap)];
   let layoutExtensions = [EditorView.lineWrapping];
 
   const extensions = [
@@ -73,8 +81,16 @@ function create(parent, options = {}) {
     indentUnit.of("    "),
     counts,
     layout.of(layoutExtensions),
-    markdown({ base: markdownLanguage, addKeymap: false }),
+    pairs.of(pairKeys),
+    codeFolding(),
+    EditorState.phrases.of({next:"Next",previous:"Previous",replace:"Replace","replace all":"Replace all","match case":"Match case","by word":"Whole word"}),
+
     keymap.of([
+      ...[["Tab",1],["Shift-Tab",-1]].map(([key,direction])=>({key,run(view) {
+        const change=adjacentTableCell(view.state,direction);
+        if (!change) return false;
+        view.dispatch(change); return true;
+      }})),
       { key: "Enter", run: insertNewlineContinueMarkupCommand({ nonTightLists: false }) },
       { key: "Backspace", run: deleteMarkupBackward },
     ]),
@@ -89,9 +105,13 @@ function create(parent, options = {}) {
     }),
   ];
 
+  function createState(text) {
+    const doc = Text.of(text.split("\n"));
+    return EditorState.create({doc, extensions:[extensions,documentLanguage(doc)]});
+  }
   const view = new EditorView({
     parent,
-    state: EditorState.create({ doc: "", extensions }),
+    state: createState(""),
   });
   cleanDoc = view.state.doc;
 
@@ -137,6 +157,27 @@ function create(parent, options = {}) {
       view.focus();
       return true;
     },
+    setPairing(value) { pairing=value; view.dispatch({effects:pairs.reconfigure(value?pairKeys:[])}); },
+    pasteUrl(text) {
+      const change=urlOverSelection(view.state,text);
+      if (!change) return false;
+      view.dispatch(change,{userEvent:"input.paste",scrollIntoView:true}); return true;
+    },
+    toggleTask(offset, checked) {
+      if (!Number.isInteger(offset) || offset < 1 || offset >= view.state.doc.length) return false;
+      const marker = view.state.sliceDoc(offset-1, offset+2);
+      if (!(checked ? /^\[[xX]\]$/ : /^\[ \]$/).test(marker)) return false;
+      view.dispatch({changes:{from:offset,to:offset+1,insert:checked ? " " : "x"},userEvent:"input"});
+      return true;
+    },
+    selectedText() { return view.state.selection.ranges.map(r=>view.state.sliceDoc(r.from,r.to)).join("\n"); },
+    pasteText(text) { view.dispatch(view.state.replaceSelection(text),{userEvent:"input.paste",scrollIntoView:true}); },
+    fold() { toggleFold(view); view.focus(); },
+    findSelection() {
+      const selected=view.state.sliceDoc(view.state.selection.main.from,view.state.selection.main.to);
+      openSearchPanel(view);
+      if (selected) view.dispatch({effects:setSearchQuery.of(new SearchQuery({search:selected,literal:true}))});
+    },
     getText: () => view.state.doc.toString(),
     textLength: () => view.state.doc.length,
     selection: () => view.state.selection,
@@ -151,7 +192,8 @@ function create(parent, options = {}) {
 
     /** Replace the whole document; this starts a fresh undo history. */
     setText(text) {
-      view.setState(EditorState.create({ doc: text, extensions }));
+      view.setState(createState(text));
+      view.dispatch({effects:pairs.reconfigure(pairing ? pairKeys : [])});
       view.dispatch({effects: layout.reconfigure(layoutExtensions)});
       cleanDoc = view.state.doc;
       view.scrollDOM.scrollTop = 0;
@@ -347,7 +389,9 @@ function create(parent, options = {}) {
       const selected = span > countLimit ? null : state.selection.ranges.reduce(
         (total, r) => total + codePoints(state.sliceDoc(r.from, r.to)), 0);
       const column = head - line.from > countLimit ? null : codePoints(state.sliceDoc(line.from, head)) + 1;
-      return {line: line.number, column, selected, lines: state.doc.lines};
+      const selectedWords = span && span <= countLimit ? state.selection.ranges.reduce(
+        (total,r) => total + wordCount(state.sliceDoc(r.from,r.to)),0) : 0;
+      return {line: line.number, column, selected, selectedWords, lines: state.doc.lines};
     },
 
     get scroller() {
