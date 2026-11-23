@@ -238,7 +238,12 @@
   function refreshChrome() {
     const dirty = session.isDirty();
     els.docName.classList.toggle("dirty", dirty);
-    els.docName.firstElementChild.textContent = doc.recovered ? `${doc.name} (recovered)` : doc.name;
+    const label = doc.recovered ? `${doc.name} (recovered)` : doc.name;
+    const filename = els.docName.firstElementChild;
+    const stateLabel = $("doc-state");
+    const stateText = dirty ? " — Unsaved changes" : "";
+    if (filename.textContent !== label) filename.textContent = label;
+    if (stateLabel.textContent !== stateText) stateLabel.textContent = stateText;
     els.docName.title = (doc.path || "Not saved yet") + (dirty ? " — edited" : "");
     const title = `${dirty ? "• " : ""}${doc.name} — Kladje`;
     if (title !== shownTitle) {

@@ -19,7 +19,7 @@ HTTPS images require permission in **View → Remote Images for This Document**.
 
 Relative Markdown links can include a section, as in `[Notes](meeting%20notes.md#decisions)`. A second heading with the same name gets the suffix `-1`. External links open with the system handler.
 
-Use **⌘1–⌘6** on macOS for heading levels and **⌘0** for a paragraph. Tab to the splitter, resize with the arrow keys, press Enter to center it or Escape to return to the source. In the editor, Escape followed by Tab moves keyboard focus out of the writing area.
+Use **⌘1–⌘6** on macOS for heading levels and **⌘0** for a paragraph. Tab to the splitter, resize with the arrow keys, press Enter to center it or Escape to return to the source. In the editor, Escape followed by Tab moves keyboard focus out of the writing area. In Find and Replace, use Tab or Shift-Tab to move between fields, options and buttons. Space activates a focused button.
 
 [ref]: https://github.github.com/gfm/
 
