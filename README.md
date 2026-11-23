@@ -2,7 +2,12 @@
 
 Kladje is a lightweight Markdown editor with a live preview and one native window per document. Write in the source pane, read in the preview, or keep both in view with synchronized scrolling. It uses CodeMirror for editing, Rust for rendering and file operations, and Tauri 2 for native windows and menus.
 
-The P0 document-safety baseline and P1 single-document workflows have been exercised on Apple silicon macOS. Windows and Linux desktop interaction still requires native validation.
+Kladje is being qualified for a first Apple silicon macOS preview. Windows and Linux have compile checks. Native behavior on those platforms remains unverified.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/outline-dark.png">
+  <img src="docs/screenshots/writing-light.png" alt="Kladje on macOS with a Markdown tide journal beside its rendered preview. The dark view also shows the document outline." width="920">
+</picture>
 
 ## What you can do
 
@@ -30,7 +35,7 @@ npm ci
 npm run build -- --ci --bundles app -- --locked
 ```
 
-The application bundle is written to `src-tauri/target/release/bundle/macos/Kladje.app`. For local use, quit Kladje and copy that bundle into Applications, replacing your previous copy, then open Kladje from Applications. Finder’s Get Info shows the new cream, navy and teal icon. The local build uses an ad-hoc signature. You can check its integrity with `codesign --verify --deep --strict /Applications/Kladje.app`. Distribution signing and notarization remain release gates.
+The application bundle is written to `src-tauri/target/release/bundle/macos/Kladje.app`. For local use, quit Kladje and copy that bundle into Applications, replacing your previous copy, then open Kladje from Applications. Finder’s Get Info shows the new cream, navy and teal icon. The local build uses an ad-hoc signature. You can check its integrity with `codesign --verify --deep --strict /Applications/Kladje.app`. For a Developer ID signed disk image, follow the [macOS preview instructions and acceptance checklist](docs/MACOS_PREVIEW.md).
 
 ## Development
 
@@ -51,9 +56,9 @@ The Rust suite exercises rendering, import, export, file formats, atomic saves a
 
 ## Known limitations
 
-- Preview reads supported local rasters within the saved document folder. HTTPS images stay blocked until you allow them in **View → Remote Images for This Document**. Opening another document resets permission. Local and embedded images are limited to 4 MiB each, 12 MiB total and 128 source references per render.
+- Preview reads supported local rasters within the saved document folder. HTTPS images stay blocked until you allow them in **View → Remote Images for This Document**. Permission belongs to that document window. A newly opened document starts with remote images blocked. Local and embedded images are limited to 4 MiB each, 12 MiB total and 128 source references per render.
 - Files are limited to 64 MiB. Supported encodings include UTF-8, BOM-marked UTF-16 and printable Latin-1. Format changes such as converting edited Latin-1 text to UTF-8 require confirmation.
-- Recovery is periodic. Edits made since the last completed snapshot can be lost on a crash. Network shares, removable media and physical power-loss behavior still need testing.
+- Recovery is periodic. Edits made since the last completed snapshot can be lost on a crash. A mounted exFAT disk image has been tested. On an incompatible filesystem Kladje can offer a protected copy at a new path. Network shares, physical removal and power loss remain unqualified.
 - Standalone HTML embeds permitted local raster images and reports omissions. Word import preserves supported text, headings, lists and tables. Embedded media, page layout and review annotations are omitted.
 - Native PDF printing on macOS requires macOS 11 or later.
 - Live preview and printing pause above 262,144 UTF-16 code units. Editing, explicit saving and recovery remain available. Heading search supports source files up to 4 MiB. Live word totals use the same size limit as preview.
