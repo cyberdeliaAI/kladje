@@ -1034,7 +1034,7 @@
   els.editorPane.addEventListener("paste", event => {
     // Text and rich text with a plain-text representation use native CodeMirror paste.
     const data = event.clipboardData;
-    if (!data || initializing || closing || data.getData("text/plain")) return;
+    if (!event.target.closest(".cm-content") || !data || initializing || closing || data.getData("text/plain")) return;
     const file = Array.from(data.files).find(f => f.type.startsWith("image/"));
     if (!file) return;
     event.preventDefault();
@@ -1043,7 +1043,7 @@
       return notify("Paste a PNG, JPEG, GIF or WebP image of up to 4 MiB.", 12000);
     }
     const before = session.snapshot(), selection = editor.selection();
-    const current = () => session.isCurrent(before) && editor.selection() === selection;
+    const current = () => session.isCurrent(before) && editor.selection().eq(selection);
     return runFileAction(async () => {
       if (!current()) return notify("The insertion point changed. Paste the image again.");
       const message = doc.path ? "Save this image in the assets folder beside this document and insert a relative link?" :
@@ -1260,7 +1260,11 @@
   ]);
 
   async function runAction(id) {
-    if ((outline.open || comparison.open) && id !== "quit") return;
+    if ((outline.open || comparison.open) && id !== "quit") {
+      // Native check items toggle before the event arrives, even behind a dialog.
+      syncChecks();
+      return;
+    }
     if (!closing && id.startsWith("recent:")) return runFileAction(() => openRecent(id.slice(7))).catch(showError);
     const action = Object.hasOwn(actions, id) && actions[id];
     if (!action || closing) return;

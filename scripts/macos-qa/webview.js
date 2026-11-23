@@ -238,6 +238,8 @@ window.addEventListener("load", async () => {
     await wait(() => document.getElementById("app").dataset.view === "editor", "editor-only print setup");
   } catch (error) {
     report.error = String(error);
+    report.notice = document.getElementById("notice").textContent;
+    report.focus = document.activeElement?.className;
   }
   await core.invoke("write_file", {
     path: window.qaResultPath,
