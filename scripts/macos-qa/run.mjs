@@ -134,7 +134,7 @@ try {
   }
   if (!fs.existsSync(result)) throw Error("No native workflow report");
   const report = JSON.parse(fs.readFileSync(result, "utf8"));
-  if (report.error) throw Error(report.error);
+  if (report.error) throw Error(JSON.stringify({error: report.error, notice: report.notice, focus: report.focus, pasteAccepted}));
   if (process.argv.includes("--paste")) {
     const image = fs.readFileSync(path.join(tmp, "figure.png"));
     const pasted = fs.readFileSync(path.join(tmp, "assets/screenshot-1.png"));

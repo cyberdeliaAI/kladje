@@ -124,6 +124,10 @@ A fresh app process reached the editable fixture in 657 ms. Other runs ranged fr
 
 **Verification.** All 87 tests passed on Apple silicon (49 Rust, 38 JavaScript), including all 66 P0/P1 tests. The isolated release webview received a synthetic PNG paste event, displayed the native Save Image confirmation, previewed the asset offline and compared the dirty editor with the unchanged disk file. Undo restored the source. The asset and its standalone export contained identical bytes. A separate Chromium profile opened the relocated HTML offline and displayed the image. Live system clipboard providers, new dialog VoiceOver speech, storage volumes without hard-link support on Unix and Windows/Linux native behavior still need qualification. At 100 KiB, 20 edits took 32 ms to the second frame and 117 ms to the settled preview at p95. The 1 MiB source-only fixture remained editable.
 
+### Stabilization and preview qualification
+
+The combined P1–P3 suite passed 94 tests on Apple silicon. Native acceptance covered real clipboard providers, template selection and save, keyboard Replace All, Japanese candidate conversion and cancellation, conflict recovery and external browser handoff. The 100 KiB fixture stayed within both latency targets. The three private PRs are stacked in phase order. Review each current CI result as its base advances. The remaining work is macOS acceptance and distribution qualification, including VoiceOver, international input, a fresh-user default association and a notarized download. [Final macOS acceptance evidence](P1_ACCEPTANCE.md#final-macos-stabilization-of-the-p1p3-stack)
+
 ## P4 · Investigate only with evidence
 
 **Goal.** Understand workflows that might justify a larger product boundary. **Complexity High if implemented.** Budget a short discovery spike of up to one week per supported hypothesis, with a separate estimate for delivery. Depends on stable v1, native QA capacity and evidence of repeated unmet need.

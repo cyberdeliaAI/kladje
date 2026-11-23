@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
+const { EditorSelection } = require("@codemirror/state");
 const path = require("node:path");
 const source = name => fs.readFileSync(path.join(__dirname, "../ui", name), "utf8");
 
@@ -29,7 +30,7 @@ async function app(initial = {}, configure = () => {}) {
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
-    selection: () => 0, textLength: () => text.length, location: () => ({offset:0,top:1}), restoreLocation() {}, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
+    selection: () => EditorSelection.single(0), textLength: () => text.length, location: () => ({offset:0,top:1}), restoreLocation() {}, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
     getText: () => text, setText(v) { text = v; }, replaceText(v) { text = v; change(); },
     insertImage(relative) { text += " IMAGE " + relative; change(); },
     cursor: () => ({ line: 1, column: 1, lines: 1 }), scroller: element(), remeasure() {}, focus() {},
@@ -497,8 +498,8 @@ test("heading search pages through repeated titles and filtering resets the page
   assert.equal(a.get("heading-pages").hidden, true);
 });
 
-function imagePaste(a, file = {type:"image/png", size:8, encoded:"iVBORw0KGgo="}, text = "") {
-  const event = { clipboardData: {files:[file], getData: () => text}, preventDefault() { this.prevented = true; }, stopPropagation() {} };
+function imagePaste(a, file = {type:"image/png", size:8, encoded:"iVBORw0KGgo="}, text = "", inSource = true) {
+  const event = { target: {closest: () => inSource}, clipboardData: {files:[file], getData: () => text}, preventDefault() { this.prevented = true; }, stopPropagation() {} };
   return {event, done: a.get("editor-pane").handlers.paste(event)};
 }
 
@@ -528,7 +529,7 @@ test("cancel untitled paste and preserve edits or cursor movement during screens
   a.api.paste_image = async () => { started.resolve(); await finish.promise; return "assets/screenshot-2.png"; };
   const pending = imagePaste(a).done;
   await started.promise;
-  a.view.selection = () => 17;
+  a.view.selection = () => EditorSelection.single(17);
   finish.resolve();
   await pending;
   assert.equal(a.text(), original);
@@ -636,4 +637,28 @@ test("the document's accessible status follows dirty edits, saves and failed sav
   a.api.write_file = () => ({version:a.disk.version, confirmed:true});
   await a.menu("save");
   assert.equal(a.get("doc-state").textContent, "");
+});
+
+test("pasting an image in the search panel leaves the document and filesystem alone", async () => {
+  const a = await app();
+  let asked = false;
+  a.dialog.ask = () => { asked = true; return true; };
+  const paste = imagePaste(a, undefined, "", false);
+  await paste.done;
+  assert.equal(paste.event.prevented, undefined);
+  assert.equal(asked, false);
+  assert.equal(a.text(), a.disk.content);
+  assert.ok(!a.calls.some(([cmd]) => cmd === "paste_image"));
+});
+
+test("a native toggle behind a modal restores its actual checked state", async () => {
+  const a = await app();
+  a.get("comparison").open = true;
+  const count = a.calls.filter(([cmd]) => cmd === "set_menu_checks").length;
+  await a.menu("gutter");
+  assert.equal(a.calls.filter(([cmd]) => cmd === "set_menu_checks").length, count + 1);
+  const last = a.calls.filter(([cmd]) => cmd === "set_menu_checks").at(-1);
+  assert.ok(last);
+  assert.ok(!last[1].checked.includes("gutter"));
+  assert.ok(!a.values.has("kladje.gutter"));
 });
