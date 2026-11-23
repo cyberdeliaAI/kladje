@@ -5,3 +5,5 @@ pub mod export;
 pub mod fileio;
 pub mod import;
 pub mod markdown;
+pub mod storage;
+pub mod recovery;

@@ -22,7 +22,8 @@ pub fn import(path: &Path) -> Result<String, String> {
         "html" | "htm" | "xhtml" => html_to_markdown(&fileio::read_text(path)?.text),
         "docx" => docx_to_markdown(path),
         "doc" => Err("The old .doc format is not supported. Save the file as .docx in Word first.".into()),
-        _ => Ok(fileio::read_text(path)?.text),
+        "txt" => Ok(fileio::read_text(path)?.text),
+        _ => Err("Choose an HTML, Word (.docx), or plain text (.txt) file to import.".into()),
     }
 }
 

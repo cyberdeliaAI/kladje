@@ -1,11 +1,36 @@
-# Build output
+# Build output and downloaded dependencies
 /src-tauri/target/
 /src-tauri/gen/
 /node_modules/
+/coverage/
 
-# OS / editor noise
+# Local settings and signing material
+.env
+.env.*
+!.env.example
+.envrc
+/.npmrc
+/.codex/
+/.aws/
+/.ssh/
+*.p8
+*.p12
+*.pfx
+*.pem
+*.mobileprovision
+*.key
+
+# Private draft data, atomic-save staging and local test output
+recovery-v1/
+.kladje-stage-*
+/tmp/
+*.tmp
+*.log
+
+# OS and editor files
 .DS_Store
 Thumbs.db
 *.swp
+*~
 .idea/
 .vscode/

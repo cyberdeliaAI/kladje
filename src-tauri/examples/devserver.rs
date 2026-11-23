@@ -18,7 +18,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
 use kladje::markdown::{Renderer, Target, PREVIEW_ID_PREFIX};
-use kladje::{export, fileio, import};
+use kladje::recovery::Recovery;
+use kladje::{export, fileio, import, storage};
 use serde_json::{json, Value};
 
 const SHIM: &str = r#"
@@ -73,17 +74,24 @@ const SHIM: &str = r#"
 fn main() {
     let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui");
     let renderer = Renderer::new();
+    let profile = tempfile::tempdir().expect("create private development profile");
+    let mut recovery = Recovery::new(profile.path().join("recovery-v1"));
     let port = std::env::args().nth(1).unwrap_or_else(|| "4777".into());
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).expect("port in use");
     println!("Kladje dev server on http://127.0.0.1:{port}");
     for stream in listener.incoming().flatten() {
-        if let Err(e) = handle(stream, &ui, &renderer) {
+        if let Err(e) = handle(stream, &ui, &renderer, &mut recovery) {
             eprintln!("request failed: {e}");
         }
     }
 }
 
-fn handle(stream: TcpStream, ui: &Path, renderer: &Renderer) -> std::io::Result<()> {
+fn handle(
+    stream: TcpStream,
+    ui: &Path,
+    renderer: &Renderer,
+    recovery: &mut Recovery,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -108,7 +116,12 @@ fn handle(stream: TcpStream, ui: &Path, renderer: &Renderer) -> std::io::Result<
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let (status, mime, bytes): (&str, &str, Vec<u8>) = if method == "POST" {
         let args: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-        let reply = match invoke(path.trim_start_matches("/invoke/"), &args, renderer) {
+        let reply = match invoke(
+            path.trim_start_matches("/invoke/"),
+            &args,
+            renderer,
+            recovery,
+        ) {
             Ok(value) => json!({ "ok": value }),
             Err(message) => json!({ "err": message }),
         };
@@ -122,9 +135,17 @@ fn handle(stream: TcpStream, ui: &Path, renderer: &Renderer) -> std::io::Result<
             Err(_) => ("404 Not Found", "text/plain", b"not found".to_vec()),
         }
     } else {
-        let relative = if path == "/" { "index.html" } else { path.trim_start_matches('/') };
+        let relative = if path == "/" {
+            "index.html"
+        } else {
+            path.trim_start_matches('/')
+        };
         let file: PathBuf = ui.join(relative);
-        let inside = file.canonicalize().ok().zip(ui.canonicalize().ok()).is_some_and(|(f, u)| f.starts_with(u));
+        let inside = file
+            .canonicalize()
+            .ok()
+            .zip(ui.canonicalize().ok())
+            .is_some_and(|(f, u)| f.starts_with(u));
         match (inside, std::fs::read(&file)) {
             (true, Ok(bytes)) if relative == "index.html" => {
                 let html = String::from_utf8_lossy(&bytes).replace(
@@ -147,8 +168,18 @@ fn handle(stream: TcpStream, ui: &Path, renderer: &Renderer) -> std::io::Result<
     stream.write_all(&bytes)
 }
 
-fn invoke(command: &str, args: &Value, renderer: &Renderer) -> Result<Value, String> {
-    let text = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+fn invoke(
+    command: &str,
+    args: &Value,
+    renderer: &Renderer,
+    recovery: &mut Recovery,
+) -> Result<Value, String> {
+    let text = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     Ok(match command {
         "setup" => json!({
             "syntaxCssLight": renderer.syntax_css_light,
@@ -157,27 +188,39 @@ fn invoke(command: &str, args: &Value, renderer: &Renderer) -> Result<Value, Str
             "pendingOpen": null,
         }),
         "render" => json!(renderer.render(&text("markdown"), Target::Preview)),
-        "read_file" => {
-            let path = text("path");
-            let decoded = fileio::read_text(Path::new(&path))?;
-            json!({
-                "mtime": fileio::mtime_ms(Path::new(&path)),
-                "path": path,
-                "content": decoded.text,
-                "converted": decoded.converted,
-            })
+        "recovery_list" => json!(recovery.list().map_err(|e| e.to_string())?),
+        "recovery_claim" => json!(recovery.claim(&text("id")).map_err(|e| e.to_string())?),
+        "recovery_clear" => json!(recovery.clear(&text("id")).map_err(|e| e.to_string())?),
+        "recovery_write" => {
+            let draft = serde_json::from_value(args["draft"].clone()).map_err(|e| e.to_string())?;
+            recovery.write(draft).map_err(|e| e.to_string())?;
+            Value::Null
         }
+        "read_file" => json!(fileio::open_document(Path::new(&text("path")))?),
         "write_file" => {
-            let path = text("path");
-            fileio::write_atomic(Path::new(&path), text("content").as_bytes())?;
-            json!(fileio::mtime_ms(Path::new(&path)))
+            let expected: Option<storage::Version> =
+                serde_json::from_value(args["expected"].clone()).map_err(|e| e.to_string())?;
+            let format =
+                serde_json::from_value(args["format"].clone()).map_err(|e| e.to_string())?;
+            json!(fileio::write_document(
+                Path::new(&text("path")),
+                &text("content"),
+                &format,
+                expected.as_ref()
+            )?)
         }
-        "file_mtime" => json!(fileio::mtime_ms(Path::new(&text("path")))),
+        "file_version" => json!(storage::version(Path::new(&text("path")))?),
         "import_file" => json!(import::import(Path::new(&text("path")))?),
         "export_html" => {
             let html = export::standalone_html(renderer, &text("markdown"), &text("title"));
-            fileio::write_atomic(Path::new(&text("path")), html.as_bytes())?;
-            Value::Null
+            let expected: Option<storage::Version> =
+                serde_json::from_value(args["expected"].clone()).map_err(|e| e.to_string())?;
+            json!(export::write_html(
+                Path::new(&text("path")),
+                &html,
+                args["source"].as_str().map(Path::new),
+                expected.as_ref()
+            )?)
         }
         "take_pending_open" => Value::Null,
         other => return Err(format!("unknown command {other}")),
