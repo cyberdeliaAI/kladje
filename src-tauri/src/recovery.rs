@@ -359,6 +359,29 @@ mod tests {
     }
 
     #[test]
+    fn two_recovered_windows_claim_distinct_generations() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("recovery");
+        let second = "0123456789abcdef0123456789abcdef";
+        let mut owner = Recovery::new(root.clone());
+        owner.write(draft(4)).unwrap();
+        let mut another = draft(9);
+        another.id = second.into();
+        owner.write(another).unwrap();
+        let mut a = Recovery::new(root.clone());
+        let mut b = Recovery::new(root.clone());
+        assert!(a.list().unwrap().is_empty());
+        drop(owner);
+        assert_eq!(a.list().unwrap().len(), 2);
+        assert_eq!(a.claim(ID).unwrap().content, "draft 4");
+        assert!(b.claim(ID).is_err());
+        assert_eq!(b.claim(second).unwrap().content, "draft 9");
+        a.clear(ID).unwrap();
+        drop(b);
+        assert_eq!(a.claim(second).unwrap().revision, 9);
+    }
+
+    #[test]
     fn retention_and_checksum_validation() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("private");
