@@ -812,3 +812,19 @@ test("a restored startup draft and an incoming Finder file retain separate docum
   assert.equal(a.children[0].text(),"original");
   assert.equal(a.children[0].calls.some(([cmd])=>cmd==="recovery_list"),false);
 });
+
+test("a later recovery failure cannot replace or retire an already restored draft", async () => {
+  const first = {id:"aa".repeat(16), name:"First", content:"only surviving edits", revision:7};
+  const other = {id:"bb".repeat(16), name:"Other"};
+  const a = await app({}, ({api,dialog}) => {
+    api.recovery_list = () => [first, other];
+    dialog.message = text => text.includes("“Other”") ? "Discard Draft" : "Restore";
+    api.recovery_claim = ({id}) => {
+      if (id === other.id) throw Error("Draft already claimed by another process");
+      return first;
+    };
+  });
+  assert.equal(a.text(), first.content);
+  assert.ok(!a.calls.some(([cmd,args]) => cmd === "recovery_clear" && args.id === first.id));
+  assert.equal(a.children[0].text(), "original");
+});
