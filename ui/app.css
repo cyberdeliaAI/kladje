@@ -10,7 +10,7 @@
   --text-muted: #60656c;
   --text-faint: #626871;
   --border: #e3dfd8;
-  --accent: #b4530a;
+  --accent: #aa4d08;
   --accent-soft: rgba(180, 83, 10, 0.14);
   --selection: rgba(180, 83, 10, 0.2);
   --focus: #b4530a;
@@ -52,7 +52,7 @@
 :root[data-theme="dark"] .markdown-body {
   --md-text: #d9dce1;
   --md-muted: #9aa0aa;
-  --md-faint: #6f7682;
+  --md-faint: #929aa6;
   --md-border: #343a44;
   --md-border-soft: #2a2f38;
   --md-surface: #20242b;
@@ -150,7 +150,7 @@ html, body {
 /* ---- Editor (CodeMirror) ---- */
 
 #editor-pane .cm-editor { height: 100%; background: transparent; color: var(--text); }
-#editor-pane .cm-editor.cm-focused { outline: none; }
+#editor-pane .cm-editor.cm-focused { outline: 2px solid var(--focus); outline-offset: -2px; }
 #editor-pane .cm-scroller {
   overflow: auto;
   font-family: var(--mono);
@@ -294,6 +294,14 @@ html, body {
 #view-switch button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 #view-switch svg { width: 14px; height: 12px; display: block; }
 
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media screen and (prefers-contrast: more) {
+  #app, dialog { --border: var(--text-muted); }
+  #divider { background: var(--text-muted); }
+  #app :focus-visible, dialog :focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+  #view-switch button[aria-pressed="true"] { outline: 2px solid currentColor; outline-offset: -2px; }
+}
+
 /* Slim scrollbars where the platform draws classic ones (Windows, Linux). */
 #preview-pane, #editor-pane .cm-scroller { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent; }
 
@@ -302,6 +310,12 @@ html, body {
   #editor-pane .cm-line { padding-inline: 10px; }
   #editor-pane .cm-textfield { min-width: 0; max-width: 100%; }
   #statusbar { gap: 5px; }
+  #notice.visible {
+    position: absolute; z-index: 3; bottom: 38px; left: 8px; right: 8px;
+    padding: 6px 10px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px; white-space: normal;
+    overflow-wrap: anywhere; pointer-events: none;
+  }
   #stats .optional { display: none; }
 }
 
@@ -318,7 +332,7 @@ html, body {
   :root[data-theme="dark"] .markdown-body {
     --md-text: #1f2328;
     --md-muted: #656d76;
-    --md-faint: #8c959f;
+    --md-faint: #626b75;
     --md-border: #d8dee4;
     --md-border-soft: #e8ebef;
     --md-surface: #f6f8fa;
