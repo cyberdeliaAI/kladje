@@ -21,7 +21,7 @@ async function app(initial = {}, configure = () => {}) {
   let text = "", change;
   const element = () => ({
     scrollTop: 0, scrollHeight: 100, clientHeight: 100, children: [], childNodes: [], dataset: {}, style: { setProperty() {} }, classList: { add() {}, remove() {}, toggle() {} },
-    firstElementChild: {}, content: { childNodes: [], querySelectorAll: () => [] }, append() {}, replaceChildren() {},
+    firstElementChild: {}, content: { childNodes: [], querySelectorAll: () => [] }, append() {}, replaceChildren(...nodes) { this.children = nodes; }, showModal() { this.open = true; }, close() { this.open = false; },
     attrs: {}, handlers: {}, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {},
     addEventListener(k,f) { this.handlers[k]=f; }, querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
   });
@@ -29,11 +29,13 @@ async function app(initial = {}, configure = () => {}) {
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
+    location: () => ({offset:0,top:1}), restoreLocation() {}, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
     getText: () => text, setText(v) { text = v; }, replaceText(v) { text = v; change(); },
     insertImage(relative) { text += " IMAGE " + relative; change(); },
     cursor: () => ({ line: 1, column: 1, lines: 1 }), scroller: element(), remeasure() {}, focus() {},
   };
   const api = {
+    window_bounds: () => null, set_recent_menu() {}, set_menu_checks() {},
     setup: () => ({ pendingOpen: disk.path }), take_pending_open: () => null, read_file: () => ({ ...disk }),
     file_version: () => disk.version, render: () => "", log_message: ({ message }) => { if (message === "ready") ready.resolve(); },
     recovery_list: () => [], recovery_clear() {}, recovery_write() {},
@@ -68,7 +70,7 @@ async function app(initial = {}, configure = () => {}) {
     pendingTimers.delete(entry[0]);
     return entry[1].fn();
   }
-  return { disk, api, calls, dialog, events, get, values, fire, rendered, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
+  return { disk, api, calls, dialog, events, get, values, fire, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
 }
 
 test("actual Save and Quit wait for outstanding I/O and retain later edits", async () => {
@@ -400,6 +402,98 @@ test("print annotations use external destinations and leave local document paths
   assert.deepEqual(links.map(link => link.href), ["https://example.com", "mailto:editor@example.org", "#part", null]);
   a.events.afterprint();
   assert.ok(links.every(link => link.href === "#"));
+});
+
+test("recent documents deduplicate, cap at ten, and clear paths and saved positions", async () => {
+  const a = await app({"kladje.recent": JSON.stringify(["/notes/old.md", "/notes/old.md", null])});
+  a.api.read_file = ({path}) => ({...a.disk, path, content:path});
+  for (let i = 0; i < 12; i++) {
+    a.dialog.open = () => "/notes/" + i + ".md";
+    await a.menu("open");
+  }
+  await a.menu("recent:/notes/4.md");
+  const paths = JSON.parse(a.values.get("kladje.recent"));
+  assert.equal(paths.length,10);
+  assert.equal(paths[0],"/notes/4.md");
+  assert.equal(new Set(paths).size,10);
+  a.edit("still editing");
+  await a.menu("clear_recent");
+  for (const key of ["recent","places","lastPath"]) assert.equal(a.values.has("kladje."+key), false);
+  assert.equal(a.text(),"still editing");
+  await a.menu("save");
+  assert.equal(a.disk.content, "still editing");
+  const restarted = await app(Object.fromEntries(a.values), ({api}) => { api.setup = () => ({}); });
+  assert.equal(restarted.text(), "");
+  assert.equal(restarted.values.has("kladje.recent"), false);
+});
+
+test("a missing recent file and a cancelled Locate keep dirty work and recovery", async () => {
+  const path = "/missing/note.md";
+  const a = await app({"kladje.recent": JSON.stringify([path])});
+  a.edit("unsaved text");
+  a.api.read_file = () => {throw Error("missing");};
+  a.api.file_version = () => null;
+  a.dialog.message = () => "Locate…";
+  a.dialog.open = () => null;
+  await a.menu("recent:"+path);
+  assert.ok(JSON.parse(a.values.get("kladje.recent")).includes(path));
+  a.dialog.message = () => "Remove from Recent";
+  await a.menu("recent:"+path);
+  assert.ok(!JSON.parse(a.values.get("kladje.recent")).includes(path));
+  assert.equal(a.text(),"unsaved text");
+  assert.equal(a.disk.content,"original");
+});
+
+test("Open Recent respects Cancel and only a confirmed Save As adds its new path", async () => {
+  const a = await app({"kladje.recent": JSON.stringify(["/notes/b.md"])});
+  a.api.read_file = ({path}) => ({...a.disk,path,content:"B"});
+  a.edit("A changed");
+  await a.menu("recent:/notes/b.md");
+  assert.equal(a.text(),"A changed");
+  a.dialog.save = () => "/notes/c.md"; a.api.file_version = () => null;
+  await a.menu("save_as");
+  assert.equal(JSON.parse(a.values.get("kladje.recent"))[0],"/notes/c.md");
+});
+
+test("invalid preferences fall back and toggles update storage and native checkmarks", async () => {
+  const a = await app({"kladje.zoom":'"invalid"', "kladje.split":"null", "kladje.wrap":'"no"', "kladje.gutter":"{}"});
+  assert.equal(a.values.get("kladje.zoom"),"1");
+  assert.equal(a.values.get("kladje.split"),"50");
+  await a.menu("gutter"); await a.menu("wrap");
+  await new Promise(done => setImmediate(done));
+  assert.equal(a.values.get("kladje.gutter"),"true");
+  assert.equal(a.values.get("kladje.wrap"),"false");
+  const last=a.calls.filter(([cmd]) => cmd==="set_menu_checks").at(-1)[1].checked;
+  assert.ok(last.includes("gutter") && !last.includes("wrap"));
+});
+
+test("remembered positions restore only for matching disk content", async () => {
+  const a = await app();
+  const restored=[];
+  a.view.location=()=>({offset:4,top:2});
+  a.view.restoreLocation=p=>restored.push(p.offset);
+  a.dialog.open=()=>"/notes/b.md";
+  a.api.read_file=({path})=>({...a.disk,path});
+  await a.menu("open");
+  await a.menu("recent:"+a.disk.path);
+  assert.deepEqual(restored,[4]);
+  await a.menu("open");
+  a.disk.version={...a.disk.version,digest:"replacement"};
+  await a.menu("recent:"+a.disk.path);
+  assert.equal(restored.length,2); // B was restored before changing A on disk.
+});
+
+test("heading search pages through repeated titles and filtering resets the page", async () => {
+  const a = await app();
+  a.api.document_headings = () => Array.from({length: 120}, (_, i) => ({level: 2, line: i + 1, text: i === 119 ? "Last" : "Repeated"}));
+  await a.menu("jump_heading");
+  assert.equal(a.get("heading-list").children.length, 100);
+  a.get("heading-next").handlers.click();
+  assert.equal(a.get("heading-list").children[0].value, 101);
+  a.get("heading-filter").value = "last";
+  a.get("heading-filter").handlers.input();
+  assert.equal(a.get("heading-list").children[0].value, 120);
+  assert.equal(a.get("heading-pages").hidden, true);
 });
 
 test("the document's accessible status follows dirty edits, saves and failed saves", async () => {

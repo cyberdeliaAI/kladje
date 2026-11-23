@@ -38,6 +38,16 @@
       </div>
     </footer>
   </div>
+  <dialog id="outline" aria-labelledby="outline-title">
+    <form id="heading-form">
+      <h2 id="outline-title">Jump to Heading</h2>
+      <input id="heading-filter" type="search" aria-label="Filter headings" placeholder="Filter headings" autofocus>
+      <select id="heading-list" size="8" aria-label="Document headings"></select>
+      <p id="heading-count" role="status"></p>
+      <div id="heading-pages" hidden><button type="button" id="heading-prev">Previous 100</button> <button type="button" id="heading-next">Next 100</button></div>
+      <div class="dialog-actions"><button type="button" id="heading-cancel">Cancel</button><button id="heading-go" type="submit">Go to Heading</button></div>
+    </form>
+  </dialog>
   <script src="vendor/editor.js"></script>
   <script src="document-session.js"></script>
   <script src="app.js"></script>

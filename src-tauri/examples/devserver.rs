@@ -233,6 +233,10 @@ fn invoke(
             "idPrefix": PREVIEW_ID_PREFIX,
             "pendingOpen": null,
         }),
+        "set_recent_menu" | "set_menu_checks" | "window_bounds" | "restore_window_bounds" => {
+            Value::Null
+        }
+        "document_headings" => json!(kladje::markdown::headings(&text("markdown"))?),
         "render" => json!(
             renderer
                 .render_document(
