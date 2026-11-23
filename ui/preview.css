@@ -4,7 +4,7 @@
 .markdown-body {
   --md-text: #1f2328;
   --md-muted: #656d76;
-  --md-faint: #8c959f;
+  --md-faint: #626b75;
   --md-border: #d8dee4;
   --md-border-soft: #e8ebef;
   --md-surface: #f6f8fa;
@@ -196,4 +196,10 @@
   .markdown-body .markdown-alert { break-inside: avoid; }
   .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { break-after: avoid; }
   .markdown-body a { color: inherit; }
+}
+
+
+@media screen and (prefers-contrast: more) {
+  .markdown-body a { text-decoration-color: currentColor; }
+  .markdown-body pre code span { color: inherit !important; }
 }
