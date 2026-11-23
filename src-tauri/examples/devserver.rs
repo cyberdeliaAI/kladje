@@ -7,15 +7,16 @@
 //! shim; drive them from the browser console through `window.__dev`:
 //!
 //!     __dev.menu("bold")                        // any menu item id
-//!     __dev.answers.open = "/path/to/file.md"   // what the next Open dialog returns
-//!     __dev.answers.save = "/tmp/out.md"
+//!     __dev.answers.open = "note.md"   // what the next Open dialog returns
+//!     __dev.answers.save = "out.md"
 //!     __dev.answers.message = "Don't Save"      // answer to the unsaved-changes prompt
 //!
 //! Not part of the shipped application. It only listens on 127.0.0.1.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use kladje::markdown::{Renderer, Target, PREVIEW_ID_PREFIX};
 use kladje::recovery::Recovery;
@@ -49,7 +50,6 @@ const SHIM: &str = r#"
         if (cmd === "log_message") { note("log", args.message); console.log("[ui]", args.message); return Promise.resolve(); }
         return call(cmd, args);
       },
-      convertFileSrc: (path) => "/__file?path=" + encodeURIComponent(path),
     },
     event: { listen: async (name, cb) => { handlers[name] = cb; return () => {}; } },
     dialog: {
@@ -76,14 +76,27 @@ fn main() {
     let renderer = Renderer::new();
     let profile = tempfile::tempdir().expect("create private development profile");
     let mut recovery = Recovery::new(profile.path().join("recovery-v1"));
+    let fixtures = profile.path().join("documents");
+    std::fs::create_dir(&fixtures).expect("create fixture folder");
+    println!("Development documents: {}", fixtures.display());
     let port = std::env::args().nth(1).unwrap_or_else(|| "4777".into());
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).expect("port in use");
     println!("Kladje dev server on http://127.0.0.1:{port}");
     for stream in listener.incoming().flatten() {
-        if let Err(e) = handle(stream, &ui, &renderer, &mut recovery) {
+        if let Err(e) = handle(stream, &ui, &renderer, &mut recovery, &fixtures) {
             eprintln!("request failed: {e}");
         }
     }
+}
+
+fn request_allowed(authority: &str, method: &str, host: &str, origin: &str, length: usize) -> bool {
+    host == authority
+        && length <= 16 * 1024 * 1024
+        && match method {
+            "GET" => length == 0,
+            "POST" => origin == format!("http://{authority}"),
+            _ => false,
+        }
 }
 
 fn handle(
@@ -91,29 +104,54 @@ fn handle(
     ui: &Path,
     renderer: &Renderer,
     recovery: &mut Recovery,
+    fixtures: &Path,
 ) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let authority = stream.local_addr()?.to_string();
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
+    (&mut reader).take(8192).read_line(&mut request_line)?;
+    if !request_line.ends_with('\n') {
+        return Ok(());
+    }
     let mut parts = request_line.split_whitespace();
     let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or("/"));
 
     let mut length = 0usize;
+    let mut host = String::new();
+    let mut origin = String::new();
+    let mut header_size = 0;
     loop {
         let mut header = String::new();
-        if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
+        header_size += (&mut reader).take(8192).read_line(&mut header)?;
+        if header_size > 32768 || !header.ends_with('\n') {
+            return Ok(());
+        }
+        if header.trim().is_empty() {
             break;
         }
         if let Some((name, value)) = header.split_once(':') {
+            if name.eq_ignore_ascii_case("host") {
+                host = value.trim().to_owned();
+            }
+            if name.eq_ignore_ascii_case("origin") {
+                origin = value.trim().to_owned();
+            }
             if name.eq_ignore_ascii_case("content-length") {
                 length = value.trim().parse().unwrap_or(0);
             }
         }
     }
+    if !request_allowed(&authority, method, &host, &origin, length) {
+        let mut stream = stream;
+        return stream.write_all(
+            b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        );
+    }
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body)?;
 
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let (path, _) = target.split_once('?').unwrap_or((target, ""));
     let (status, mime, bytes): (&str, &str, Vec<u8>) = if method == "POST" {
         let args: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
         let reply = match invoke(
@@ -121,6 +159,7 @@ fn handle(
             &args,
             renderer,
             recovery,
+            fixtures,
         ) {
             Ok(value) => json!({ "ok": value }),
             Err(message) => json!({ "err": message }),
@@ -128,12 +167,6 @@ fn handle(
         ("200 OK", "application/json", reply.to_string().into_bytes())
     } else if path == "/__dev/shim.js" {
         ("200 OK", "text/javascript", SHIM.as_bytes().to_vec())
-    } else if path == "/__file" {
-        let file = percent_decode(query.trim_start_matches("path="));
-        match std::fs::read(&file) {
-            Ok(bytes) => ("200 OK", mime_of(Path::new(&file)), bytes),
-            Err(_) => ("404 Not Found", "text/plain", b"not found".to_vec()),
-        }
     } else {
         let relative = if path == "/" {
             "index.html"
@@ -146,7 +179,14 @@ fn handle(
             .ok()
             .zip(ui.canonicalize().ok())
             .is_some_and(|(f, u)| f.starts_with(u));
-        match (inside, std::fs::read(&file)) {
+        match (
+            inside,
+            if inside {
+                std::fs::read(&file)
+            } else {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            },
+        ) {
             (true, Ok(bytes)) if relative == "index.html" => {
                 let html = String::from_utf8_lossy(&bytes).replace(
                     "<script src=\"vendor/editor.js\">",
@@ -162,7 +202,7 @@ fn handle(
     let mut stream = stream;
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data: https:; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\nConnection: close\r\n\r\n",
         bytes.len()
     )?;
     stream.write_all(&bytes)
@@ -173,6 +213,7 @@ fn invoke(
     args: &Value,
     renderer: &Renderer,
     recovery: &mut Recovery,
+    fixtures: &Path,
 ) -> Result<Value, String> {
     let text = |key: &str| {
         args.get(key)
@@ -180,6 +221,11 @@ fn invoke(
             .unwrap_or("")
             .to_string()
     };
+    let path = |key| fixture_path(fixtures, &text(key));
+    let source = args["source"]
+        .as_str()
+        .map(|s| fixture_path(fixtures, s))
+        .transpose()?;
     Ok(match command {
         "setup" => json!({
             "syntaxCssLight": renderer.syntax_css_light,
@@ -187,7 +233,21 @@ fn invoke(
             "idPrefix": PREVIEW_ID_PREFIX,
             "pendingOpen": null,
         }),
-        "render" => json!(renderer.render(&text("markdown"), Target::Preview)),
+        "render" => json!(
+            renderer
+                .render_document(
+                    &text("markdown"),
+                    Target::Preview,
+                    source.as_deref(),
+                    args["remote"].as_bool().unwrap_or(false)
+                )?
+                .html
+        ),
+        "insert_image" => json!(kladje::images::insert_path(
+            &path("source")?,
+            &path("image")?,
+            args["copy"].as_bool().unwrap_or(false)
+        )?),
         "recovery_list" => json!(recovery.list().map_err(|e| e.to_string())?),
         "recovery_claim" => json!(recovery.claim(&text("id")).map_err(|e| e.to_string())?),
         "recovery_clear" => json!(recovery.clear(&text("id")).map_err(|e| e.to_string())?),
@@ -196,29 +256,30 @@ fn invoke(
             recovery.write(draft).map_err(|e| e.to_string())?;
             Value::Null
         }
-        "read_file" => json!(fileio::open_document(Path::new(&text("path")))?),
+        "read_file" => json!(fileio::open_document(&path("path")?)?),
         "write_file" => {
             let expected: Option<storage::Version> =
                 serde_json::from_value(args["expected"].clone()).map_err(|e| e.to_string())?;
             let format =
                 serde_json::from_value(args["format"].clone()).map_err(|e| e.to_string())?;
             json!(fileio::write_document(
-                Path::new(&text("path")),
+                &path("path")?,
                 &text("content"),
                 &format,
                 expected.as_ref()
             )?)
         }
-        "file_version" => json!(storage::version(Path::new(&text("path")))?),
-        "import_file" => json!(import::import(Path::new(&text("path")))?),
+        "file_version" => json!(storage::version(&path("path")?)?),
+        "import_file" => json!(import::import(&path("path")?)?),
         "export_html" => {
-            let html = export::standalone_html(renderer, &text("markdown"), &text("title"));
             let expected: Option<storage::Version> =
                 serde_json::from_value(args["expected"].clone()).map_err(|e| e.to_string())?;
-            json!(export::write_html(
-                Path::new(&text("path")),
-                &html,
-                args["source"].as_str().map(Path::new),
+            json!(export::export_document(
+                renderer,
+                &path("path")?,
+                &text("markdown"),
+                &text("title"),
+                source.as_deref(),
                 expected.as_ref()
             )?)
         }
@@ -227,23 +288,18 @@ fn invoke(
     })
 }
 
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() + 1 && i + 3 <= bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
-            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
+fn fixture_path(root: &Path, name: &str) -> Result<PathBuf, String> {
+    let path = Path::new(name);
+    let name = path.strip_prefix(root).unwrap_or(path);
+    let mut parts = name.components();
+    let Some(Component::Normal(file)) = parts.next() else {
+        return Err("Choose a file in the development documents folder.".into());
+    };
+    let path = root.join(file);
+    if parts.next().is_some() || path.is_symlink() {
+        return Err("Use a direct, non-linked fixture file.".into());
     }
-    String::from_utf8_lossy(&out).into_owned()
+    Ok(path)
 }
 
 fn mime_of(path: &Path) -> &'static str {
@@ -258,5 +314,57 @@ fn mime_of(path: &Path) -> &'static str {
         "svg" => "image/svg+xml",
         "webp" => "image/webp",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn development_requests_require_the_bound_authority_and_origin() {
+        let host = "127.0.0.1:4777";
+        assert!(request_allowed(host, "GET", host, "", 0));
+        assert!(request_allowed(
+            host,
+            "POST",
+            host,
+            "http://127.0.0.1:4777",
+            50
+        ));
+        assert!(!request_allowed(host, "GET", "another.test", "", 0));
+        assert!(!request_allowed(
+            host,
+            "POST",
+            host,
+            "https://another.test",
+            50
+        ));
+        assert!(!request_allowed(host, "POST", host, "", 50));
+        assert!(!request_allowed(
+            host,
+            "POST",
+            host,
+            "http://127.0.0.1:4777",
+            17 * 1024 * 1024
+        ));
+    }
+
+    #[test]
+    fn file_commands_accept_only_direct_fixture_children() {
+        let root = tempfile::tempdir().unwrap();
+        let local = root.path().join("sample note.md");
+        assert_eq!(fixture_path(root.path(), "sample note.md").unwrap(), local);
+        assert_eq!(
+            fixture_path(root.path(), local.to_str().unwrap()).unwrap(),
+            local
+        );
+        for path in ["", "../outside.txt", "/elsewhere.txt", "nested/file.md"] {
+            assert!(fixture_path(root.path(), path).is_err());
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&local, root.path().join("linked.md")).unwrap();
+            assert!(fixture_path(root.path(), "linked.md").is_err());
+        }
     }
 }

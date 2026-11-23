@@ -7,6 +7,7 @@
     "test": "node --test tests",
     "dev": "tauri dev",
     "build": "tauri build",
+    "build:brand": "node scripts/build-brand.mjs",
     "build:editor": "esbuild editor-src/editor.entry.js --bundle --minify --format=iife --target=es2020 --outfile=ui/vendor/editor.js",
     "tauri": "tauri"
   },

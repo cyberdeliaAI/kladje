@@ -1669,12 +1669,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-range"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2149c4b4b83390c71fab669730347d578ec6bdf759f2160c581ad8b8819733b4"
-
-[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2158,9 +2152,14 @@ name = "kladje"
 version = "0.1.0"
 dependencies = [
  "ammonia",
+ "base64 0.21.7",
  "comrak",
  "htmd",
  "libc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-web-kit",
+ "percent-encoding",
  "pulldown-latex",
  "quick-xml",
  "serde",
@@ -2173,6 +2172,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "two-face",
+ "url",
  "windows-sys 0.61.2",
  "zip",
 ]
@@ -3872,7 +3872,6 @@ dependencies = [
  "gtk",
  "heck 0.5.0",
  "http",
- "http-range",
  "jni",
  "libc",
  "log",

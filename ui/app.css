@@ -7,8 +7,8 @@
   --bg-editor: #fbfaf7;
   --bg-chrome: #f4f2ee;
   --text: #22262b;
-  --text-muted: #6d7178;
-  --text-faint: #9a9da3;
+  --text-muted: #60656c;
+  --text-faint: #626871;
   --border: #e3dfd8;
   --accent: #b4530a;
   --accent-soft: rgba(180, 83, 10, 0.14);
@@ -16,10 +16,10 @@
   --focus: #b4530a;
   /* editor tokens */
   --ed-heading: #16191d;
-  --ed-mark: #a3a6ad;
+  --ed-mark: #626871;
   --ed-link: #0b62c4;
   --ed-code: #8a4b08;
-  --ed-quote: #5c7a5f;
+  --ed-quote: #506a52;
   --ed-meta: #7c5cc4;
   --ed-html: #96690f;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas,
@@ -34,14 +34,14 @@
   --bg-chrome: #14161a;
   --text: #d9dce1;
   --text-muted: #9197a1;
-  --text-faint: #666c76;
+  --text-faint: #9aa1ac;
   --border: #2b3038;
   --accent: #e9a23b;
   --accent-soft: rgba(233, 162, 59, 0.16);
   --selection: rgba(233, 162, 59, 0.24);
   --focus: #e9a23b;
   --ed-heading: #f1f3f5;
-  --ed-mark: #5f6570;
+  --ed-mark: #959ca8;
   --ed-link: #6cb0ff;
   --ed-code: #e9b872;
   --ed-quote: #8fb894;
@@ -109,6 +109,24 @@ html, body {
   -webkit-user-select: text;
 }
 
+.empty-wordmark { display: none; }
+@media screen {
+  #preview-pane { position: relative; }
+  #preview:empty + .empty-wordmark {
+    display: block;
+    position: absolute;
+    top: 25%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(150px, 70%);
+    height: auto;
+    padding: 10px 16px;
+    border-radius: 5px;
+    background: #fffcf7;
+    pointer-events: none;
+  }
+}
+
 #divider {
   flex: 0 0 1px;
   position: relative;
@@ -117,6 +135,8 @@ html, body {
   z-index: 2;
 }
 #divider::after { content: ""; position: absolute; inset: 0 -4px; }
+#divider:focus-visible { outline: 2px solid var(--focus); }
+.asset-missing { color: var(--text-muted); font-style: italic; }
 #divider:hover, #divider.dragging { background: var(--accent); }
 
 #app[data-view="editor"] #preview-pane,
@@ -229,7 +249,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 14px;
-  height: 28px;
+  height: 34px;
   padding: 0 8px 0 12px;
   background: var(--bg-chrome);
   border-top: 1px solid var(--border);
@@ -260,8 +280,8 @@ html, body {
 #view-switch button {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 18px;
+  width: 30px;
+  height: 26px;
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -278,13 +298,17 @@ html, body {
 #preview-pane, #editor-pane .cm-scroller { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent; }
 
 @media (max-width: 640px) {
+  #preview { padding-inline: 12px; }
+  #editor-pane .cm-line { padding-inline: 10px; }
+  #editor-pane .cm-textfield { min-width: 0; max-width: 100%; }
+  #statusbar { gap: 5px; }
   #stats .optional { display: none; }
 }
 
 /* ---- Printing / PDF: only the rendered document, always on white ---- */
 
 @media print {
-  @page { margin: 18mm 16mm; }
+  /* The system print operation owns page margins and pagination. */
   html, body { height: auto; overflow: visible; background: #fff; }
   #app { display: block; height: auto; }
   #panes { display: block; }
