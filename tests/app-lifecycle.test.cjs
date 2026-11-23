@@ -662,3 +662,22 @@ test("a native toggle behind a modal restores its actual checked state", async (
   assert.ok(!last[1].checked.includes("gutter"));
   assert.ok(!a.values.has("kladje.gutter"));
 });
+
+test("unsupported volume copy needs consent and acknowledges only its saved revision", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  a.edit("version one");
+  a.api.write_file = () => { throw "KLADJE_COPY_REQUIRED"; };
+  await a.menu("save");
+  assert.ok(!a.calls.some(([cmd]) => cmd === "save_protected_copy"));
+  a.dialog.ask = () => true;
+  a.api.save_protected_copy = async args => {
+    assert.equal(args.content, "version one"); started.resolve(); await finish.promise;
+    return {confirmed:true,version:{target:"/notes/Kladje Copy abc/a.md",digest:"new"}};
+  };
+  const pending = a.menu("save"); await started.promise;
+  a.edit("version two"); finish.resolve(); await pending;
+  assert.equal(a.text(), "version two");
+  assert.equal(a.disk.content, "original");
+  assert.match(a.get("doc-name").title, /Kladje Copy abc/);
+  assert.match(a.get("doc-name").title, /edited/);
+});
