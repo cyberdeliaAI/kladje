@@ -14,6 +14,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kladje-p1-"));
 const id = "app.kladje.qa." + path.basename(tmp).replaceAll("-", "").toLowerCase();
 const ui = path.join(tmp, "ui");
 const result = path.join(tmp, "result.txt");
+const probeWindows = process.argv.includes("--windows");
 fs.cpSync(path.join(root, "ui"), ui, { recursive: true });
 const html = path.join(ui, "index.html");
 fs.writeFileSync(
@@ -27,7 +28,7 @@ fs.writeFileSync(
   "window.qaResultPath=" +
     JSON.stringify(result) +
     ";\nwindow.qaPaste = " + process.argv.includes("--paste") + ";\n" +
-    fs.readFileSync(new URL("webview.js", import.meta.url), "utf8"),
+    fs.readFileSync(new URL(probeWindows ? "window-probe.js" : "webview.js", import.meta.url), "utf8"),
 );
 fs.copyFileSync(path.join(root, "src-tauri/icons/32x32.png"), path.join(tmp, "figure.png"));
 const fixture = path.join(tmp, "start.md");
@@ -67,6 +68,15 @@ config.identifier = id;
 config.productName = "Kladje P1 QA";
 config.build.frontendDist = ui;
 config.app.windows[0].incognito = true;
+if (probeWindows) {
+  // Only the disposable bundle receives a second window and an extra capability.
+  config.app.windows[0].tabbingIdentifier = id;
+  config.app.windows.push({...config.app.windows[0], label:"qa-peer"});
+  const access = JSON.parse(fs.readFileSync(path.join(root,"src-tauri/capabilities/default.json")));
+  config.app.security.capabilities = ["default", {
+    identifier:"qa-peer-local", windows:["qa-peer"], permissions:access.permissions,
+  }];
+}
 const override = path.join(tmp, "config.json");
 fs.writeFileSync(override, JSON.stringify(config));
 const build = spawnSync(
@@ -105,6 +115,32 @@ function sample() {
 try {
   while (!fs.existsSync(result) && child.exitCode === null && Date.now() - started < 180000) {
     sample();
+    if (probeWindows && hostPid && !fs.existsSync(result+".routed.txt") &&
+        ["main","qa-peer"].every(label => fs.existsSync(result+"."+label+".ready.txt"))) {
+      const click = spawnSync("osascript", ["-e", `on run argv
+        tell application "System Events"
+          set proc to first application process whose unix id is (item 1 of argv as integer)
+          tell proc
+            set frontmost to true
+            set activeName to name of window 1
+            click menu item "Bold" of menu "Format" of menu bar item "Format" of menu bar 1
+            return activeName
+          end tell
+        end tell
+      end run`,String(hostPid)], {encoding:"utf8", timeout:5000});
+      if (click.status !== 0) throw Error(click.stderr);
+      await delay(700);
+      fs.writeFileSync(result+".routed.txt",click.stdout.trim());
+    }
+    if (probeWindows && ["main","qa-peer"].every(label => fs.existsSync(result+"."+label+".observed.txt"))) {
+      const windows = ["main","qa-peer"].map(label => JSON.parse(fs.readFileSync(result+"."+label+".observed.txt")));
+      const active = fs.readFileSync(result+".routed.txt","utf8");
+      if (!windows.some(w => active === "Window probe "+w.label) || !windows.every(w =>
+        w.undoIsolated && w.ready && w.afterNativeBold === (active === "Window probe "+w.label ? "****" : "")+w.label)) {
+        throw Error("Native menu routing or undo isolation failed: "+JSON.stringify({active,windows}));
+      }
+      fs.writeFileSync(result, JSON.stringify({checks:["Native menu changed only the focused draft","Independent CodeMirror undo"], windows}));
+    }
     if (!pasteAccepted && hostPid && fs.existsSync(result + ".paste.txt")) {
       // Act only on Save Image in the isolated QA process. No keystrokes,
       // clipboard changes or interaction with the installed application.
@@ -152,7 +188,7 @@ try {
   }
   await delay(1500);
   idle = sample();
-  report.launchToEditableMs = report.readyEpochMs - started;
+  if (report.readyEpochMs) report.launchToEditableMs = report.readyEpochMs - started;
   report.peakSampledRssKiB = peak;
   report.settledRssKiB = idle;
   if (!idle.host || !idle["com.apple.WebKit.WebContent"]) throw Error("Missing app or WebKit memory sample");

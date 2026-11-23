@@ -270,8 +270,33 @@ fn log_message(message: String) {
 }
 
 #[tauri::command]
-fn quit(app: AppHandle) {
-    app.exit(0);
+fn quit(window: WebviewWindow) -> Result<(), String> {
+    if window.app_handle().webview_windows().len() > 1 {
+        return Err("Close the other document windows before quitting.".into());
+    }
+    window.app_handle().exit(0);
+    Ok(())
+}
+
+// Choosing a native menu item can temporarily remove keyboard focus. With a
+// sole document the destination is unambiguous. With several, never guess.
+fn route_menu(app: &AppHandle, id: &str) {
+    let windows = app.webview_windows();
+    let target = if windows.len() == 1 {
+        windows.values().next()
+    } else {
+        windows
+            .values()
+            .find(|window| window.is_focused().unwrap_or(false))
+    };
+    if let Some(window) = target {
+        let command = if id == "quit" && windows.len() > 1 {
+            "close_others_before_quit"
+        } else {
+            id
+        };
+        let _ = app.emit_to(window.label(), "menu", command);
+    }
 }
 
 struct CheckItems(Vec<CheckMenuItem<tauri::Wry>>);
@@ -583,7 +608,7 @@ fn main() {
             Ok(())
         })
         .on_menu_event(|app, event| {
-            let _ = app.emit("menu", event.id().0.as_str());
+            route_menu(app, event.id().0.as_str());
         })
         .invoke_handler(tauri::generate_handler![
             setup,
@@ -623,9 +648,9 @@ fn main() {
             code: None, api, ..
         } = &event
         {
-            if app.get_webview_window("main").is_some() {
+            if !app.webview_windows().is_empty() {
                 api.prevent_exit();
-                let _ = app.emit("menu", "quit");
+                route_menu(app, "quit");
             }
         }
         // macOS delivers "open this document" as an event, not as an argument.

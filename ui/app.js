@@ -1298,6 +1298,7 @@
     }),
     jump_heading: jumpToHeading,
     settings: () => settings.showModal(),
+    close_others_before_quit: () => notify("Close each document window before quitting.", 12000),
     close_window: () => runFileAction(() => finishClose(() => appWindow.destroy())),
     reveal: () => doc.path ? invoke("reveal_document", {path:doc.path}) : notify("Save this document first to reveal it."),
     fold: () => editor.fold(),
@@ -1435,7 +1436,7 @@
       catch (error) { store.remove("bounds"); report(error); }
     }
     const initialDocument = runFileAction(openInitialDocument);
-    await T.event.listen("menu", (event) => runAction(event.payload));
+    await T.event.listen("menu", (event) => runAction(event.payload), {target:appWindow.label});
     const drainOpenRequests = () => runFileAction(async () => {
       let path;
       while ((path = await invoke("take_pending_open"))) await tryOpen(path);
