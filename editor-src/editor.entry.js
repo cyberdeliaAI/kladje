@@ -20,7 +20,7 @@ import {
   undo,
   redo,
 } from "@codemirror/commands";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { markdown, markdownLanguage, deleteMarkupBackward, insertNewlineContinueMarkupCommand } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, indentUnit } from "@codemirror/language";
 import { search, searchKeymap, openSearchPanel, highlightSelectionMatches } from "@codemirror/search";
 import { tags as t, tagHighlighter } from "@lezer/highlight";
@@ -66,12 +66,16 @@ function create(parent, options = {}) {
     EditorState.tabSize.of(4),
     indentUnit.of("    "),
     EditorView.lineWrapping,
-    markdown({ base: markdownLanguage }),
+    markdown({ base: markdownLanguage, addKeymap: false }),
+    keymap.of([
+      { key: "Enter", run: insertNewlineContinueMarkupCommand({ nonTightLists: false }) },
+      { key: "Backspace", run: deleteMarkupBackward },
+    ]),
     syntaxHighlighting(highlighter),
     search({ top: true }),
     placeholder(placeholderText),
     keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
-    EditorView.contentAttributes.of({ spellcheck: "true", autocorrect: "off", autocapitalize: "off" }),
+    EditorView.contentAttributes.of({ "aria-label": "Markdown source editor", spellcheck: "true", autocorrect: "off", autocapitalize: "off" }),
     EditorView.updateListener.of((update) => {
       if (update.docChanged && onChange) onChange();
       if ((update.selectionSet || update.docChanged) && onSelection) onSelection();
@@ -86,7 +90,7 @@ function create(parent, options = {}) {
 
   const lineRange = (state, range) => ({
     first: state.doc.lineAt(range.from).number,
-    last: state.doc.lineAt(range.to).number,
+    last: state.doc.lineAt(range.empty ? range.to : range.to - 1).number,
   });
 
   // Apply `edit(line) -> newText | null` to every line touched by the selection.
@@ -237,6 +241,14 @@ function create(parent, options = {}) {
           kind === "bullet" ? "- " : kind === "task" ? "- [ ] " : kind === "numbered" ? `${index + 1}. ` : "> ";
         return indent + marker + body;
       });
+    },
+
+    insertImage(relative) {
+      const url = relative.split("/").map(part => encodeURIComponent(part).replace(/[()]/g, c => "%" + c.charCodeAt(0).toString(16))).join("/");
+      const {from,to} = view.state.selection.main;
+      const label = "Image description";
+      view.dispatch({changes: {from,to,insert: `![${label}](${url})`}, selection: EditorSelection.range(from+2,from+2+label.length), userEvent: "input"});
+      view.focus();
     },
 
     /** Insert a link; the part the user most likely wants to type is selected. */

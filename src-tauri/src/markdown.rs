@@ -1,15 +1,14 @@
 //! Markdown → HTML rendering.
 //!
 //! Pipeline: comrak (CommonMark + GFM + extensions) → syntect for fenced code →
-//! ammonia to sanitise raw HTML → pulldown-latex for math (MathML, no JavaScript).
+//! pulldown-latex for MathML → final HTML/MathML sanitation and image policy.
 //!
-//! Everything the preview shows goes through the sanitiser, so opening an
-//! untrusted `.md` file can never run script inside the app.
-
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::{self, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use comrak::adapters::{SyntaxHighlightMeta, SyntaxHighlighterAdapter};
 use comrak::nodes::NodeValue;
@@ -23,17 +22,12 @@ use two_face::theme::EmbeddedThemeName;
 const HL_STYLE: ClassStyle = ClassStyle::SpacedPrefixed { prefix: "hl-" };
 /// Code blocks larger than this are shown without highlighting to stay fast.
 const MAX_HIGHLIGHT_BYTES: usize = 256 * 1024;
-/// Private-use characters that bracket a math placeholder while sanitising.
-const MATH_OPEN: char = '\u{E000}';
-const MATH_CLOSE: char = '\u{E001}';
 /// Prefix ammonia puts on every `id` in the preview so document content cannot
 /// shadow the app's own element ids.
 pub const PREVIEW_ID_PREFIX: &str = "uc-";
 
 pub struct Renderer {
     syntaxes: SyntaxSet,
-    preview_sanitizer: ammonia::Builder<'static>,
-    export_sanitizer: ammonia::Builder<'static>,
     pub syntax_css_light: String,
     pub syntax_css_dark: String,
 }
@@ -47,16 +41,26 @@ pub enum Target {
     Export,
 }
 
+#[derive(serde::Serialize)]
+pub struct Rendered {
+    pub html: String,
+    pub omitted: usize,
+}
+
+struct ImageUsage {
+    remaining: usize,
+    images: usize,
+    attempts: usize,
+    accepted: usize,
+}
+
 impl Renderer {
     pub fn new() -> Self {
         let themes = two_face::theme::extra();
-        let css = |name| {
-            css_for_theme_with_class_style(themes.get(name), HL_STYLE).unwrap_or_default()
-        };
+        let css =
+            |name| css_for_theme_with_class_style(themes.get(name), HL_STYLE).unwrap_or_default();
         Renderer {
             syntaxes: two_face::syntax::extra_newlines(),
-            preview_sanitizer: sanitizer(Some(PREVIEW_ID_PREFIX)),
-            export_sanitizer: sanitizer(None),
             syntax_css_light: css(EmbeddedThemeName::Github),
             syntax_css_dark: css(EmbeddedThemeName::OneHalfDark),
         }
@@ -66,55 +70,58 @@ impl Renderer {
     /// on some input, the error is shown in the preview instead of taking the
     /// editor (and unsaved text) down with it.
     pub fn render(&self, markdown: &str, target: Target) -> String {
-        match catch_unwind(AssertUnwindSafe(|| self.render_inner(markdown, target))) {
-            Ok(html) => html,
-            Err(_) => "<div class=\"markdown-alert markdown-alert-caution\">\
-                       <p class=\"markdown-alert-title\">Preview unavailable</p>\
-                       <p>This document could not be rendered. Your text is unaffected.</p></div>"
-                .to_string(),
-        }
+        self.render_document(markdown, target, None, false)
+            .map(|r| r.html)
+            .unwrap_or_else(|e| format!("<p>{}</p>", escaped(&e)))
     }
 
-    fn render_inner(&self, markdown: &str, target: Target) -> String {
-        // The placeholder characters must not occur in the source itself.
-        let source: Cow<str> = if markdown.contains([MATH_OPEN, MATH_CLOSE]) {
-            Cow::Owned(markdown.replace([MATH_OPEN, MATH_CLOSE], ""))
-        } else {
-            Cow::Borrowed(markdown)
-        };
+    pub fn render_document(
+        &self,
+        markdown: &str,
+        target: Target,
+        source: Option<&Path>,
+        remote: bool,
+    ) -> Result<Rendered, String> {
+        catch_unwind(AssertUnwindSafe(|| {
+            self.render_inner(markdown, target, source, remote)
+        }))
+        .map_err(|_| "Preview unavailable. Your source is still open.".to_owned())?
+    }
 
+    fn render_inner(
+        &self,
+        markdown: &str,
+        target: Target,
+        source: Option<&Path>,
+        remote: bool,
+    ) -> Result<Rendered, String> {
         let opts = comrak_options(target);
         let arena = Arena::new();
-        let root = parse_document(&arena, &source, &opts);
+        let root = parse_document(&arena, markdown, &opts);
 
-        // Swap math nodes for placeholders; the MathML is inserted after sanitising.
-        let mut math: Vec<String> = Vec::new();
         for node in root.descendants() {
             let mut ast = node.data_mut();
+            if !matches!(
+                ast.value,
+                NodeValue::Math(_) | NodeValue::MathBlock(_) | NodeValue::CodeBlock(_)
+            ) {
+                continue;
+            }
             let pos = if target == Target::Preview {
                 format!(" data-sourcepos=\"{}\"", ast.sourcepos)
             } else {
                 String::new()
             };
             let replacement = match &ast.value {
-                NodeValue::Math(m) => {
-                    math.push(latex_to_mathml(&m.literal, m.display_math));
-                    Some(format!("{MATH_OPEN}{}{MATH_CLOSE}", math.len() - 1))
-                }
-                NodeValue::MathBlock(b) => {
-                    math.push(latex_to_mathml(&b.literal, true));
-                    Some(format!(
-                        "<div class=\"math-block\"{pos}>{MATH_OPEN}{}{MATH_CLOSE}</div>\n",
-                        math.len() - 1
-                    ))
-                }
-                NodeValue::CodeBlock(cb) if is_math_fence(&cb.info) => {
-                    math.push(latex_to_mathml(&cb.literal, true));
-                    Some(format!(
-                        "<div class=\"math-block\"{pos}>{MATH_OPEN}{}{MATH_CLOSE}</div>\n",
-                        math.len() - 1
-                    ))
-                }
+                NodeValue::Math(m) => Some(latex_to_mathml(&m.literal, m.display_math)),
+                NodeValue::MathBlock(m) => Some(format!(
+                    "<div class=\"math-block\"{pos}>{}</div>\n",
+                    latex_to_mathml(&m.literal, true)
+                )),
+                NodeValue::CodeBlock(cb) if is_math_fence(&cb.info) => Some(format!(
+                    "<div class=\"math-block\"{pos}>{}</div>\n",
+                    latex_to_mathml(&cb.literal, true)
+                )),
                 _ => None,
             };
             if let Some(raw) = replacement {
@@ -122,21 +129,36 @@ impl Renderer {
             }
         }
 
-        let highlighter = Highlighter { syntaxes: &self.syntaxes };
+        let highlighter = Highlighter {
+            syntaxes: &self.syntaxes,
+        };
         let mut plugins = options::Plugins::default();
         plugins.render.codefence_syntax_highlighter = Some(&highlighter);
 
-        let mut html = String::with_capacity(source.len() * 2);
-        if format_html_with_plugins(root, &opts, &mut html, &plugins).is_err() {
-            return String::new();
-        }
-
-        let sanitizer = match target {
-            Target::Preview => &self.preview_sanitizer,
-            Target::Export => &self.export_sanitizer,
-        };
-        let clean = sanitizer.clean(&html).to_string();
-        insert_math(&clean, &math)
+        let mut html = String::with_capacity(markdown.len() * 2);
+        format_html_with_plugins(root, &opts, &mut html, &plugins)
+            .map_err(|_| "Could not format Markdown.")?;
+        let usage = Arc::new(Mutex::new(ImageUsage {
+            remaining: crate::images::DOCUMENT_IMAGE_LIMIT,
+            images: 0,
+            attempts: 0,
+            accepted: 0,
+        }));
+        let prefix = (target == Target::Preview).then_some(PREVIEW_ID_PREFIX);
+        let clean = sanitizer(
+            prefix,
+            source.map(Path::to_owned),
+            remote && target == Target::Preview,
+            usage.clone(),
+        )
+        .clean(&html)
+        .to_string();
+        let counts = usage.lock().unwrap();
+        let omitted = counts.images.saturating_sub(counts.accepted);
+        Ok(Rendered {
+            html: clean,
+            omitted,
+        })
     }
 
     /// First level-1 heading of the document, used as the title of an export.
@@ -144,9 +166,9 @@ impl Renderer {
         let opts = comrak_options(Target::Export);
         let arena = Arena::new();
         let root = parse_document(&arena, markdown, &opts);
-        let heading = root.children().find(|n| {
-            matches!(&n.data().value, NodeValue::Heading(h) if h.level == 1)
-        })?;
+        let heading = root
+            .children()
+            .find(|n| matches!(&n.data().value, NodeValue::Heading(h) if h.level == 1))?;
         let text = heading.collect_text();
         let text = text.trim();
         (!text.is_empty()).then(|| text.to_string())
@@ -219,7 +241,10 @@ impl SyntaxHighlighterAdapter for Highlighter<'_> {
         let mut generator =
             ClassedHTMLGenerator::new_with_class_style(syntax, self.syntaxes, HL_STYLE);
         for line in LinesWithEndings::from(code) {
-            if generator.parse_html_for_line_which_includes_newline(line).is_err() {
+            if generator
+                .parse_html_for_line_which_includes_newline(line)
+                .is_err()
+            {
                 return escape_html(output, code);
             }
         }
@@ -291,7 +316,11 @@ fn latex_to_mathml(latex: &str, display: bool) -> String {
     let storage = pulldown_latex::Storage::new();
     let parser = pulldown_latex::Parser::new(latex, &storage);
     let config = RenderConfig {
-        display_mode: if display { DisplayMode::Block } else { DisplayMode::Inline },
+        display_mode: if display {
+            DisplayMode::Block
+        } else {
+            DisplayMode::Inline
+        },
         ..RenderConfig::default()
     };
     let mut out = String::new();
@@ -301,42 +330,35 @@ fn latex_to_mathml(latex: &str, display: bool) -> String {
     }
 }
 
-/// Replace `MATH_OPEN n MATH_CLOSE` placeholders with the rendered MathML.
-fn insert_math(html: &str, math: &[String]) -> String {
-    if math.is_empty() {
-        return html.to_string();
-    }
-    let mut out = String::with_capacity(html.len() + math.iter().map(String::len).sum::<usize>());
-    let mut rest = html;
-    while let Some(start) = rest.find(MATH_OPEN) {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + MATH_OPEN.len_utf8()..];
-        match after.find(MATH_CLOSE) {
-            Some(end) => {
-                if let Some(m) = after[..end].parse::<usize>().ok().and_then(|i| math.get(i)) {
-                    out.push_str(m);
-                }
-                rest = &after[end + MATH_CLOSE.len_utf8()..];
-            }
-            None => {
-                rest = after;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Sanitising
-
-fn sanitizer(id_prefix: Option<&'static str>) -> ammonia::Builder<'static> {
+fn sanitizer(
+    id_prefix: Option<&'static str>,
+    source: Option<PathBuf>,
+    remote: bool,
+    usage: Arc<Mutex<ImageUsage>>,
+) -> ammonia::Builder<'static> {
     let mut b = ammonia::Builder::default();
     b.add_tags([
-        "details", "summary", "mark", "kbd", "input", "section", "figure", "figcaption", "u",
-        "ins", "center",
+        "details",
+        "summary",
+        "mark",
+        "kbd",
+        "input",
+        "section",
+        "figure",
+        "figcaption",
+        "u",
+        "ins",
+        "center",
     ]);
-    b.add_generic_attributes(["class", "id", "title", "lang", "dir", "data-sourcepos", "aria-hidden"]);
+    b.add_generic_attributes([
+        "class",
+        "id",
+        "title",
+        "lang",
+        "dir",
+        "data-sourcepos",
+        "aria-hidden",
+    ]);
     b.add_tag_attributes("input", ["type", "checked", "disabled"]);
     b.add_tag_attributes("details", ["open"]);
     b.add_tag_attributes("a", ["name"]);
@@ -348,29 +370,87 @@ fn sanitizer(id_prefix: Option<&'static str>) -> ammonia::Builder<'static> {
     // The only form control Markdown produces is a read-only task checkbox.
     b.set_tag_attribute_value("input", "type", "checkbox");
     b.set_tag_attribute_value("input", "disabled", "");
-    b.add_url_schemes(["data", "file"]);
+    b.add_tags([
+        "math",
+        "mrow",
+        "mi",
+        "mn",
+        "mo",
+        "mtext",
+        "ms",
+        "mspace",
+        "mfrac",
+        "msqrt",
+        "mroot",
+        "msub",
+        "msup",
+        "msubsup",
+        "mover",
+        "munder",
+        "munderover",
+        "mtable",
+        "mtr",
+        "mtd",
+        "mstyle",
+        "mpadded",
+        "mphantom",
+        "merror",
+        "menclose",
+        "mmultiscripts",
+        "mprescripts",
+        "none",
+    ]);
+    b.add_tag_attributes("math", ["display"]);
+    b.add_tag_attributes(
+        "mo",
+        [
+            "stretchy",
+            "fence",
+            "separator",
+            "largeop",
+            "movablelimits",
+            "lspace",
+            "rspace",
+        ],
+    );
+    b.add_tag_attributes("mi", ["mathvariant"]);
+    b.add_tag_attributes("mfrac", ["linethickness"]);
+    b.add_tag_attributes("mspace", ["width", "height", "depth"]);
+    b.url_schemes(
+        ["https", "http", "mailto", "tel", "data"]
+            .into_iter()
+            .collect(),
+    );
     b.id_prefix(id_prefix);
-    b.attribute_filter(|element, attribute, value| {
-        let is_image_src = element == "img" && attribute == "src";
-        // Windows drive paths would otherwise be read as a URL scheme ("c:").
-        if is_image_src && is_windows_path(value) {
-            return Some(format!("file:///{}", value.replace('\\', "/")).into());
+    b.set_tag_attribute_value("img", "referrerpolicy", "no-referrer");
+    b.attribute_filter(move |element, attribute, value| {
+        if element == "img" && attribute == "referrerpolicy" {
+            usage.lock().unwrap().images += 1;
         }
-        let lower = value.trim_start().to_ascii_lowercase();
-        if lower.starts_with("data:") && !(is_image_src && lower.starts_with("data:image/")) {
-            return None;
+        if element == "img" && attribute == "src" {
+            let mut totals = usage.lock().unwrap();
+            totals.attempts += 1;
+            if totals.attempts > 128 {
+                return None;
+            }
+            let url =
+                crate::images::source_url(value, source.as_deref(), remote, &mut totals.remaining);
+            if url.is_some() {
+                totals.accepted += 1;
+            }
+            return url.map(Cow::Owned);
         }
-        if lower.starts_with("file:") && !is_image_src {
+        if attribute == "href"
+            && (value.starts_with("//")
+                || value.contains('\\')
+                || value.chars().any(char::is_control)
+                || value.to_ascii_lowercase().starts_with("data:"))
+        {
             return None;
         }
         Some(value.into())
     });
     b
-}
-
-fn is_windows_path(value: &str) -> bool {
-    let b = value.as_bytes();
-    b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
 }
 
 #[cfg(test)]
@@ -445,10 +525,10 @@ mod tests {
 
     #[test]
     fn math_becomes_mathml() {
-        let html = export("Inline $a^2 + b^2$ and\n\n$$\n\\frac{1}{2}\n$$\n\n```math\nx = y\n```\n");
+        let html =
+            export("Inline $a^2 + b^2$ and\n\n$$\n\\frac{1}{2}\n$$\n\n```math\nx = y\n```\n");
         assert_eq!(html.matches("<math").count(), 3, "{html}");
         assert!(html.contains("<mfrac>"), "{html}");
-        assert!(!html.contains(MATH_OPEN), "{html}");
     }
 
     #[test]
@@ -475,10 +555,13 @@ mod tests {
         let html = export(
             "<details><summary>More</summary>\n\nHidden\n\n</details>\n\n<kbd>Ctrl</kbd> <img src=\"a.png\" width=\"40\">\n\n![d](data:image/png;base64,AAAA)\n",
         );
-        assert!(html.contains("<details>") && html.contains("<summary>"), "{html}");
+        assert!(
+            html.contains("<details>") && html.contains("<summary>"),
+            "{html}"
+        );
         assert!(html.contains("<kbd>Ctrl</kbd>"), "{html}");
         assert!(html.contains("width=\"40\""), "{html}");
-        assert!(html.contains("src=\"data:image/png;base64,AAAA\""), "{html}");
+        assert!(!html.contains("data:image/png;base64,AAAA"), "{html}");
     }
 
     #[test]
@@ -492,9 +575,37 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_and_privacy_across_output_targets() {
+        let md = "# Café\n\n# Café\n\n- parent\n  - **child**  \n    next\n\n$x^2$ \u{e000}漢字\u{e001}\n\n![X](https://example.org/x.png)\n";
+        let r = Renderer::new();
+        for target in [Target::Preview, Target::Export] {
+            let result = r.render_document(md, target, None, true).unwrap();
+            let html = result.html;
+            for token in [
+                "café-1",
+                "<strong",
+                "child",
+                "<br",
+                "<msup>",
+                "\u{e000}漢字\u{e001}",
+            ] {
+                assert!(html.contains(token), "{token} in {html}");
+            }
+            assert_eq!(
+                html.contains("https://example.org"),
+                target == Target::Preview
+            );
+            assert_eq!(result.omitted, usize::from(target == Target::Export));
+        }
+    }
+
+    #[test]
     fn title_comes_from_first_heading() {
         let r = Renderer::new();
-        assert_eq!(r.title_of("intro\n\n# The *Title*\n").as_deref(), Some("The Title"));
+        assert_eq!(
+            r.title_of("intro\n\n# The *Title*\n").as_deref(),
+            Some("The Title")
+        );
         assert_eq!(r.title_of("no heading"), None);
     }
 
@@ -502,8 +613,14 @@ mod tests {
     fn hostile_input_does_not_panic() {
         let r = Renderer::new();
         for md in [
-            "$\\frac{$", "$$\n\\begin{matrix}\n$$", "\u{E000}0\u{E001}", "[[[[[[[[[[", "```\n",
-            "$\\undefinedcommand{x}$", "|||\n|-|\n", "<math><mtext><script>x</script></mtext></math>",
+            "$\\frac{$",
+            "$$\n\\begin{matrix}\n$$",
+            "\u{E000}0\u{E001}",
+            "[[[[[[[[[[",
+            "```\n",
+            "$\\undefinedcommand{x}$",
+            "|||\n|-|\n",
+            "<math><mtext><script>x</script></mtext></math>",
         ] {
             let _ = r.render(md, Target::Preview);
         }
