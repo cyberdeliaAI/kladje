@@ -22,16 +22,19 @@ async function app(initial = {}, configure = () => {}) {
   const element = () => ({
     scrollTop: 0, scrollHeight: 100, clientHeight: 100, children: [], childNodes: [], dataset: {}, style: { setProperty() {} }, classList: { add() {}, remove() {}, toggle() {} },
     firstElementChild: {}, content: { childNodes: [], querySelectorAll: () => [] }, append() {}, replaceChildren() {},
-    addEventListener() {}, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
+    attrs: {}, handlers: {}, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {},
+    addEventListener(k,f) { this.handlers[k]=f; }, querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
   });
+  const rendered = [];
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
     getText: () => text, setText(v) { text = v; }, replaceText(v) { text = v; change(); },
+    insertImage(relative) { text += " IMAGE " + relative; change(); },
     cursor: () => ({ line: 1, column: 1, lines: 1 }), scroller: element(), remeasure() {}, focus() {},
   };
   const api = {
-    setup: () => ({ pendingOpen: disk.path }), read_file: () => ({ ...disk }),
+    setup: () => ({ pendingOpen: disk.path }), take_pending_open: () => null, read_file: () => ({ ...disk }),
     file_version: () => disk.version, render: () => "", log_message: ({ message }) => { if (message === "ready") ready.resolve(); },
     recovery_list: () => [], recovery_clear() {}, recovery_write() {},
     write_file: ({content}) => { disk.content = content; return {version: disk.version, confirmed: true}; }, quit() {},
@@ -48,7 +51,11 @@ async function app(initial = {}, configure = () => {}) {
       dialog, window: { getCurrentWindow: () => nativeWindow }, event: { listen: (name, cb) => { events[name] = cb; } },
       webview: { getCurrentWebview: () => ({onDragDropEvent: cb => { events.drop = cb; }}) } },
   };
-  const context = vm.createContext({ window: win, document: { getElementById: get, documentElement: element(), createElement: element },
+  const context = vm.createContext({ window: win, document: { getElementById: get, documentElement: element(), createElement(tag) {
+    const node = element();
+    if (tag === "template") Object.defineProperty(node, "innerHTML", {set(html) { rendered.push(html); }});
+    return node;
+  } },
     performance, Intl, crypto: require("node:crypto").webcrypto, console, clearTimeout: id => pendingTimers.delete(id),
     setTimeout(fn, delay) { pendingTimers.set(++nextTimer, {fn, delay}); return nextTimer; },
     localStorage: { getItem: k => values.get(k), setItem: (k,v) => values.set(k,v), removeItem: k => values.delete(k) } });
@@ -61,7 +68,7 @@ async function app(initial = {}, configure = () => {}) {
     pendingTimers.delete(entry[0]);
     return entry[1].fn();
   }
-  return { disk, api, calls, dialog, events, get, values, fire, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
+  return { disk, api, calls, dialog, events, get, values, fire, rendered, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
 }
 
 test("actual Save and Quit wait for outstanding I/O and retain later edits", async () => {
@@ -140,7 +147,7 @@ test("an unsupported drop leaves the dirty editor and its draft in place", async
   const a = await app();
   const dialogs = [];
   a.dialog.message = (_, options) => { dialogs.push(options.title); return "Don't Save"; };
-  a.api.read_file = () => { throw Error("Unsupported image"); };
+  a.api.insert_image = () => { throw Error("Unsupported image"); };
   a.edit("private draft");
   await a.fire(900);
   await a.events.drop({ payload: { type: "drop", paths: ["/notes/image.png"] } });
@@ -276,4 +283,135 @@ test("clean external reload adopts the new baseline and Keep Edits remembers onl
   await a.events.focus();
   assert.equal(prompts, 2);
   assert.equal(a.text(), "local");
+});
+
+test("image drops preserve the document binding and require consent before copying", async () => {
+  const a = await app();
+  a.edit("working text");
+  a.api.insert_image = ({copy}) => copy ? "image-2.png" : null;
+  const drop = () => a.events.drop({payload: {type: "drop", paths: ["/elsewhere/art.png"]}});
+  await drop();
+  assert.equal(a.text(), "working text");
+  a.dialog.ask = () => true;
+  await drop();
+  assert.match(a.text(), /working text IMAGE image-2.png/);
+  const requests = a.calls.filter(([name]) => name === "insert_image").map(([,args]) => args);
+  assert.deepEqual(requests.map(args => args.copy), [false,false,true]);
+  assert.ok(requests.every(args => args.source === a.disk.path));
+  assert.equal(a.disk.content, "original");
+});
+
+test("remote image consent expires when another document opens", async () => {
+  const a = await app();
+  a.dialog.ask = () => true;
+  await a.menu("remote_images");
+  assert.ok(a.calls.some(([name,args]) => name === "render" && args.remote));
+  a.dialog.open = () => "/notes/next.md";
+  a.api.read_file = () => ({...a.disk, path: "/notes/next.md", content: "second"});
+  await a.menu("open");
+  const latest = a.calls.filter(([name]) => name === "render").at(-1)[1];
+  assert.equal(latest.remote,false);
+  assert.equal(latest.source,"/notes/next.md");
+});
+
+test("a preview failure leaves edited text available for Save", async () => {
+  const a = await app();
+  a.api.render = () => { throw Error("Renderer unavailable"); };
+  a.edit("unsaved revision");
+  await a.menu("view_split");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(a.get("preview").textContent, /Preview unavailable/);
+  assert.equal(a.text(), "unsaved revision");
+  assert.equal(a.disk.content, "original");
+  await a.menu("save");
+  assert.equal(a.disk.content, "unsaved revision");
+});
+
+test("a delayed preview cannot replace a newer revision", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  a.api.render = async ({markdown}) => {
+    if (markdown === "earlier") {
+      started.resolve();
+      await finish.promise;
+    }
+    return markdown;
+  };
+  a.edit("earlier");
+  await a.menu("view_split");
+  await started.promise;
+  a.edit("latest");
+  finish.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(!a.rendered.includes("earlier"));
+  assert.equal(a.rendered.at(-1), "latest");
+  assert.equal(a.text(), "latest");
+});
+
+test("cancelling image insertion into an untitled draft preserves the draft", async () => {
+  const a = await app();
+  await a.menu("new");
+  a.edit("untitled work");
+  const before = a.calls.length;
+  a.dialog.ask = () => false;
+  await a.menu("insert_image");
+  assert.equal(a.text(), "untitled work");
+  assert.ok(!a.calls.slice(before).some(([name]) => ["insert_image","write_file","recovery_clear"].includes(name)));
+});
+
+test("startup drains Finder documents delivered before event registration in order", async () => {
+  const paths = ["/notes/two.md", "/notes/three.md"];
+  const a = await app({}, ({api, disk}) => {
+    api.take_pending_open = () => paths.shift() || null;
+    api.read_file = ({path}) => ({...disk, path, content: path});
+  });
+  assert.deepEqual(a.calls.filter(([name]) => name === "read_file").map(([,args]) => args.path),
+    [a.disk.path, "/notes/two.md", "/notes/three.md"]);
+  assert.equal(a.text(), "/notes/three.md");
+});
+
+test("a failed obsolete render cannot hide a newer preview", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  a.api.render = async ({markdown}) => {
+    if (markdown === "earlier") {
+      started.resolve();
+      await finish.promise;
+      throw Error("Obsolete render failed");
+    }
+    return markdown;
+  };
+  a.edit("earlier");
+  await a.menu("view_split");
+  await started.promise;
+  a.edit("latest");
+  finish.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(a.rendered.at(-1), "latest");
+});
+
+test("print annotations use external destinations and leave local document paths out", async () => {
+  const a = await app();
+  const links = ["https://example.com", "mailto:editor@example.org", "#part", "sibling.md"].map(destination => ({
+    dataset: {destination}, href: "#",
+    setAttribute(_, value) { this.href = value; },
+    removeAttribute() { this.href = null; },
+  }));
+  a.get("preview").querySelectorAll = () => links;
+  a.events.beforeprint();
+  assert.deepEqual(links.map(link => link.href), ["https://example.com", "mailto:editor@example.org", "#part", null]);
+  a.events.afterprint();
+  assert.ok(links.every(link => link.href === "#"));
+});
+
+test("the document's accessible status follows dirty edits, saves and failed saves", async () => {
+  const a = await app();
+  assert.equal(a.get("doc-state").textContent, "");
+  a.edit("revised");
+  await a.fire(50);
+  assert.match(a.get("doc-state").textContent, /Unsaved changes/);
+  a.api.write_file = () => { throw Error("Disk full"); };
+  await a.menu("save");
+  assert.match(a.get("doc-state").textContent, /Unsaved changes/);
+  a.api.write_file = () => ({version:a.disk.version, confirmed:true});
+  await a.menu("save");
+  assert.equal(a.get("doc-state").textContent, "");
 });

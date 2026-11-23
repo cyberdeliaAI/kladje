@@ -1,6 +1,7 @@
 // Kladje — a light, fast Markdown editor.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -16,7 +17,7 @@ struct AppState {
     renderer: Renderer,
     /// A file the OS asked us to open (command line, double-click, "Open with")
     /// that the window has not picked up yet.
-    pending_open: Mutex<Option<String>>,
+    pending_open: Mutex<VecDeque<String>>,
 }
 
 #[derive(Serialize)]
@@ -34,18 +35,44 @@ fn setup(state: State<'_, AppState>) -> Setup {
         syntax_css_light: state.renderer.syntax_css_light.clone(),
         syntax_css_dark: state.renderer.syntax_css_dark.clone(),
         id_prefix: PREVIEW_ID_PREFIX,
-        pending_open: state.pending_open.lock().ok().and_then(|mut p| p.take()),
+        pending_open: state
+            .pending_open
+            .lock()
+            .ok()
+            .and_then(|mut p| p.pop_front()),
     }
 }
 
 #[tauri::command(async)]
 fn take_pending_open(state: State<'_, AppState>) -> Option<String> {
-    state.pending_open.lock().ok().and_then(|mut p| p.take())
+    state
+        .pending_open
+        .lock()
+        .ok()
+        .and_then(|mut p| p.pop_front())
 }
 
 #[tauri::command(async)]
-fn render(state: State<'_, AppState>, markdown: String) -> String {
-    state.renderer.render(&markdown, Target::Preview)
+fn render(
+    state: State<'_, AppState>,
+    markdown: String,
+    source: Option<String>,
+    remote: Option<bool>,
+) -> Result<String, String> {
+    Ok(state
+        .renderer
+        .render_document(
+            &markdown,
+            Target::Preview,
+            source.as_deref().map(Path::new),
+            remote.unwrap_or(false),
+        )?
+        .html)
+}
+
+#[tauri::command(async)]
+fn insert_image(source: String, image: String, copy: bool) -> Result<Option<String>, String> {
+    kladje::images::insert_path(Path::new(&source), Path::new(&image), copy)
 }
 
 #[tauri::command(async)]
@@ -82,10 +109,11 @@ fn export_html(
     source: Option<String>,
     expected: Option<storage::Version>,
 ) -> Result<storage::Written, String> {
-    let html = export::standalone_html(&state.renderer, &markdown, &title);
-    export::write_html(
+    export::export_document(
+        &state.renderer,
         Path::new(&path),
-        &html,
+        &markdown,
+        &title,
         source.as_deref().map(Path::new),
         expected.as_ref(),
     )
@@ -132,6 +160,40 @@ fn recovery_clear(store: DraftStore<'_>, id: String) -> Result<(), String> {
 /// Opens the system print dialog, which is also how a PDF is produced.
 #[tauri::command]
 fn print_document(window: WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSPrintInfo, NSWindow};
+        use objc2_web_kit::WKWebView;
+        if !objc2::available!(macos = 11.0) {
+            return Err("Native PDF printing requires macOS 11 or later.".into());
+        }
+        window
+            .with_webview(|platform| {
+                // Tauri provides these live AppKit/WebKit handles on the main thread.
+                unsafe {
+                    let webview = &*platform.inner().cast::<WKWebView>();
+                    let parent = &*platform.ns_window().cast::<NSWindow>();
+                    let info = NSPrintInfo::sharedPrintInfo();
+                    info.setTopMargin(42.0);
+                    info.setBottomMargin(42.0);
+                    info.setLeftMargin(42.0);
+                    info.setRightMargin(42.0);
+                    let operation = webview.printOperationWithPrintInfo(&info);
+                    if let Some(print_view) = operation.view() {
+                        print_view.setFrame(webview.bounds());
+                    }
+                    operation.setCanSpawnSeparateThread(true);
+                    operation.runOperationModalForWindow_delegate_didRunSelector_contextInfo(
+                        parent,
+                        None,
+                        None,
+                        std::ptr::null_mut(),
+                    );
+                }
+            })
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
     window.print().map_err(|e| e.to_string())
 }
 
@@ -172,7 +234,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(&item("import", "Import…", Some("CmdOrCtrl+Shift+I"))?)
         .item(&export);
     if !cfg!(target_os = "macos") {
-        file = file.separator().item(&item("quit", "Quit", Some("CmdOrCtrl+Q"))?);
+        file = file
+            .separator()
+            .item(&item("quit", "Quit", Some("CmdOrCtrl+Q"))?);
     }
     let file = file.build()?;
 
@@ -195,6 +259,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(&item("h2", "Heading 2", Some("CmdOrCtrl+2"))?)
         .item(&item("h3", "Heading 3", Some("CmdOrCtrl+3"))?)
         .item(&item("h4", "Heading 4", Some("CmdOrCtrl+4"))?)
+        .item(&item("h5", "Heading 5", Some("CmdOrCtrl+5"))?)
+        .item(&item("h6", "Heading 6", Some("CmdOrCtrl+6"))?)
         .item(&item("h0", "Paragraph", Some("CmdOrCtrl+0"))?)
         .build()?;
 
@@ -205,9 +271,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(&item("code", "Inline Code", Some("CmdOrCtrl+E"))?)
         .item(&item("link", "Link", Some("CmdOrCtrl+K"))?)
         .separator()
+        .item(&item("insert_image", "Insert Local Image…", None)?)
         .item(&heading)
         .item(&item("bullet", "Bullet List", Some("CmdOrCtrl+Shift+8"))?)
-        .item(&item("numbered", "Numbered List", Some("CmdOrCtrl+Shift+7"))?)
+        .item(&item(
+            "numbered",
+            "Numbered List",
+            Some("CmdOrCtrl+Shift+7"),
+        )?)
         .item(&item("task", "Task List", Some("CmdOrCtrl+Shift+9"))?)
         .item(&item("quote", "Quote", Some("CmdOrCtrl+Shift+."))?)
         .separator()
@@ -223,10 +294,27 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .build()?;
 
     let view = SubmenuBuilder::new(app, "View")
-        .item(&item("view_editor", "Editor Only", Some("CmdOrCtrl+Alt+1"))?)
-        .item(&item("view_split", "Editor and Preview", Some("CmdOrCtrl+Alt+2"))?)
-        .item(&item("view_preview", "Preview Only", Some("CmdOrCtrl+Alt+3"))?)
+        .item(&item(
+            "view_editor",
+            "Editor Only",
+            Some("CmdOrCtrl+Alt+1"),
+        )?)
+        .item(&item(
+            "view_split",
+            "Editor and Preview",
+            Some("CmdOrCtrl+Alt+2"),
+        )?)
+        .item(&item(
+            "view_preview",
+            "Preview Only",
+            Some("CmdOrCtrl+Alt+3"),
+        )?)
         .separator()
+        .item(&item(
+            "remote_images",
+            "Remote Images for This Document…",
+            None,
+        )?)
         .item(&item("sync_scroll", "Toggle Scroll Sync", None)?)
         .item(&item("zoom_in", "Larger Text", Some("CmdOrCtrl+="))?)
         .item(&item("zoom_out", "Smaller Text", Some("CmdOrCtrl+-"))?)
@@ -256,7 +344,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
     }
     let mut menu = menu.item(&file).item(&edit).item(&format).item(&view);
     if cfg!(target_os = "macos") {
-        let window = SubmenuBuilder::new(app, "Window").minimize().maximize().build()?;
+        let window = SubmenuBuilder::new(app, "Window")
+            .minimize()
+            .maximize()
+            .build()?;
         menu = menu.item(&window);
     }
     let help = SubmenuBuilder::new(app, "Help")
@@ -273,7 +364,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
 fn request_open(app: &AppHandle, path: PathBuf) {
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(mut pending) = state.pending_open.lock() {
-            *pending = Some(path.to_string_lossy().into_owned());
+            pending.push_back(path.to_string_lossy().into_owned());
         }
     }
     let _ = app.emit("open-requested", ());
@@ -289,16 +380,35 @@ fn main() {
         .map(|p| p.to_string_lossy().into_owned());
 
     let app = tauri::Builder::default()
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("document-navigation")
+                .on_navigation(|_, url| {
+                    matches!(
+                        (url.scheme(), url.host_str()),
+                        ("tauri", Some("localhost")) | ("http" | "https", Some("tauri.localhost"))
+                    ) && url.port().is_none()
+                        && matches!(url.path(), "" | "/" | "/index.html")
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             renderer: Renderer::new(),
-            pending_open: Mutex::new(from_args),
+            pending_open: Mutex::new(from_args.into_iter().collect()),
         })
         .setup(|app| {
             app.manage(Mutex::new(Recovery::new(
                 app.path().app_data_dir()?.join("recovery-v1"),
             )));
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                window.with_webview(|platform| {
+                    // WebKit otherwise skips links and buttons during ordinary Tab navigation.
+                    let view = unsafe { &*platform.inner().cast::<objc2_web_kit::WKWebView>() };
+                    unsafe { view.configuration().preferences().setTabFocusesLinks(true) };
+                })?;
+            }
             build_menu(app.handle())?;
             Ok(())
         })
@@ -318,6 +428,7 @@ fn main() {
             recovery_clear,
             import_file,
             export_html,
+            insert_image,
             print_document,
             log_message,
             quit

@@ -13,11 +13,19 @@ breaks without starting a new paragraph.
 
 [A link](https://commonmark.org "with a title"), a bare address like https://example.com, and a [reference link][ref].
 
-Images use the same idea with an exclamation mark in front: `![Description](picture.png)`. Paths are relative to the saved document.
+Use **Format → Insert Local Image** or drop a PNG, JPEG, GIF or WebP. Save an untitled document first so Kladje can use a relative path. When a picture is outside the document folder, you can copy it beside the Markdown file. Replace the selected description with meaningful alt text. The result looks like `![A map of the route](map.png)`.
+
+HTTPS images require permission in **View → Remote Images for This Document**. An unavailable image shows its description. Standalone HTML embeds supported local images so the exported file can move. PDF uses the current rendered document, including when only the editor is visible.
+
+Relative Markdown links can include a section, as in `[Notes](meeting%20notes.md#decisions)`. A second heading with the same name gets the suffix `-1`. External links open with the system handler.
+
+Use **⌘1–⌘6** on macOS for heading levels and **⌘0** for a paragraph. Tab to the splitter, resize with the arrow keys, press Enter to center it or Escape to return to the source. In the editor, Escape followed by Tab moves keyboard focus out of the writing area. In Find and Replace, use Tab or Shift-Tab to move between fields, options and buttons. Space activates a focused button.
 
 [ref]: https://github.github.com/gfm/
 
 ## Lists
+
+Press Enter to continue a list. Press Enter on an empty item to leave the list.
 
 - Bullets start with a dash
 - Indent to nest

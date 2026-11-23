@@ -1,6 +1,7 @@
 //! Import other formats as Markdown: HTML, Word (.docx) and plain text.
 
 use std::collections::HashMap;
+#[cfg(test)]
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -11,7 +12,7 @@ use quick_xml::Reader;
 use crate::fileio;
 
 /// Upper bound for a single XML part inside a .docx (guards against zip bombs).
-const MAX_PART_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_PART_BYTES: u64 = 16 * 1024 * 1024;
 
 pub fn import(path: &Path) -> Result<String, String> {
     let ext = path
@@ -21,7 +22,9 @@ pub fn import(path: &Path) -> Result<String, String> {
     match ext.as_str() {
         "html" | "htm" | "xhtml" => html_to_markdown(&fileio::read_text(path)?.text),
         "docx" => docx_to_markdown(path),
-        "doc" => Err("The old .doc format is not supported. Save the file as .docx in Word first.".into()),
+        "doc" => Err(
+            "The old .doc format is not supported. Save the file as .docx in Word first.".into(),
+        ),
         "txt" => Ok(fileio::read_text(path)?.text),
         _ => Err("Choose an HTML, Word (.docx), or plain text (.txt) file to import.".into()),
     }
@@ -31,7 +34,9 @@ pub fn html_to_markdown(html: &str) -> Result<String, String> {
     use htmd::options::{BulletListMarker, CodeBlockStyle, HeadingStyle, Options};
 
     let converter = htmd::HtmlToMarkdown::builder()
-        .skip_tags(vec!["script", "style", "noscript", "head", "iframe", "svg", "template"])
+        .skip_tags(vec![
+            "script", "style", "noscript", "head", "iframe", "svg", "template",
+        ])
         .options(Options {
             heading_style: HeadingStyle::Atx,
             code_block_style: CodeBlockStyle::Fenced,
@@ -47,28 +52,13 @@ pub fn html_to_markdown(html: &str) -> Result<String, String> {
     Ok(tidy(&markdown))
 }
 
-/// Collapse runs of blank lines and make sure the text ends with one newline.
+/// Preserve interior whitespace, especially hard breaks and fenced code.
 fn tidy(markdown: &str) -> String {
-    let mut out = String::with_capacity(markdown.len());
-    let mut blank = 0;
-    for line in markdown.lines() {
-        let line = line.trim_end();
-        if line.is_empty() {
-            blank += 1;
-            if blank > 1 {
-                continue;
-            }
-        } else {
-            blank = 0;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    let trimmed = out.trim_matches('\n');
-    if trimmed.is_empty() {
+    let body = markdown.trim_matches('\n');
+    if body.is_empty() {
         String::new()
     } else {
-        format!("{trimmed}\n")
+        format!("{body}\n")
     }
 }
 
@@ -76,25 +66,98 @@ fn tidy(markdown: &str) -> String {
 // Word (.docx)
 
 pub fn docx_to_markdown(path: &Path) -> Result<String, String> {
-    let file = File::open(path).map_err(|e| format!("“{}” could not be opened: {e}", path.display()))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|_| "This file is not a valid Word document (.docx).".to_string())?;
-
-    let mut part = |name: &str| -> Option<String> {
-        let entry = archive.by_name(name).ok()?;
+    let (bytes, _) = crate::storage::read(path)?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|_| "This file is not a valid Word document (.docx).".to_owned())?;
+    let mut part = |name: &str, root: &str| -> Result<Option<String>, String> {
+        let entry = match archive.by_name(name) {
+            Ok(entry) => entry,
+            Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+            Err(e) => return Err(format!("{name}: {e}")),
+        };
+        let size = entry.size();
+        if size > MAX_PART_BYTES {
+            return Err(format!("{name} exceeds the 16 MiB import limit."));
+        }
         let mut text = String::new();
-        entry.take(MAX_PART_BYTES).read_to_string(&mut text).ok()?;
-        Some(text)
+        entry
+            .take(MAX_PART_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(|e| format!("{name}: {e}"))?;
+        if text.len() as u64 != size {
+            return Err(format!("Incomplete Word part: {name}"));
+        }
+        validate_xml(&text, root).map_err(|e| format!("{name}: {e}"))?;
+        Ok(Some(text))
     };
-
-    let document = part("word/document.xml")
-        .ok_or_else(|| "This Word document has no readable content.".to_string())?;
+    let document = part("word/document.xml", "w:document")?
+        .ok_or("This Word document has no main document part.")?;
     let context = DocxContext {
-        links: part("word/_rels/document.xml.rels").map(|x| parse_rels(&x)).unwrap_or_default(),
-        headings: part("word/styles.xml").map(|x| parse_styles(&x)).unwrap_or_default(),
-        numbering: part("word/numbering.xml").map(|x| parse_numbering(&x)).unwrap_or_default(),
+        links: part("word/_rels/document.xml.rels", "Relationships")?
+            .map(|x| parse_rels(&x))
+            .unwrap_or_default(),
+        headings: part("word/styles.xml", "w:styles")?
+            .map(|x| parse_styles(&x))
+            .unwrap_or_default(),
+        numbering: part("word/numbering.xml", "w:numbering")?
+            .map(|x| parse_numbering(&x))
+            .unwrap_or_default(),
     };
     Ok(tidy(&convert_document(&document, &context)))
+}
+
+fn validate_xml(xml: &str, root: &str) -> Result<(), String> {
+    let mut reader = Reader::from_str(xml);
+    let (mut seen, mut depth, mut body) = (false, 0usize, false);
+    loop {
+        let event = reader.read_event().map_err(|e| e.to_string())?;
+        match &event {
+            Event::Start(e) | Event::Empty(e) => {
+                if depth == 0 {
+                    if seen || e.name().as_ref() != root {
+                        return Err("Unexpected XML document element.".into());
+                    }
+                    seen = true;
+                }
+                if depth == 1 && e.name().as_ref() == "w:body" {
+                    body = true;
+                }
+                for attr in e.attributes() {
+                    let attr = attr.map_err(|e| e.to_string())?;
+                    quick_xml::escape::unescape(&attr.value).map_err(|e| e.to_string())?;
+                }
+                if matches!(event, Event::Start(_)) {
+                    depth += 1;
+                }
+                if depth > 128 {
+                    return Err("XML nesting limit exceeded.".into());
+                }
+            }
+            Event::End(_) => {
+                depth = depth.checked_sub(1).ok_or("Unexpected XML end tag.")?;
+            }
+            Event::DocType(_) => return Err("Document type declarations are unsupported.".into()),
+            Event::CData(_) | Event::GeneralRef(_) if depth == 0 => {
+                return Err("Character data outside XML root.".into())
+            }
+            Event::GeneralRef(r) => {
+                if r.resolve_char_ref().map_err(|e| e.to_string())?.is_none()
+                    && quick_xml::escape::resolve_xml_entity(r).is_none()
+                {
+                    return Err("Unknown XML entity.".into());
+                }
+            }
+            Event::Text(t) if depth == 0 && !t.xml10_content().trim().is_empty() => {
+                return Err("Text outside XML root.".into())
+            }
+            Event::Eof => break,
+            _ => (),
+        }
+    }
+    if !seen || depth != 0 || (root == "w:document" && !body) {
+        return Err("Incomplete Word XML.".into());
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -118,7 +181,9 @@ enum StyleKind {
 
 fn attr(e: &BytesStart, name: &str) -> Option<String> {
     let a = e.try_get_attribute(name).ok()??;
-    quick_xml::escape::unescape(&a.value).ok().map(|v| v.into_owned())
+    quick_xml::escape::unescape(&a.value)
+        .ok()
+        .map(|v| v.into_owned())
 }
 
 /// `<w:b/>` means on; `<w:b w:val="0"/>` or `"false"` means off.
@@ -133,7 +198,9 @@ fn parse_rels(xml: &str) -> HashMap<String, String> {
         match reader.read_event() {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == "Relationship" => {
                 let external = attr(&e, "TargetMode").as_deref() == Some("External");
-                if let (true, Some(id), Some(target)) = (external, attr(&e, "Id"), attr(&e, "Target")) {
+                if let (true, Some(id), Some(target)) =
+                    (external, attr(&e, "Id"), attr(&e, "Target"))
+                {
                     map.insert(id, target);
                 }
             }
@@ -152,7 +219,9 @@ fn parse_styles(xml: &str) -> HashMap<String, StyleKind> {
     let mut reader = Reader::from_str(xml);
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) if e.name().as_ref() == "w:style" => current = attr(&e, "w:styleId"),
+            Ok(Event::Start(e)) if e.name().as_ref() == "w:style" => {
+                current = attr(&e, "w:styleId")
+            }
             Ok(Event::End(e)) if e.name().as_ref() == "w:style" => current = None,
             Ok(Event::Empty(e)) if e.name().as_ref() == "w:name" => {
                 if let (Some(id), Some(name)) = (&current, attr(&e, "w:val")) {
@@ -171,7 +240,11 @@ fn parse_styles(xml: &str) -> HashMap<String, StyleKind> {
 fn classify_style(name: &str) -> Option<StyleKind> {
     let name = name.to_ascii_lowercase();
     if let Some(level) = name.strip_prefix("heading ") {
-        return level.trim().parse::<u8>().ok().map(|l| StyleKind::Heading(l.clamp(1, 6)));
+        return level
+            .trim()
+            .parse::<u8>()
+            .ok()
+            .map(|l| StyleKind::Heading(l.clamp(1, 6)));
     }
     match name.as_str() {
         "title" => Some(StyleKind::Heading(1)),
@@ -197,7 +270,8 @@ fn parse_numbering(xml: &str) -> HashMap<(String, u8), bool> {
                 "w:lvl" => level = attr(&e, "w:ilvl").and_then(|v| v.parse().ok()).unwrap_or(0),
                 "w:numFmt" => {
                     if let (Some(id), Some(fmt)) = (&abstract_id, attr(&e, "w:val")) {
-                        abstract_levels.insert((id.clone(), level), fmt != "bullet" && fmt != "none");
+                        abstract_levels
+                            .insert((id.clone(), level), fmt != "bullet" && fmt != "none");
                     }
                 }
                 "w:abstractNumId" => {
@@ -246,6 +320,12 @@ struct Paragraph {
 }
 
 impl Paragraph {
+    fn push_literal(&mut self, format: Format, source: &str) {
+        let mut escaped = String::new();
+        escape_markdown(source, &mut escaped);
+        self.push(format, &escaped);
+    }
+
     fn push(&mut self, format: Format, text: &str) {
         if text.is_empty() {
             return;
@@ -274,12 +354,20 @@ impl Paragraph {
             let trail = &text[text.trim_end().len()..];
             let (open, close) = match format {
                 Format { code: true, .. } => ("`", "`"),
-                Format { bold: true, italic: true, .. } => ("***", "***"),
+                Format {
+                    bold: true,
+                    italic: true,
+                    ..
+                } => ("***", "***"),
                 Format { bold: true, .. } => ("**", "**"),
                 Format { italic: true, .. } => ("*", "*"),
                 _ => ("", ""),
             };
-            let strike = if format.strike && !format.code { "~~" } else { "" };
+            let strike = if format.strike && !format.code {
+                "~~"
+            } else {
+                ""
+            };
             out.push_str(lead);
             out.push_str(strike);
             out.push_str(open);
@@ -319,7 +407,10 @@ fn escape_line_start(line: &str) -> String {
     }
     match first {
         Some(c) if c.is_ascii_digit() => {
-            let digits = trimmed.len() - trimmed.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            let digits = trimmed.len()
+                - trimmed
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .len();
             format!("{}\\{}", &trimmed[..digits], &trimmed[digits..])
         }
         _ => format!("\\{trimmed}"),
@@ -374,9 +465,12 @@ fn convert_document(xml: &str, cx: &DocxContext) -> String {
             }
             Event::Text(t) if in_text => {
                 if let Some(p) = para.as_mut() {
-                    let mut text = String::new();
-                    escape_markdown(&t.xml10_content(), &mut text);
-                    p.push(run, &text);
+                    p.push_literal(run, &t.xml10_content());
+                }
+            }
+            Event::CData(t) if in_text => {
+                if let Some(p) = para.as_mut() {
+                    p.push_literal(run, &t.xml10_content());
                 }
             }
             Event::GeneralRef(r) if in_text => {
@@ -392,9 +486,7 @@ fn convert_document(xml: &str, cx: &DocxContext) -> String {
                     },
                 };
                 if let (Some(c), Some(p)) = (ch, para.as_mut()) {
-                    let mut text = String::new();
-                    escape_markdown(c.encode_utf8(&mut [0; 4]), &mut text);
-                    p.push(run, &text);
+                    p.push_literal(run, c.encode_utf8(&mut [0; 4]));
                 }
             }
             Event::End(e) => match e.name().as_ref() {
@@ -408,10 +500,14 @@ fn convert_document(xml: &str, cx: &DocxContext) -> String {
                     if let (Some((Some(url), start)), Some(p)) = (link.take(), para.as_mut()) {
                         if start < p.segments.len() {
                             let tail: Vec<_> = p.segments.drain(start..).collect();
-                            let text = Paragraph { segments: tail, ..Default::default() }
-                                .inline_markdown(false);
+                            let text = Paragraph {
+                                segments: tail,
+                                ..Default::default()
+                            }
+                            .inline_markdown(false);
                             let url = url.replace(' ', "%20").replace(')', "%29");
-                            p.segments.push((Format::default(), format!("[{}]({url})", text.trim())));
+                            p.segments
+                                .push((Format::default(), format!("[{}]({url})", text.trim())));
                         }
                     }
                 }
@@ -439,7 +535,10 @@ fn convert_document(xml: &str, cx: &DocxContext) -> String {
 
                     let list = match (&p.list, kind) {
                         (Some((num, level)), _) if num != "0" => Some((
-                            cx.numbering.get(&(num.clone(), *level)).copied().unwrap_or(false),
+                            cx.numbering
+                                .get(&(num.clone(), *level))
+                                .copied()
+                                .unwrap_or(false),
                             *level,
                         )),
                         (None, Some(StyleKind::Bullet)) => Some((false, 0)),
@@ -447,17 +546,17 @@ fn convert_document(xml: &str, cx: &DocxContext) -> String {
                         _ => None,
                     };
 
-                    let text = text.trim();
                     if is_code {
                         if !code_block_open {
                             out.push_str("```\n");
                             code_block_open = true;
                         }
-                        out.push_str(&unescape_code(text));
+                        out.push_str(&unescape_code(&text));
                         out.push('\n');
                         last_was_list = false;
                         continue;
                     }
+                    let text = text.trim();
                     if let Some(StyleKind::Heading(level)) = kind {
                         let plain = text.replace('\n', " ");
                         out.push_str(&format!("{} {}\n\n", "#".repeat(level as usize), plain));
@@ -504,7 +603,13 @@ fn convert_document(xml: &str, cx: &DocxContext) -> String {
                         // A table inside a table cannot be expressed in Markdown;
                         // keep its text in the surrounding cell.
                         Some(outer) => outer.cell.push(
-                            table.rows.iter().flatten().cloned().collect::<Vec<_>>().join(" "),
+                            table
+                                .rows
+                                .iter()
+                                .flatten()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(" "),
                         ),
                         None => {
                             if last_was_list {
@@ -665,15 +770,60 @@ mod tests {
             }
             zip.finish().unwrap();
         }
+        let original = std::fs::read(&path).unwrap();
         let md = docx_to_markdown(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
         std::fs::remove_file(&path).unwrap();
 
         assert!(md.starts_with("# Report & notes\n"), "{md}");
-        assert!(md.contains("Plain **bold more** *italic* and a [link](https://example.com/a%20b). 2\\*3\\_4"), "{md}");
-        assert!(md.contains("- First bullet\n    - Nested\n1. Step one\n"), "{md}");
+        assert!(
+            md.contains(
+                "Plain **bold more** *italic* and a [link](https://example.com/a%20b). 2\\*3\\_4"
+            ),
+            "{md}"
+        );
+        assert!(
+            md.contains("- First bullet\n    - Nested\n1. Step one\n"),
+            "{md}"
+        );
         assert!(md.contains("1\\. Not a list"), "{md}");
-        assert!(md.contains("| Name | Value |\n| --- | --- |\n| a\\|b | 1<br>2 |\n"), "{md}");
+        assert!(
+            md.contains("| Name | Value |\n| --- | --- |\n| a\\|b | 1<br>2 |\n"),
+            "{md}"
+        );
         assert!(md.trim_end().ends_with("After"), "{md}");
+    }
+
+    #[test]
+    fn rejects_truncation_and_preserves_hard_breaks() {
+        assert!(validate_xml("<w:document><w:body><w:p/></w:body>", "w:document").is_err());
+        assert!(validate_xml("<w:document/>", "w:document").is_err());
+        let xml = "<w:document><w:body><w:p><w:r><w:t>first</w:t><w:br/><w:t>second</w:t></w:r></w:p></w:body></w:document>";
+        assert!(validate_xml(xml, "w:document").is_ok());
+        let html = html_to_markdown("<p>first<br>second</p>").unwrap();
+        let word = tidy(&convert_document(xml, &DocxContext::default()));
+        let renderer = crate::markdown::Renderer::new();
+        for text in [html, word] {
+            assert!(
+                renderer
+                    .render(&text, crate::markdown::Target::Export)
+                    .contains("<br"),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_cdata_and_rejects_undefined_word_entities() {
+        let xml = "<w:document><w:body><w:p><w:r><w:t><![CDATA[AT&T 東京]]> &amp; caf&#233;</w:t></w:r></w:p></w:body></w:document>";
+        validate_xml(xml, "w:document").unwrap();
+        assert_eq!(
+            convert_document(xml, &DocxContext::default()).trim(),
+            "AT&T 東京 & café"
+        );
+        assert!(validate_xml(&xml.replace("&amp;", "&missing;"), "w:document").is_err());
+        assert!(validate_xml(&xml.replace("<w:r>", "<w:r a='&missing;'>"), "w:document").is_err());
+        assert!(validate_xml(&format!("{xml}<![CDATA[extra]]>"), "w:document").is_err());
     }
 
     #[test]

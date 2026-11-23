@@ -15,13 +15,14 @@
   <div id="app" data-view="split">
     <main id="panes">
       <section id="editor-pane" aria-label="Markdown source"></section>
-      <div id="divider" role="separator" aria-orientation="vertical" title="Drag to resize, double-click to reset"></div>
-      <section id="preview-pane" aria-label="Preview">
+      <div id="divider" role="separator" tabindex="0" aria-label="Source pane width" aria-controls="editor-pane" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" aria-orientation="vertical" title="Drag to resize, double-click to reset"></div>
+      <section id="preview-pane" tabindex="-1" aria-label="Preview">
         <article id="preview" class="markdown-body"></article>
+        <img class="empty-wordmark" src="brand/kladje-wordmark.svg" alt="" aria-hidden="true">
       </section>
     </main>
     <footer id="statusbar">
-      <div id="doc-name"><span></span></div>
+      <div id="doc-name" role="status" aria-atomic="true"><span></span><span class="sr-only" id="doc-state"></span></div>
       <div id="notice" role="status" aria-live="polite"></div>
       <div id="stats"></div>
       <div id="view-switch" role="group" aria-label="Layout">

@@ -1,0 +1,24 @@
+name: Verify macOS editor
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run build:editor
+      - run: git diff --exit-code -- ui/vendor/editor.js
+      - run: npm test
+      - run: rustup toolchain install 1.90.0 --profile minimal
+      - run: cargo +1.90.0 check --manifest-path src-tauri/Cargo.toml --all-targets --locked
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets --locked
+      - run: npm run build -- --ci --bundles app -- --locked
+      - run: npm audit
+      - run: node scripts/check-dependencies.mjs --advisories
