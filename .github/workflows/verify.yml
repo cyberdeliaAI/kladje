@@ -19,6 +19,25 @@ jobs:
       - run: rustup toolchain install 1.90.0 --profile minimal
       - run: cargo +1.90.0 check --manifest-path src-tauri/Cargo.toml --all-targets --locked
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets --locked
+      - run: scripts/test-exfat.sh
       - run: npm run build -- --ci --bundles app -- --locked
       - run: npm audit
       - run: node scripts/check-dependencies.mjs --advisories
+
+  desktop-check:
+    name: Compile on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - run: rustup toolchain install 1.90.0 --profile minimal
+      - run: cargo +1.90.0 check --manifest-path src-tauri/Cargo.toml --all-targets --locked

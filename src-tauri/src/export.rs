@@ -82,7 +82,19 @@ pub fn write_html(
         }
         crate::fileio::read_text(path)?;
     }
-    crate::storage::replace(path, html.as_bytes(), expected)
+    match crate::storage::replace(path, html.as_bytes(), expected) {
+        Err(e) if e == crate::storage::COPY_REQUIRED => {
+            let mut result = crate::storage::protected_copy(path, html.as_bytes())?;
+            if result.confirmed {
+                result.warning = Some(format!(
+                    "This volume required a separate export. Saved to {}.",
+                    result.version.target().display()
+                ));
+            }
+            Ok(result)
+        }
+        result => result,
+    }
 }
 
 #[cfg(test)]
