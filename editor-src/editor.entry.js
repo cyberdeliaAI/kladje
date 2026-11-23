@@ -3,6 +3,7 @@
 //
 // Rebuild ui/vendor/editor.js after changing this file:  npm run build:editor
 
+import { inlineCodeChange } from "./inline-code.mjs";
 import { tableRowChange } from "./table-row.mjs";
 import { counts, codePoints } from "./statistics.mjs";
 import { EditorState, EditorSelection, Compartment } from "@codemirror/state";
@@ -193,6 +194,7 @@ function create(parent, options = {}) {
         return n;
       };
       const tr = state.changeByRange((range) => {
+        if (marker === "`") return inlineCodeChange(state, range);
         const text = state.sliceDoc(range.from, range.to);
         if (present(Math.min(runBefore(range.from), runAfter(range.to)))) {
           return {

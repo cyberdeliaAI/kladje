@@ -58,3 +58,7 @@ Ready to commit as a private, reviewed P1 checkpoint. No confirmed critical or h
 - Package the supplied SVG identity with desktop icons, a screen-only empty-preview wordmark and a signed local macOS bundle.
 - Validation on Apple silicon includes 66 passing automated tests, 41 optimized Rust tests, a clean editor rebuild, crash/conflict recovery, representative Word import, four-page native PDF proofs, and 33/116 ms p95 input/preview at 100 KiB.
 - Remaining gates are human accessibility and input acceptance, clean installation/default associations, populated mail/telephone handlers, offline browser inspection, and hosted CI. Windows and Linux remain unverified. The app license, distribution signing and notarization remain open.
+
+## Stabilization corrections
+
+The macOS webview now requests ordinary Tab access to links and form controls. The document status exposes unsaved changes as text to assistive technology and updates only when its content changes. Compact windows wrap notices above the status bar. Ordered-list markers and syntax foregrounds were corrected after measurements found 3.04:1 for light list markers and 2.73:1 for light code comments. Regressions cover both theme palettes and dirty-state transitions. Inline code now uses a delimiter long enough for literal backticks, including mixed selections and padded content.

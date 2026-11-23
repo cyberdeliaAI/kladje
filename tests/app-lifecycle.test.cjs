@@ -495,3 +495,17 @@ test("heading search pages through repeated titles and filtering resets the page
   assert.equal(a.get("heading-list").children[0].value, 120);
   assert.equal(a.get("heading-pages").hidden, true);
 });
+
+test("the document's accessible status follows dirty edits, saves and failed saves", async () => {
+  const a = await app();
+  assert.equal(a.get("doc-state").textContent, "");
+  a.edit("revised");
+  await a.fire(50);
+  assert.match(a.get("doc-state").textContent, /Unsaved changes/);
+  a.api.write_file = () => { throw Error("Disk full"); };
+  await a.menu("save");
+  assert.match(a.get("doc-state").textContent, /Unsaved changes/);
+  a.api.write_file = () => ({version:a.disk.version, confirmed:true});
+  await a.menu("save");
+  assert.equal(a.get("doc-state").textContent, "");
+});

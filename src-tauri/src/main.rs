@@ -485,6 +485,14 @@ fn main() {
             app.manage(Mutex::new(Recovery::new(
                 app.path().app_data_dir()?.join("recovery-v1"),
             )));
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                window.with_webview(|platform| {
+                    // WebKit otherwise skips links and buttons during ordinary Tab navigation.
+                    let view = unsafe { &*platform.inner().cast::<objc2_web_kit::WKWebView>() };
+                    unsafe { view.configuration().preferences().setTabFocusesLinks(true) };
+                })?;
+            }
             build_menu(app.handle())?;
             Ok(())
         })
