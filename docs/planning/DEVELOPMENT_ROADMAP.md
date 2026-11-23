@@ -120,6 +120,10 @@ A fresh app process reached the editable fixture in 657 ms. Other runs ranged fr
 
 **Risks and exit gate.** Attachment litter, unexpected background writes and extra preferences all impose ongoing cost. Each selected feature needs an owner, a defined file footprint and an independently shippable test suite. No P3 item gates v1.
 
+**Implementation checkpoint.** Clipboard rasters use a confirmed, document-relative `assets/screenshot-N.ext` and never overwrite existing names. Untitled documents choose a location before the attachment is written. Undo removes only the reference. Compare with Disk presents two selectable text snapshots, highlights the first changed line, ignores encoding/line-ending differences, and preserves the save baseline. New from Template creates a separate draft from local Markdown or text. Original-file autosave still needs conflict qualification. Centered writing, reading time, rename and export presets have no recorded recurring need sufficient to add more controls.
+
+**Verification.** All 87 tests passed on Apple silicon (49 Rust, 38 JavaScript), including all 66 P0/P1 tests. The isolated release webview received a synthetic PNG paste event, displayed the native Save Image confirmation, previewed the asset offline and compared the dirty editor with the unchanged disk file. Undo restored the source. The asset and its standalone export contained identical bytes. A separate Chromium profile opened the relocated HTML offline and displayed the image. Live system clipboard providers, new dialog VoiceOver speech, storage volumes without hard-link support on Unix and Windows/Linux native behavior still need qualification. At 100 KiB, 20 edits took 32 ms to the second frame and 117 ms to the settled preview at p95. The 1 MiB source-only fixture remained editable.
+
 ## P4 · Investigate only with evidence
 
 **Goal.** Understand workflows that might justify a larger product boundary. **Complexity High if implemented.** Budget a short discovery spike of up to one week per supported hypothesis, with a separate estimate for delivery. Depends on stable v1, native QA capacity and evidence of repeated unmet need.
@@ -130,3 +134,5 @@ A fresh app process reached the editable fixture in 657 ms. Other runs ranged fr
 | Mermaid, publishing presets beyond HTML/PDF, or an extension API | Prototype offline output with resource caps, preview/export parity and an explicit permission boundary. Preserve source on unsupported renderers. | Compare a real author’s time saved with maintenance and support effort. Drop the proposal if it needs a hosted service or a new trust model without proven benefit. |
 
 **Risks and exit gate.** Long-term API commitments, indexing and secondary rendering engines can dominate development. Keep arbitrary plugins, vault graphs and collaborative accounts outside the planned release. A future proposal needs a named user task, measured demand, compatibility plan, maintenance budget and owner approval before implementation.
+
+**Current decision.** Defer all P4 candidates. Recent, heading navigation, relative document links and templates now cover the common single-document tasks. Observe repeated unmet needs before introducing multiple document identities, indexing, a second diagram renderer or third-party code.

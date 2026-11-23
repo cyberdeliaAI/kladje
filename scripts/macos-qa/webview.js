@@ -51,6 +51,36 @@ window.addEventListener("load", async () => {
     sep.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     check(document.activeElement.classList.contains("cm-content"), "splitter returns focus to source");
 
+    if (window.qaPaste) {
+      const before = text();
+      const png = preview.querySelector("img").src.split(",")[1];
+      const bytes = Uint8Array.from(atob(png), c => c.charCodeAt(0));
+      const clipboard = new DataTransfer();
+      clipboard.items.add(new File([bytes], "test.png", {type:"image/png"}));
+      qaEditor.goToLine(1);
+      qaEditor.focus();
+      await write(window.qaResultPath + ".paste.txt", "Await Save Image");
+      document.querySelector(".cm-content").dispatchEvent(new ClipboardEvent("paste",
+        {clipboardData: clipboard, bubbles:true, cancelable:true}));
+      await wait(() => text().includes("assets/screenshot-1.png"), "native paste confirmation and relative link");
+      await wait(() => preview.querySelector('img[alt="Image description"]')?.src.startsWith("data:image/png;"), "pasted image preview");
+      check(true, "paste event through native confirmation, asset storage and offline preview");
+      const exported = await core.invoke("export_html", {
+        path: window.qaResultPath + ".html", markdown: "![Pasted](assets/screenshot-1.png)",
+        title: "Offline image", source: window.qaResultPath.replace(/result\.txt$/, "start.md"), expected:null,
+      });
+      check(exported.confirmed && !exported.warning, "standalone export accepts pasted raster");
+      await menu("compare_disk");
+      const dialog = document.getElementById("comparison");
+      await wait(() => dialog.open, "read-only disk comparison");
+      check(document.getElementById("comparison-editor").value === text() &&
+        document.getElementById("comparison-disk").value === before, "compare current edits with intact disk source");
+      dialog.querySelector("button").click();
+      await wait(() => !dialog.open, "close comparison");
+      await menu("undo");
+      await wait(() => text() === before, "undo pasted link");
+      check(true, "undo restores source after image paste");
+    }
     const external = preview.querySelector('a[data-destination$="/qa-link"]')?.dataset.destination;
     preview.querySelector('a[data-destination*="sibling"]').click();
     await wait(() => document.activeElement.id === "uc-café-1", "cross-file fragment");

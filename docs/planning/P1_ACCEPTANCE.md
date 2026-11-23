@@ -58,3 +58,7 @@ Ready to commit as a private, reviewed P1 checkpoint. No confirmed critical or h
 - Package the supplied SVG identity with desktop icons, a screen-only empty-preview wordmark and a signed local macOS bundle.
 - Validation on Apple silicon includes 66 passing automated tests, 41 optimized Rust tests, a clean editor rebuild, crash/conflict recovery, representative Word import, four-page native PDF proofs, and 33/116 ms p95 input/preview at 100 KiB.
 - Remaining gates are human accessibility and input acceptance, clean installation/default associations, populated mail/telephone handlers, offline browser inspection, and hosted CI. Windows and Linux remain unverified. The app license, distribution signing and notarization remain open.
+
+## Follow-up qualification during P2 and P3
+
+Both hosted P1 macOS checks passed after switching to Node's built-in test discovery. A separate Chromium browser, set offline before navigation, opened a relocated standalone HTML file with no sidecars and decoded the exported PNG at its original 32 × 32 pixels. The rendered image was visually inspected. This closes the offline-browser check for the local-raster fixture. The owner authorized P2 and P3 development alongside the remaining human and platform qualification. The historical P1 decision above records the earlier gate.

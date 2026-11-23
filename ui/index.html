@@ -48,6 +48,15 @@
       <div class="dialog-actions"><button type="button" id="heading-cancel">Cancel</button><button id="heading-go" type="submit">Go to Heading</button></div>
     </form>
   </dialog>
+  <dialog id="comparison" aria-labelledby="comparison-title" aria-describedby="comparison-summary">
+    <h2 id="comparison-title">Compare with Disk</h2>
+    <p id="comparison-summary"></p>
+    <div class="comparison-panes">
+      <label>This window<textarea id="comparison-editor" readonly wrap="off" spellcheck="false"></textarea></label>
+      <label>On disk<textarea id="comparison-disk" readonly wrap="off" spellcheck="false"></textarea></label>
+    </div>
+    <form method="dialog" class="dialog-actions"><button autofocus>Close</button></form>
+  </dialog>
   <script src="vendor/editor.js"></script>
   <script src="document-session.js"></script>
   <script src="app.js"></script>

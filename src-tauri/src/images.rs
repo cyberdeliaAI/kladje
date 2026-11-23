@@ -202,20 +202,34 @@ pub fn insert_path(document: &Path, image: &Path, copy: bool) -> Result<Option<S
     if !copy {
         return Ok(None);
     }
-    let ext = raster_type(&bytes).unwrap().strip_prefix("image/").unwrap();
+    let ext = raster_type(&bytes).unwrap().trim_start_matches("image/");
+    let tmp = stage(&root, &bytes)?;
+    publish(tmp, &root, "image", ext).map(Some)
+}
+
+fn stage(folder: &Path, bytes: &[u8]) -> Result<tempfile::NamedTempFile, String> {
     let mut tmp = tempfile::Builder::new()
         .prefix(".kladje-stage-")
-        .tempfile_in(&root)
+        .tempfile_in(folder)
         .map_err(|e| e.to_string())?;
-    tmp.write_all(&bytes)
+    tmp.write_all(bytes)
         .and_then(|_| tmp.as_file().sync_all())
         .map_err(|e| e.to_string())?;
+    Ok(tmp)
+}
+
+fn publish(
+    mut tmp: tempfile::NamedTempFile,
+    folder: &Path,
+    prefix: &str,
+    ext: &str,
+) -> Result<String, String> {
     for n in 1..=10000 {
-        let name = format!("image-{n}.{ext}");
-        match tmp.persist_noclobber(root.join(&name)) {
+        let name = format!("{prefix}-{n}.{ext}");
+        match tmp.persist_noclobber(folder.join(&name)) {
             Ok(_) => {
-                crate::storage::sync_directory(&root).map_err(|e| e.to_string())?;
-                return Ok(Some(name));
+                crate::storage::sync_directory(folder).map_err(|e| e.to_string())?;
+                return Ok(name);
             }
             Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => tmp = e.file,
             Err(e) => return Err(e.to_string()),
@@ -224,10 +238,175 @@ pub fn insert_path(document: &Path, image: &Path, copy: bool) -> Result<Option<S
     Err("No free image filename.".into())
 }
 
+/// Accept only a bounded raster. The webview supplies neither a destination filename
+/// nor a directory name. Opening the asset directory must never follow a link.
+pub fn paste(document: &Path, encoded: &str) -> Result<String, String> {
+    if encoded.len() > IMAGE_LIMIT.div_ceil(3) * 4 {
+        return Err("Clipboard image exceeds 4 MiB.".into());
+    }
+    let bytes = STANDARD
+        .decode(encoded)
+        .map_err(|_| "Invalid clipboard image.")?;
+    let mime = raster_type(&bytes)
+        .filter(|_| bytes.len() <= IMAGE_LIMIT)
+        .ok_or("Paste a PNG, JPEG, GIF or WebP of up to 4 MiB.")?;
+    crate::fileio::markdown_path(document)?;
+    if !document.is_file() {
+        return Err("Save the document before pasting an image.".into());
+    }
+    let root = document
+        .parent()
+        .ok_or("No document folder.")?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let name = paste_in_assets(&root, &bytes, mime.trim_start_matches("image/"))?;
+    Ok(format!("assets/{name}"))
+}
+
+#[cfg(unix)]
+fn paste_in_assets(root: &Path, bytes: &[u8], ext: &str) -> Result<String, String> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let dir = File::open(root).map_err(|e| e.to_string())?;
+    let root_fd = dir.as_raw_fd();
+    if unsafe { libc::mkdirat(root_fd, c"assets".as_ptr(), 0o755) } != 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::AlreadyExists {
+            return Err(error.to_string());
+        }
+    }
+    let fd = unsafe {
+        libc::openat(
+            root_fd,
+            c"assets".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(format!(
+            "Cannot open the document's assets folder: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    let assets = unsafe { File::from_raw_fd(fd) };
+    let tmp = stage(root, bytes)?;
+    let staged =
+        CString::new(tmp.path().file_name().unwrap().as_bytes()).map_err(|e| e.to_string())?;
+    for n in 1..=10000 {
+        let name = format!("screenshot-{n}.{ext}");
+        let target = CString::new(name.as_bytes()).unwrap();
+        // Publish all bytes together. linkat refuses existing names and resolves
+        // against the held directory even if somebody replaces the assets path.
+        if unsafe {
+            libc::linkat(
+                root_fd,
+                staged.as_ptr(),
+                assets.as_raw_fd(),
+                target.as_ptr(),
+                0,
+            )
+        } == 0
+        {
+            assets
+                .sync_all()
+                .and_then(|_| dir.sync_all())
+                .map_err(|e| {
+                    format!("Created assets/{name}, but could not confirm the directory write: {e}")
+                })?;
+            return Ok(name);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::AlreadyExists {
+            return Err(format!(
+                "Could not publish the screenshot in assets: {error}"
+            ));
+        }
+    }
+    Err("No free screenshot filename.".into())
+}
+
+#[cfg(windows)]
+fn paste_in_assets(root: &Path, bytes: &[u8], ext: &str) -> Result<String, String> {
+    let folder = root.join("assets");
+    match std::fs::create_dir(&folder) {
+        Ok(()) => (),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+        Err(e) => return Err(e.to_string()),
+    }
+    // open_relative rejects reparse points and denies delete sharing. Keep the
+    // handle alive through publication so the directory cannot be replaced.
+    let handle = open_relative(root, Path::new("assets")).map_err(|e| e.to_string())?;
+    if !handle.metadata().map_err(|e| e.to_string())?.is_dir() {
+        return Err("assets must be a directory.".into());
+    }
+    publish(stage(&folder, bytes)?, &folder, "screenshot", ext)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    #[test]
+    fn pasted_rasters_publish_complete_distinct_files_and_travel_with_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("notes");
+        fs::create_dir(&root).unwrap();
+        let doc = root.join("draft.md");
+        fs::write(&doc, "draft").unwrap();
+        let encoded = STANDARD.encode(b"GIF89a fixture");
+        let first = paste(&doc, &encoded).unwrap();
+        let second = paste(&doc, &encoded).unwrap();
+        assert_eq!(first, "assets/screenshot-1.gif");
+        assert_eq!(second, "assets/screenshot-2.gif");
+        assert_eq!(fs::read(root.join(&first)).unwrap(), b"GIF89a fixture");
+        let moved = tmp.path().join("moved");
+        fs::rename(&root, &moved).unwrap();
+        let mut remaining = DOCUMENT_IMAGE_LIMIT;
+        assert_eq!(
+            source_url(&first, Some(&moved.join("draft.md")), false, &mut remaining).unwrap(),
+            format!("data:image/gif;base64,{encoded}")
+        );
+        assert_eq!(fs::read(moved.join("draft.md")).unwrap(), b"draft");
+    }
+
+    #[test]
+    fn invalid_and_oversized_clipboard_images_create_no_assets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let doc = tmp.path().join("draft.md");
+        fs::write(&doc, "draft").unwrap();
+        for invalid in [
+            "!".to_owned(),
+            STANDARD.encode(b"<svg/>"),
+            "A".repeat(IMAGE_LIMIT.div_ceil(3) * 4 + 1),
+        ] {
+            assert!(paste(&doc, &invalid).is_err());
+        }
+        assert!(!tmp.path().join("assets").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clipboard_folder_symlinks_are_refused_and_existing_names_survive() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let doc = tmp.path().join("note.md");
+        fs::write(&doc, "draft").unwrap();
+        let assets = tmp.path().join("assets");
+        symlink(outside.path(), &assets).unwrap();
+        let encoded = STANDARD.encode(b"GIF89a fixture");
+        assert!(paste(&doc, &encoded).is_err());
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        fs::remove_file(&assets).unwrap();
+        fs::create_dir(&assets).unwrap();
+        let victim = outside.path().join("original");
+        fs::write(&victim, "untouched").unwrap();
+        symlink(&victim, assets.join("screenshot-1.gif")).unwrap();
+        assert_eq!(paste(&doc, &encoded).unwrap(), "assets/screenshot-2.gif");
+        assert_eq!(fs::read_to_string(victim).unwrap(), "untouched");
+    }
+
     #[test]
     fn raster_policy_and_budget() {
         let temp = tempfile::tempdir().unwrap();
