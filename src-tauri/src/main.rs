@@ -80,8 +80,18 @@ fn insert_image(source: String, image: String, copy: bool) -> Result<Option<Stri
 }
 
 #[tauri::command(async)]
+fn paste_image(source: String, encoded: String) -> Result<String, String> {
+    kladje::images::paste(Path::new(&source), &encoded)
+}
+
+#[tauri::command(async)]
 fn read_file(path: String) -> Result<fileio::Opened, String> {
     fileio::open_document(Path::new(&path))
+}
+
+#[tauri::command(async)]
+fn comparison_text(path: String) -> Result<String, String> {
+    fileio::comparison_text(Path::new(&path))
 }
 
 #[tauri::command(async)]
@@ -293,11 +303,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
     app.manage(RecentMenu(recent.clone()));
     let mut file = SubmenuBuilder::new(app, "File")
         .item(&item("new", "New", Some("CmdOrCtrl+N"))?)
+        .item(&item("new_template", "New from Template…", None)?)
         .item(&item("open", "Open…", Some("CmdOrCtrl+O"))?)
         .item(&recent)
         .separator()
         .item(&item("save", "Save", Some("CmdOrCtrl+S"))?)
         .item(&item("save_as", "Save As…", Some("CmdOrCtrl+Shift+S"))?)
+        .item(&item("compare_disk", "Compare with Disk…", None)?)
         .separator()
         .item(&item("import", "Import…", Some("CmdOrCtrl+Shift+I"))?)
         .item(&export);
@@ -509,6 +521,7 @@ fn main() {
             document_headings,
             render,
             read_file,
+            comparison_text,
             write_file,
             file_version,
             recovery_list,
@@ -518,6 +531,7 @@ fn main() {
             import_file,
             export_html,
             insert_image,
+            paste_image,
             print_document,
             log_message,
             quit

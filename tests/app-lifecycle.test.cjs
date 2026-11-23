@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
+const { EditorSelection } = require("@codemirror/state");
 const path = require("node:path");
 const source = name => fs.readFileSync(path.join(__dirname, "../ui", name), "utf8");
 
@@ -22,14 +23,14 @@ async function app(initial = {}, configure = () => {}) {
   const element = () => ({
     scrollTop: 0, scrollHeight: 100, clientHeight: 100, children: [], childNodes: [], dataset: {}, style: { setProperty() {} }, classList: { add() {}, remove() {}, toggle() {} },
     firstElementChild: {}, content: { childNodes: [], querySelectorAll: () => [] }, append() {}, replaceChildren(...nodes) { this.children = nodes; }, showModal() { this.open = true; }, close() { this.open = false; },
-    attrs: {}, handlers: {}, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {},
+    attrs: {}, handlers: {}, setSelectionRange(from, to) { this.selection = [from, to]; }, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {},
     addEventListener(k,f) { this.handlers[k]=f; }, querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
   });
   const rendered = [];
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
-    location: () => ({offset:0,top:1}), restoreLocation() {}, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
+    selection: () => EditorSelection.single(0), textLength: () => text.length, location: () => ({offset:0,top:1}), restoreLocation() {}, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
     getText: () => text, setText(v) { text = v; }, replaceText(v) { text = v; change(); },
     insertImage(relative) { text += " IMAGE " + relative; change(); },
     cursor: () => ({ line: 1, column: 1, lines: 1 }), scroller: element(), remeasure() {}, focus() {},
@@ -58,7 +59,8 @@ async function app(initial = {}, configure = () => {}) {
     if (tag === "template") Object.defineProperty(node, "innerHTML", {set(html) { rendered.push(html); }});
     return node;
   } },
-    performance, Intl, crypto: require("node:crypto").webcrypto, console, clearTimeout: id => pendingTimers.delete(id),
+    FileReader: class { readAsDataURL(file) { this.result = "data:" + file.type + ";base64," + file.encoded; this.onload(); } },
+    getComputedStyle: () => ({lineHeight:"18px"}), performance, Intl, crypto: require("node:crypto").webcrypto, console, clearTimeout: id => pendingTimers.delete(id),
     setTimeout(fn, delay) { pendingTimers.set(++nextTimer, {fn, delay}); return nextTimer; },
     localStorage: { getItem: k => values.get(k), setItem: (k,v) => values.set(k,v), removeItem: k => values.delete(k) } });
   vm.runInContext(source("document-session.js"),context);
@@ -496,6 +498,133 @@ test("heading search pages through repeated titles and filtering resets the page
   assert.equal(a.get("heading-pages").hidden, true);
 });
 
+function imagePaste(a, file = {type:"image/png", size:8, encoded:"iVBORw0KGgo="}, text = "", inSource = true) {
+  const event = { target: {closest: () => inSource}, clipboardData: {files:[file], getData: () => text}, preventDefault() { this.prevented = true; }, stopPropagation() {} };
+  return {event, done: a.get("editor-pane").handlers.paste(event)};
+}
+
+test("paste stages only a confirmed clipboard raster and inserts the resulting relative path", async () => {
+  const a = await app();
+  a.api.paste_image = ({source, encoded}) => {
+    assert.equal(source, a.disk.path);
+    assert.equal(encoded, "iVBORw0KGgo=");
+    return "assets/screenshot-1.png";
+  };
+  assert.equal(imagePaste(a, undefined, "plain text").event.prevented, undefined);
+  await imagePaste(a).done;
+  await imagePaste(a, {type:"image/svg+xml", size:20}).done;
+  assert.ok(!a.calls.some(([cmd]) => cmd === "paste_image"));
+  a.dialog.ask = () => true;
+  const paste = imagePaste(a);
+  await paste.done;
+  assert.equal(paste.event.prevented, true);
+  assert.match(a.text(), /assets\/screenshot-1.png$/);
+  assert.equal(a.disk.content, "original");
+});
+
+test("cancel untitled paste and preserve edits or cursor movement during screenshot publication", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  const original = a.text();
+  a.dialog.ask = () => true;
+  a.api.paste_image = async () => { started.resolve(); await finish.promise; return "assets/screenshot-2.png"; };
+  const pending = imagePaste(a).done;
+  await started.promise;
+  a.view.selection = () => EditorSelection.single(17);
+  finish.resolve();
+  await pending;
+  assert.equal(a.text(), original);
+  assert.match(a.get("notice").textContent, /Saved assets/);
+  await a.menu("new");
+  a.edit("new draft");
+  a.dialog.save = () => null;
+  await imagePaste(a).done;
+  assert.equal(a.text(), "new draft");
+  assert.equal(a.calls.filter(([cmd]) => cmd === "paste_image").length, 1);
+});
+
+test("comparison displays two read-only text snapshots and retains the original save baseline", async () => {
+  const a = await app();
+  const diskVersion = a.disk.version;
+  a.edit("shared\nlocal 😀\nend");
+  a.api.comparison_text = () => "shared\r\n<svg>disk</svg>\r\nend";
+  await a.menu("compare_disk");
+  assert.equal(a.get("comparison").open, true);
+  assert.match(a.get("comparison-summary").textContent, /line 2/);
+  assert.deepEqual(a.get("comparison-editor").selection, [7,15]);
+  assert.equal(a.get("comparison-disk").value, "shared\n<svg>disk</svg>\nend");
+  a.get("comparison").close();
+  a.get("comparison").handlers.close();
+  assert.equal(a.get("comparison-disk").value, "");
+  assert.equal(a.disk.content, "original");
+  await a.menu("save");
+  assert.deepEqual(a.calls.find(([cmd]) => cmd === "write_file")[1].expected, diskVersion);
+});
+
+test("comparison honors the size limit and drops a result if typing continues", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  a.api.comparison_text = async () => { started.resolve(); await finish.promise; return "old"; };
+  const pending = a.menu("compare_disk");
+  await started.promise;
+  a.edit("new input");
+  finish.resolve();
+  await pending;
+  assert.ok(!a.get("comparison").open);
+  a.edit("a".repeat(512*1024+1));
+  await a.menu("compare_disk");
+  assert.equal(a.calls.filter(([cmd]) => cmd === "comparison_text").length, 1);
+  assert.match(a.get("notice").textContent, /512 KiB/);
+});
+
+test("local template creates an unbound recoverable draft without changing the template or recent paths", async () => {
+  const a = await app();
+  a.dialog.open = () => "/notes/template.md";
+  a.api.read_file = () => ({...a.disk, path:"/notes/template.md", content:"# Template\r\n"});
+  a.edit("existing draft");
+  await a.menu("new_template");
+  assert.equal(a.text(), "existing draft");
+  a.dialog.message = () => "Don't Save";
+  await a.menu("new_template");
+  assert.equal(a.text(), "# Template\n");
+  assert.match(a.get("doc-name").title, /Not saved yet.*edited/);
+  const recovery = a.calls.filter(([cmd]) => cmd === "recovery_write").at(-1);
+  assert.equal(recovery[1].draft.path, null);
+  assert.ok(!JSON.parse(a.values.get("kladje.recent")).includes("/notes/template.md"));
+  let defaultPath;
+  a.dialog.save = options => { defaultPath = options.defaultPath; return null; };
+  await a.menu("save");
+  assert.equal(defaultPath, "Untitled.md");
+  assert.equal(a.disk.content, "original");
+});
+
+test("template rereads the saved source when the discard dialog saves back to the chosen file", async () => {
+  const a = await app();
+  a.dialog.open = () => a.disk.path;
+  a.dialog.message = () => "Save";
+  a.api.write_file = ({content}) => {
+    a.disk.content = content;
+    a.disk.version = {...a.disk.version, digest:"saved"};
+    return {version:a.disk.version, confirmed:true};
+  };
+  a.edit("new template text");
+  await a.menu("new_template");
+  assert.equal(a.text(), "new template text");
+  assert.match(a.get("doc-name").title, /Not saved yet.*edited/);
+});
+
+test("comparison treats CRLF as the same text and a missing disk version leaves edits intact", async () => {
+  const a = await app();
+  a.edit("one\ntwo");
+  a.api.comparison_text = () => "one\r\ntwo";
+  await a.menu("compare_disk");
+  assert.match(a.get("comparison-summary").textContent, /same text/);
+  a.get("comparison").close();
+  a.api.comparison_text = () => { throw Error("File missing"); };
+  await a.menu("compare_disk");
+  assert.ok(!a.get("comparison").open);
+  assert.equal(a.text(), "one\ntwo");
+  assert.ok(!a.calls.some(([cmd]) => cmd === "write_file"));
+});
+
 test("the document's accessible status follows dirty edits, saves and failed saves", async () => {
   const a = await app();
   assert.equal(a.get("doc-state").textContent, "");
@@ -508,4 +637,28 @@ test("the document's accessible status follows dirty edits, saves and failed sav
   a.api.write_file = () => ({version:a.disk.version, confirmed:true});
   await a.menu("save");
   assert.equal(a.get("doc-state").textContent, "");
+});
+
+test("pasting an image in the search panel leaves the document and filesystem alone", async () => {
+  const a = await app();
+  let asked = false;
+  a.dialog.ask = () => { asked = true; return true; };
+  const paste = imagePaste(a, undefined, "", false);
+  await paste.done;
+  assert.equal(paste.event.prevented, undefined);
+  assert.equal(asked, false);
+  assert.equal(a.text(), a.disk.content);
+  assert.ok(!a.calls.some(([cmd]) => cmd === "paste_image"));
+});
+
+test("a native toggle behind a modal restores its actual checked state", async () => {
+  const a = await app();
+  a.get("comparison").open = true;
+  const count = a.calls.filter(([cmd]) => cmd === "set_menu_checks").length;
+  await a.menu("gutter");
+  assert.equal(a.calls.filter(([cmd]) => cmd === "set_menu_checks").length, count + 1);
+  const last = a.calls.filter(([cmd]) => cmd === "set_menu_checks").at(-1);
+  assert.ok(last);
+  assert.ok(!last[1].checked.includes("gutter"));
+  assert.ok(!a.values.has("kladje.gutter"));
 });

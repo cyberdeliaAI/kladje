@@ -360,3 +360,12 @@ dialog select { max-height: 35vh; }
 .dialog-actions { display: flex; justify-content: end; gap: .5rem; }
 dialog button { font: inherit; padding: .3rem .65rem; }
 @media print { dialog { display: none !important; } }
+
+#heading-pages { margin-bottom: .5rem; }
+#comparison { width: min(62rem, 94vw); }
+.comparison-panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.comparison-panes textarea { display: block; margin: .3rem 0 .8rem; width: 100%; height: 42vh; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--border); font: 1em/1.5 var(--mono); }
+@media (max-width: 640px) {
+  .comparison-panes { grid-template-columns: minmax(0, 1fr); }
+  .comparison-panes textarea { height: 18vh; }
+}
