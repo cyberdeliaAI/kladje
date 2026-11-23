@@ -1647,20 +1647,20 @@
         const choice = await T.dialog.message(`An unsaved draft of “${entry.name}” was recovered from ${new Date(entry.time).toLocaleString()}.`, {
           title: "Recovered edits", kind: "warning", buttons: { yes: "Restore", no: "Discard Draft", cancel: "Later" },
         });
-        if (choice === "Restore" || choice === "Yes") {
-          if (restored) await openWindow({kind:"restore", id:entry.id});
-          else { await restoreDraft(entry.id); restored = true; }
-        }
-        if (choice === "Discard Draft" || choice === "No") {
-          await invoke("recovery_claim", { id: entry.id });
-          await invoke("recovery_clear", { id: entry.id });
+        try {
+          if (choice === "Restore" || choice === "Yes") {
+            if (restored) await openWindow({kind:"restore", id:entry.id});
+            else { await restoreDraft(entry.id); restored = true; }
+          }
+          if (choice === "Discard Draft" || choice === "No") {
+            await invoke("recovery_claim", { id: entry.id });
+            await invoke("recovery_clear", { id: entry.id });
+          }
+        } catch (error) {
+          await showError(`Could not finish recovery for “${entry.name}”. ${error}`);
         }
       }
-      if (restored) {
-        if (config.pendingOpen) await tryOpen(config.pendingOpen);
-        return;
-      }
-      const legacy = store.get("recovery", null);
+      const legacy = !restored && store.get("recovery", null);
       if (legacy && typeof legacy.content === "string") {
         const choice = await T.dialog.message(`Restore “${legacy.name}” as a separate draft? Its original disk version is unknown.`, {
           title: "Older recovery draft", buttons: { yes: "Restore", no: "Discard Draft", cancel: "Later" },
@@ -1679,6 +1679,12 @@
       }
     } catch (error) {
       await showError(`Recovery could not finish: ${error}. Existing drafts have been retained.`);
+    }
+    // Startup fallback may replace a blank editor only. Even a later dialog or
+    // claim failure must leave a restored document and its lease intact.
+    if (restored) {
+      if (config.pendingOpen) await tryOpen(config.pendingOpen);
+      return;
     }
     if (config.pendingOpen) {
       if (["html","htm","xhtml","docx"].includes(extension(config.pendingOpen))) {
