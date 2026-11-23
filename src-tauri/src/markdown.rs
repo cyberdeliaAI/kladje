@@ -54,15 +54,53 @@ struct ImageUsage {
     accepted: usize,
 }
 
+fn luminance([r, g, b]: [u8; 3]) -> f64 {
+    let channel = |v: u8| {
+        let s = f64::from(v) / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+// Syntax scopes share the code block surface in the preview, export and print.
+fn syntax_styles(theme: &syntect::highlighting::Theme, background: [u8; 3], ink: u8) -> String {
+    let surface = luminance(background);
+    let mut theme = theme.clone();
+    for scope in &mut theme.scopes {
+        scope.style.background = None;
+        if let Some(c) = &mut scope.style.foreground {
+            loop {
+                let fg = luminance([c.r, c.g, c.b]);
+                if (surface.max(fg) + 0.05) / (surface.min(fg) + 0.05) >= 4.5 {
+                    break;
+                }
+                let blend = |v| ((3 * u16::from(v) + u16::from(ink)) / 4) as u8;
+                (c.r, c.g, c.b) = (blend(c.r), blend(c.g), blend(c.b));
+            }
+        }
+    }
+    css_for_theme_with_class_style(&theme, HL_STYLE).unwrap_or_default()
+}
+
 impl Renderer {
     pub fn new() -> Self {
         let themes = two_face::theme::extra();
-        let css =
-            |name| css_for_theme_with_class_style(themes.get(name), HL_STYLE).unwrap_or_default();
         Renderer {
             syntaxes: two_face::syntax::extra_newlines(),
-            syntax_css_light: css(EmbeddedThemeName::Github),
-            syntax_css_dark: css(EmbeddedThemeName::OneHalfDark),
+            syntax_css_light: syntax_styles(
+                themes.get(EmbeddedThemeName::Github),
+                [246, 248, 250],
+                0,
+            ),
+            syntax_css_dark: syntax_styles(
+                themes.get(EmbeddedThemeName::OneHalfDark),
+                [32, 36, 43],
+                255,
+            ),
         }
     }
 
@@ -497,6 +535,31 @@ mod tests {
     }
     fn export(md: &str) -> String {
         Renderer::new().render(md, Target::Export)
+    }
+
+    #[test]
+    fn generated_syntax_foregrounds_remain_legible_in_both_previews() {
+        let renderer = Renderer::new();
+        for (css, bg) in [
+            (&renderer.syntax_css_light, [246, 248, 250]),
+            (&renderer.syntax_css_dark, [32, 36, 43]),
+        ] {
+            let mut count = 0;
+            for line in css.lines() {
+                if let Some(hex) = line
+                    .trim()
+                    .strip_prefix("color: #")
+                    .and_then(|s| s.strip_suffix(';'))
+                {
+                    let value = u32::from_str_radix(hex, 16).unwrap().to_be_bytes();
+                    let fg = luminance([value[1], value[2], value[3]]);
+                    let bg = luminance(bg);
+                    assert!((fg.max(bg) + 0.05) / (fg.min(bg) + 0.05) >= 4.5, "{hex}");
+                    count += 1;
+                }
+            }
+            assert!(count > 10);
+        }
     }
 
     #[test]

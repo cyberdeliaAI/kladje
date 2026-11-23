@@ -62,3 +62,7 @@ Ready to commit as a private, reviewed P1 checkpoint. No confirmed critical or h
 ## Follow-up qualification during P2 and P3
 
 Both hosted P1 macOS checks passed after switching to Node's built-in test discovery. A separate Chromium browser, set offline before navigation, opened a relocated standalone HTML file with no sidecars and decoded the exported PNG at its original 32 × 32 pixels. The rendered image was visually inspected. This closes the offline-browser check for the local-raster fixture. The owner authorized P2 and P3 development alongside the remaining human and platform qualification. The historical P1 decision above records the earlier gate.
+
+## Stabilization corrections
+
+The macOS webview now requests ordinary Tab access to links and form controls. The document status exposes unsaved changes as text to assistive technology and updates only when its content changes. Compact windows wrap notices above the status bar. Ordered-list markers and syntax foregrounds were corrected after measurements found 3.04:1 for light list markers and 2.73:1 for light code comments. Regressions cover both theme palettes and dirty-state transitions. Inline code now uses a delimiter long enough for literal backticks, including mixed selections and padded content.
