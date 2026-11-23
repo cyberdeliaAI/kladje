@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kladje</title>
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="preview.css">
+  <link rel="stylesheet" href="vendor/mathml.css">
+  <!-- Syntax colours come from the Rust side: one sheet for the screen theme, a light one for print. -->
+  <style id="syntax-screen" media="screen"></style>
+  <style id="syntax-print" media="print"></style>
+</head>
+<body>
+  <div id="app" data-view="split">
+    <main id="panes">
+      <section id="editor-pane" aria-label="Markdown source"></section>
+      <div id="divider" role="separator" aria-orientation="vertical" title="Drag to resize, double-click to reset"></div>
+      <section id="preview-pane" aria-label="Preview">
+        <article id="preview" class="markdown-body"></article>
+      </section>
+    </main>
+    <footer id="statusbar">
+      <div id="doc-name"><span></span></div>
+      <div id="notice" role="status" aria-live="polite"></div>
+      <div id="stats"></div>
+      <div id="view-switch" role="group" aria-label="Layout">
+        <button type="button" data-view="editor" title="Editor only" aria-label="Editor only">
+          <svg viewBox="0 0 14 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 2.5h10M2 6h10M2 9.5h6"/></svg>
+        </button>
+        <button type="button" data-view="split" title="Editor and preview" aria-label="Editor and preview">
+          <svg viewBox="0 0 14 12" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1" y="1" width="12" height="10" rx="2"/><path d="M7 1v10"/></svg>
+        </button>
+        <button type="button" data-view="preview" title="Preview only" aria-label="Preview only">
+          <svg viewBox="0 0 14 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M1 6s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z"/><circle cx="7" cy="6" r="1.6"/></svg>
+        </button>
+      </div>
+    </footer>
+  </div>
+  <script src="vendor/editor.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
