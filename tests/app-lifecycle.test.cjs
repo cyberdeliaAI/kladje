@@ -22,7 +22,7 @@ async function app(initial = {}, configure = () => {}) {
   let text = "", change;
   const element = () => ({
     scrollTop: 0, scrollHeight: 100, clientHeight: 100, children: [], childNodes: [], dataset: {}, style: { setProperty() {} }, classList: { add() {}, remove() {}, toggle() {} },
-    firstElementChild: {}, content: { childNodes: [], querySelectorAll: () => [] }, append() {}, replaceChildren(...nodes) { this.children = nodes; }, showModal() { this.open = true; }, close() { this.open = false; },
+    firstElementChild: {}, content: { childNodes: [], querySelectorAll: () => [] }, append() {}, replaceChildren(...nodes) { this.children = nodes; }, show() { this.open = true; }, showModal() { this.open = true; }, close() { this.open = false; },
     attrs: {}, handlers: {}, setSelectionRange(from, to) { this.selection = [from, to]; }, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {},
     addEventListener(k,f) { this.handlers[k]=f; }, querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
   });
@@ -30,7 +30,7 @@ async function app(initial = {}, configure = () => {}) {
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
-    selection: () => EditorSelection.single(0), textLength: () => text.length, location: () => ({offset:0,top:1}), restoreLocation() {}, setPairing() {}, pasteUrl() { return false; }, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
+    selection: () => EditorSelection.single(0), textLength: () => text.length, location: () => ({offset:0,top:1}), restoreLocation() {}, setPairing() {}, setWritingModes() {}, pasteUrl() { return false; }, configureLayout() {}, statistics: () => ({words: 1, characters: text.length}),
     getText: () => text, setText(v) { text = v; }, replaceText(v) { text = v; change(); },
     insertImage(relative) { text += " IMAGE " + relative; change(); },
     cursor: () => ({ line: 1, column: 1, lines: 1 }), scroller: element(), remeasure() {}, focus() {},
@@ -715,4 +715,36 @@ test("Close Window uses the same dirty-document veto as Quit", async () => {
   await a.menu("close_window");
   assert.equal(a.text(),"retain unsaved source");
   assert.ok(!a.calls.some(([name])=>name==="destroy"));
+});
+
+test("a full portable volume retains the active draft, recovery and the Close veto", async () => {
+  const a = await app();
+  a.edit("keep this draft");
+  a.api.write_file = () => { throw "KLADJE_COPY_REQUIRED"; };
+  a.dialog.ask = () => true;
+  a.api.save_protected_copy = () => { throw "No space left on device"; };
+  await a.menu("save");
+  assert.equal(a.disk.content, "original");
+  assert.match(a.get("doc-name").title, /a\.md.*edited/);
+  assert.ok(a.calls.some(([cmd, args]) => cmd === "recovery_write" && args.draft.content === "keep this draft"));
+  await a.menu("close_window");
+  assert.ok(!a.calls.some(([cmd]) => cmd === "destroy"));
+  assert.equal(a.text(), "keep this draft");
+});
+
+test("a delayed sidebar outline cannot replace the headings of a newer revision", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  let calls = 0;
+  a.api.document_headings = async () => {
+    if (++calls === 1) { started.resolve(); await finish.promise; return [{line:1,level:1,text:"Stale"}]; }
+    return [{line:1,level:1,text:"Current"}];
+  };
+  a.edit("# Stale");
+  const opening = a.menu("document_outline"); await started.promise;
+  a.edit("# Current"); await a.fire(500);
+  finish.resolve(); await opening; await new Promise(setImmediate);
+  assert.equal(a.get("heading-list").children.length,1);
+  assert.match(a.get("heading-list").children[0].textContent,/Current/);
+  await a.menu("document_outline");
+  assert.equal(a.get("outline").open,false);
 });

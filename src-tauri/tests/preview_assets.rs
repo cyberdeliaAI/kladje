@@ -97,3 +97,31 @@ fn only_renderer_owned_list_markers_receive_edit_coordinates() {
         .tasks
         .is_empty());
 }
+
+#[test]
+fn export_uses_bounded_frontmatter_fields_and_prints_explicit_page_breaks() {
+    let renderer = Renderer::new();
+    let doc =
+        "---\ntitle: 'Café & More'\nlang: nl-BE\n---\n# fallback\n\n<!-- pagebreak -->\n\nLast";
+    let export = |text: &str| {
+        kladje::export::standalone_html(&renderer, text, "untitled", None)
+            .unwrap()
+            .0
+    };
+    let html = export(doc);
+    assert!(html.contains("<title>Café &amp; More</title>"));
+    assert!(html.contains("<html lang=\"nl-BE\">"));
+    assert!(html.contains("<div class=\"page-break\""));
+    assert!(!export("```\n<!-- pagebreak -->\n```").contains("<div class=\"page-break\""));
+    for field in [
+        "title: |\n  longer",
+        "title: A\ntitle: B",
+        "title: *alias",
+        "title: A\n  continuation",
+        "title: A\n\n  continuation",
+    ] {
+        let html = export(&format!("---\n{field}\nlang: 'en bad'\n---\n# Fallback"));
+        assert!(html.contains("<title>Fallback</title>"), "{field}");
+        assert!(html.contains("<html lang=\"en\">"));
+    }
+}

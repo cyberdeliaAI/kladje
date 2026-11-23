@@ -500,6 +500,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             "Remote Images for This Document…",
             None,
         )?)
+        .item(&check("document_outline", "Document Outline", None)?)
         .item(&check("sync_scroll", "Synchronize Scrolling", None)?)
         .item(&item("fold", "Fold or Unfold at Cursor", None)?)
         .item(&check("gutter", "Line Numbers", None)?)

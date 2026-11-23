@@ -5,6 +5,90 @@ use crate::markdown::{escaped, Renderer, Target};
 const DOCUMENT_CSS: &str = include_str!("../../ui/preview.css");
 const MATH_CSS: &str = include_str!("../../ui/vendor/mathml.css");
 
+/// Read flat, single-line metadata only. Unknown or compound YAML never runs
+/// a resolver or expands aliases. Ambiguous fields fall back independently.
+pub(crate) fn document_metadata(root: comrak::nodes::Node<'_>) -> (Option<String>, Option<String>) {
+    use comrak::nodes::NodeValue;
+    let heading = || {
+        root.children()
+            .find(|node| matches!(&node.data().value, NodeValue::Heading(h) if h.level == 1))
+            .map(|node| node.collect_text().trim().to_owned())
+            .filter(|s| !s.is_empty())
+    };
+    let Some(first) = root.first_child() else {
+        return (None, None);
+    };
+    let ast = first.data();
+    let NodeValue::FrontMatter(metadata) = &ast.value else {
+        return (heading(), None);
+    };
+    if metadata.len() > 16 * 1024 {
+        return (heading(), None);
+    }
+    let field = |key: &str| -> Option<String> {
+        let mut rows = metadata
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .peekable();
+        let mut result = None;
+        while let Some(line) = rows.next() {
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            if name != key {
+                continue;
+            }
+            if result.is_some()
+                || !value.starts_with(' ')
+                || rows
+                    .peek()
+                    .is_some_and(|next| next.starts_with([' ', '\t']))
+            {
+                return None;
+            }
+            let value = value.trim();
+            let simple = if let Some(inner) =
+                value.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+            {
+                if inner.contains(['"', '\\']) {
+                    return None;
+                }
+                inner
+            } else if let Some(inner) = value.strip_prefix('\'').and_then(|s| s.strip_suffix('\''))
+            {
+                if inner.contains('\'') {
+                    return None;
+                }
+                inner
+            } else {
+                if value.starts_with([
+                    '!', '&', '*', '[', '{', '|', '>', '\'', '"', '#', '%', '@', '`',
+                ]) || value.contains(" #")
+                    || value.contains(": ")
+                {
+                    return None;
+                }
+                value
+            };
+            if simple.is_empty() || simple.len() > 512 || simple.chars().any(char::is_control) {
+                return None;
+            }
+            result = Some(simple.to_owned());
+        }
+        result
+    };
+    let language = field("lang").filter(|tag| {
+        let mut parts = tag.split('-');
+        let first = parts.next().unwrap_or_default();
+        (2..=8).contains(&first.len())
+            && first.bytes().all(|c| c.is_ascii_alphabetic())
+            && tag.len() <= 63
+            && parts
+                .all(|p| (1..=8).contains(&p.len()) && p.bytes().all(|c| c.is_ascii_alphanumeric()))
+    });
+    (field("title").or_else(heading), language)
+}
+
 /// Build an offline HTML file with its checked raster assets embedded.
 pub fn standalone_html(
     renderer: &Renderer,
@@ -12,14 +96,13 @@ pub fn standalone_html(
     fallback_title: &str,
     source: Option<&std::path::Path>,
 ) -> Result<(String, usize), String> {
-    let title = renderer
-        .title_of(markdown)
-        .unwrap_or_else(|| fallback_title.to_string());
     let rendered = renderer.render_document(markdown, Target::Export, source, false)?;
+    let title = rendered.title.as_deref().unwrap_or(fallback_title);
+    let lang = rendered.language.as_deref().unwrap_or("en");
     let body = rendered.html;
 
     let html = format!(
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+        "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">\n\
          <meta name=\"generator\" content=\"Kladje\">\n<title>{title}</title>\n<style>\n\
@@ -28,7 +111,7 @@ pub fn standalone_html(
          .markdown-body {{ max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }}\n\
          {DOCUMENT_CSS}\n{MATH_CSS}\n{syntax}\n</style>\n</head>\n<body>\n\
          <article class=\"markdown-body\">\n{body}</article>\n</body>\n</html>\n",
-        title = escaped(&title),
+        title = escaped(title),
         syntax = renderer.syntax_css_light,
     );
     Ok((html, rendered.omitted))

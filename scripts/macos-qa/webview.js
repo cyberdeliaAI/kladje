@@ -203,6 +203,43 @@ window.addEventListener("load", async () => {
     await wait(() => document.querySelector(".cm-foldPlaceholder"), "fold Markdown heading");
     await menu("fold");
     await wait(() => !document.querySelector(".cm-foldPlaceholder"), "unfold Markdown heading");
+    await menu("settings");
+    await wait(() => settings.open, "writing modes");
+    document.getElementById("focusParagraph").click();
+    document.getElementById("typewriter").click();
+    settings.querySelector("button").click();
+    edit(Array.from({length:100},(_,i)=>"Paragraph "+i).join("\n\n"));
+    qaEditor.goToLine(89);
+    qaEditor.focus();
+    await frame();
+    document.execCommand("insertText",false,"Typing ");
+    await wait(() => document.querySelector(".writing-paragraph")?.textContent.includes("Typing"), "active paragraph follows typing");
+    await frame(); await frame();
+    const current = document.querySelector(".writing-paragraph").getBoundingClientRect();
+    const pane = qaEditor.scroller.getBoundingClientRect();
+    check(Math.abs((current.top+current.bottom-pane.top-pane.bottom)/2) < 65,
+      "typewriter centers the edited line in the native viewport");
+    await menu("settings");
+    await wait(() => settings.open, "restore standard writing modes");
+    document.getElementById("focusParagraph").click();
+    document.getElementById("typewriter").click();
+    settings.querySelector("button").click();
+    const proof = await core.invoke("export_html", {path:window.qaResultPath+".paged.html", expected:null,
+      title:"proof", source:null, markdown:"---\ntitle: Page proof\nlang: en-GB\n---\n# First proof page\n\n<!-- pagebreak -->\n\n# Second proof page"});
+    check(proof.confirmed, "offline export with explicit page break");
+    edit("# Alpha\n\n# Beta");
+    await menu("document_outline");
+    await wait(() => outline.open && list.options.length === 2, "open nonmodal document outline");
+    check(!outline.matches(":modal") && document.getElementById("panes").getBoundingClientRect().left >= outline.getBoundingClientRect().right-1,
+      "outline occupies its own column beside the document");
+    list.selectedIndex = 1;
+    list.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter",cancelable:true}));
+    await wait(() => qaEditor.cursor().line === 3, "jump from sidebar");
+    check(outline.open, "outline stays open while navigating");
+    edit("# One");
+    await wait(() => list.options.length === 1 && list.options[0].textContent.includes("One"), "refresh open outline after editing");
+    await menu("document_outline");
+    await wait(() => !outline.open, "hide outline");
     await checkpoint("native workflow passed");
     const sample =
       "# Section\n\nA sentence with **bold**, *emphasis*, a [link](#section) and `code`.\n\n- First\n- Second\n\n";

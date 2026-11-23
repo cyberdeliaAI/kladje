@@ -8,8 +8,8 @@ The P0 document-safety baseline and P1 single-document workflows have been exerc
 
 - Pair brackets and quotes, paste a URL over selected text, and use **Writing Settings** to enable rich-text paste or estimated reading time. Copy selected Markdown as formatted text from **Edit**.
 - Edit Markdown with native menu shortcuts, heading and list commands, undo and redo, and Find and Replace. Open **Help → Markdown Guide** for an editable guide.
-- Reopen any of the last ten files from **File → Open Recent**. Search headings with **⌘⇧J** on macOS, including in editor-only view.
-- Toggle line numbers, wrapping and writing width in **View**. Use **Format → Insert Table Row Below** to extend an existing Markdown table.
+- Reopen any of the last ten files from **File → Open Recent**. Search headings with **⌘⇧J** on macOS or keep **View → Document Outline** open beside the source.
+- Toggle line numbers, wrapping and writing width in **View**. Writing Settings also offers paragraph focus and typewriter scrolling. Use **Format → Insert Table Row Below** to extend an existing Markdown table.
 - Preview tables, task lists, footnotes, strikethrough, fenced code with syntax highlighting, and math. Switch between editor, preview and split views in light or dark mode.
 - Open Markdown and plain text, import HTML or Word documents as editable Markdown, export HTML, and print or save a PDF through the system print dialog.
 - Use **Format → Insert Local Image** or drop a PNG, JPEG, GIF or WebP into the document. Edit the selected description to supply alt text.

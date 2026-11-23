@@ -187,6 +187,7 @@
 .markdown-body math { font-size: 1.1em; }
 
 @media print {
+  .markdown-body .page-break { break-after: page; }
   .markdown-body { font-size: 11.5pt; }
   .markdown-body pre { white-space: pre-wrap; overflow: visible; }
   .markdown-body pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
