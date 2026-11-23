@@ -3,6 +3,7 @@
 
 pub mod export;
 pub mod fileio;
+pub mod history;
 pub mod import;
 pub mod markdown;
 pub mod recovery;

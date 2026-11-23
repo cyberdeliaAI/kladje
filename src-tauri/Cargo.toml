@@ -24,6 +24,7 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 quick-xml = "0.42"
 
 # Already present in Cargo.lock. Used for exclusive staging and byte fingerprints.
+same-file = "1"
 tempfile = "3"
 sha2 = "0.10"
 base64 = "0.21"
