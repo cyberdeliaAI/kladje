@@ -49,19 +49,25 @@ export async function verifyWindows({app, executable, tmp, id, fixture}) {
   end run`,String(processId),...args],{encoding:"utf8",timeout:5000}).trim();
   const menu = (parent,item) => ui("set frontmost to true\nclick menu item (item 3 of argv) of menu 1 of menu bar item (item 2 of argv) of menu bar 1",parent,item);
   const quit = () => ui('set frontmost to true\nclick menu item "Quit Kladje" of menu 1 of menu bar item 2 of menu bar 1');
-  const answer = title => wait(()=>ui(`repeat with w in windows
+  const answer = async (title, expectedFile) => {
+    const result = await wait(()=>ui(`repeat with w in windows
     if exists button (item 2 of argv) of w then
+      set detail to value of static texts of w as text
       click button (item 2 of argv) of w
-      return "clicked"
+      return "clicked " & detail
     end if
     repeat with s in sheets of w
       if exists button (item 2 of argv) of s then
+        set detail to value of static texts of s as text
         click button (item 2 of argv) of s
-        return "clicked"
+        return "clicked " & detail
       end if
     end repeat
   end repeat
   return ""`,title),"native "+title+" button");
+    if (expectedFile) assert.ok(result.includes("/" + path.basename(tmp) + "/" + path.basename(expectedFile)),
+      "The native prompt must identify the document folder and filename");
+  };
   const openFiles = (...files) => execFileSync("/usr/bin/open",["-a",app,...files]);
   const ended = () => wait(()=>child.exitCode!==null,"isolated app to exit");
   const sibling = path.join(tmp,"sibling note.md");
@@ -124,11 +130,11 @@ export async function verifyWindows({app, executable, tmp, id, fixture}) {
     fs.writeFileSync(sibling,siblingBytes);
     checks.push("An external change prompts only its dirty owner and Keep Edits preserves both versions");
     quit();
-    await answer("Don't Save");
+    await answer("Don't Save",sibling);
     const provisional = await command(b,{edit:"late input must be blocked"});
     assert.equal(provisional.frozen,true);
     assert.equal(provisional.text,"unsaved second document");
-    await answer("Cancel");
+    await answer("Cancel",fixture);
     for (const [label,expected] of [["main","unsaved first document"],[b,"unsaved second document"]]) {
       const s = await command(label);
       assert.equal(s.text,expected); assert.equal(s.frozen,false); assert.equal(s.windows.length,2);

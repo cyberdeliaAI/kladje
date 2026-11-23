@@ -54,7 +54,8 @@ window.addEventListener("load", async () => {
     const sep = document.getElementById("divider");
     sep.focus();
     sep.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    check(sep.getAttribute("aria-valuenow") === "55", "keyboard splitter");
+    check(sep.getAttribute("aria-valuenow") === "55" && sep.getAttribute("aria-valuetext") === "55% source, 45% preview",
+      "keyboard splitter gives both pane widths as accessible text");
     sep.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     check(document.activeElement.classList.contains("cm-content"), "splitter returns focus to source");
 
@@ -249,6 +250,15 @@ window.addEventListener("load", async () => {
     list.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter",cancelable:true}));
     await wait(() => qaEditor.cursor().line === 3, "jump from sidebar");
     check(outline.open, "outline stays open while navigating");
+    filter.value = "Beta";
+    filter.dispatchEvent(new Event("input"));
+    qaEditor.focus();
+    await menu("jump_heading");
+    await wait(() => document.activeElement === filter && filter.selectionStart === 0 && filter.selectionEnd === 4,
+      "Jump to Heading selects the previous sidebar query");
+    check(list.options.length === 1, "existing outline query stays filtered and is selected for replacement");
+    filter.value = "";
+    filter.dispatchEvent(new Event("input"));
     edit("# One");
     await wait(() => list.options.length === 1 && list.options[0].textContent.includes("One"), "refresh open outline after editing");
     await menu("document_outline");
@@ -318,9 +328,10 @@ window.addEventListener("load", async () => {
     await wait(
       () =>
         preview.lastElementChild?.textContent === "End of document." &&
-        preview.querySelector("img")?.complete,
+        preview.querySelector("img")?.naturalWidth > 0,
       "print fixture ready",
     );
+    check(preview.querySelector("img").src.startsWith("data:image/png;base64,"), "local image reloads after large-document preview suspension");
     if (external) {
       edit(text() + "\n\n[Opener check](" + external + ")");
       await wait(() => preview.querySelector('a[data-destination$="/qa-link"]'), "native link");

@@ -356,7 +356,9 @@
   function setSplit(percent) {
     const clamped = Math.min(80, Math.max(20, Number.isFinite(percent) ? percent : 50));
     els.panes.style.setProperty("--split", clamped + "%");
-    els.divider.setAttribute("aria-valuenow", String(Math.round(clamped)));
+    const sourceWidth = Math.round(clamped);
+    els.divider.setAttribute("aria-valuenow", String(sourceWidth));
+    els.divider.setAttribute("aria-valuetext", `${sourceWidth}% source, ${100 - sourceWidth}% preview`);
     store.set("split", clamped);
     anchors = null;
     editor.remeasure();
@@ -424,12 +426,14 @@
         do {
           renderAgain = false;
           const started = performance.now();
-          const snapshot = session.snapshot();
-          const source = doc.path, remote = doc.remote;
-          if (snapshot.content.length > 256 * 1024) {
+          if (editor.textLength() > 256 * 1024) {
+            previewAssets.clear();
+            anchors = null;
             els.preview.textContent = "Live preview is paused for this large document. You can keep editing and saving.";
             return false;
           }
+          const snapshot = session.snapshot();
+          const source = doc.path, remote = doc.remote;
           let html, failure;
           try {
             html = await invoke("render", { markdown: snapshot.content, source, remote, knownImages: [...previewAssets.keys()] });
@@ -448,6 +452,7 @@
         } while (renderAgain);
       } catch (error) {
         report(error);
+        previewAssets.clear();
         els.preview.textContent = "Preview unavailable. Your source is still open.";
         ready = false;
       } finally {
@@ -611,7 +616,7 @@
       matches.length ? `${matches.length} heading${matches.length === 1 ? "" : "s"}` : "No matching headings";
   }
   async function jumpToHeading() {
-    if (sidebarOpen) { headingFilter.focus(); return; }
+    if (sidebarOpen) { headingFilter.focus(); headingFilter.select(); return; }
     if (initializing || outline.open) return;
     const snapshot = session.snapshot();
     const rows = await invoke("document_headings", {markdown: snapshot.content});
@@ -921,7 +926,10 @@
     const DISCARD = "Don't Save";
     const CANCEL = "Cancel";
     const before = session.snapshot();
-    const answer = await T.dialog.message(`Do you want to save the changes you made to “${doc.name}”?`, {
+    // Two windows can have the same title. Give each vote enough context to identify the draft.
+    const detail = doc.path || before.content.match(/^\s{0,160}([^\r\n]{1,72})/u)?.[1].trim();
+    const question = `Do you want to save the changes you made to “${doc.name}”?`;
+    const answer = await T.dialog.message(detail ? question + "\n\n" + detail : question, {
       title: "Unsaved changes",
       kind: "warning",
       buttons: { yes: SAVE, no: DISCARD, cancel: CANCEL },
