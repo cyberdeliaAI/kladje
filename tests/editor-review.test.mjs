@@ -5,7 +5,7 @@ import {ensureSyntaxTree} from "@codemirror/language";
 import {insertBracket, closeBrackets} from "@codemirror/autocomplete";
 import {history, undo, redo} from "@codemirror/commands";
 import {documentLanguage, frontmatterLines} from "../editor-src/markdown-language.mjs";
-import {counts} from "../editor-src/statistics.mjs";
+import {counts, selectedProseWords} from "../editor-src/statistics.mjs";
 import {urlOverSelection} from "../editor-src/smart-paste.mjs";
 import {adjacentTableCell} from "../editor-src/table-row.mjs";
 
@@ -74,4 +74,31 @@ test("table navigation crosses delimiter rows, empty cells and escaped pipes", (
   assert.equal(move(1),"B"); assert.equal(move(1),"x \\| y"); assert.equal(move(1),"");
   assert.equal(move(-1),"x \\| y");
   assert.equal(adjacentTableCell(setup("prose"),1),null);
+});
+
+test("focus follows the current Markdown paragraph and typewriter ignores programmatic edits", async () => {
+  const {focusedBlock, typewriter} = await import("../editor-src/writing-modes.mjs");
+  const source = "# Title\n\nfirst line\nsecond line\n\nNext";
+  const state = setup(source,{anchor:15});
+  const block = focusedBlock(state);
+  assert.equal(state.sliceDoc(block.from,block.to),"first line\nsecond line");
+  const plain = EditorState.create({doc:"a",extensions:[typewriter]});
+  assert.equal(plain.update({selection:{anchor:0}}).effects.length,0);
+  assert.equal(plain.update({changes:{from:0,insert:"b"}}).effects.length,0);
+  assert.equal(plain.update({changes:{from:0,insert:"b"},userEvent:"input.type"}).effects.length,1);
+});
+
+test("selection statistics exclude frontmatter while retaining selected body words", () => {
+  const source="---\ntitle: some metadata\n---\nTwo words";
+  assert.equal(selectedProseWords(setup(source, {anchor:0,head:10})),0);
+  assert.equal(selectedProseWords(setup(source, {anchor:0,head:source.length})),2);
+});
+test("table boundaries never fall through to block indentation", () => {
+  const text="| a | b |\n| --- | --- |\n| c | d |";
+  const first=setup(text,{anchor:2});
+  assert.equal(first.update(adjacentTableCell(first,-1)).state.doc.toString(),text);
+  const last=setup(text,{anchor:text.lastIndexOf("d")});
+  const added=last.update(adjacentTableCell(last,1)).state;
+  assert.equal(added.doc.toString(),text+"\n|  |  |");
+  assert.equal(added.doc.lineAt(added.selection.main.head).number,4);
 });

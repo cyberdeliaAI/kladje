@@ -71,7 +71,7 @@
   let syncEnabled = storedFlag("sync", true);
   let gutter = storedFlag("gutter", false), wrap = storedFlag("wrap", true), measure = storedFlag("measure", true);
   const settings = $("settings");
-  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false};
+  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false};
   for (const [key, fallback] of Object.entries(writing)) {
     writing[key] = storedFlag(key, fallback);
     const control = $(key);
@@ -79,14 +79,21 @@
     control.addEventListener("change", () => {
       writing[key] = control.checked;
       store.set(key, control.checked);
+      if (key === "focusParagraph" || key === "typewriter") applyWritingModes();
       if (key === "pairing") editor.setPairing(control.checked);
       if (key === "readingTime") updateStats();
     });
   }
+  function applyWritingModes() {
+    editor.setWritingModes(writing.focusParagraph, writing.typewriter);
+    els.editorPane.dataset.focusParagraph = String(writing.focusParagraph);
+    els.editorPane.dataset.typewriter = String(writing.typewriter);
+  }
+  let sidebarOpen = false;
   let checkUpdate = Promise.resolve();
   function syncChecks() {
     const checked = ["view_" + viewMode, "theme_" + themeSetting];
-    for (const [id, enabled] of Object.entries({sync_scroll:syncEnabled, gutter, wrap, measure})) {
+    for (const [id, enabled] of Object.entries({sync_scroll:syncEnabled, gutter, wrap, measure, document_outline:sidebarOpen})) {
       if (enabled) checked.push(id);
     }
     checkUpdate = checkUpdate.then(() => invoke("set_menu_checks", {checked})).catch(report);
@@ -235,6 +242,7 @@
 
   function onDocumentChanged() {
     session.changed();
+    if (sidebarOpen) schedule("sidebar", refreshSidebar, 500);
     if (els.notice.textContent === "Saved") {
       els.notice.classList.remove("visible");
       els.notice.textContent = "";
@@ -292,6 +300,10 @@
 
   // ---------------------------------------------------------------- theme, layout, zoom
 
+  window.addEventListener("pointerdown", () => { els.app.dataset.pointerFocus = "true"; }, true);
+  window.addEventListener("keydown", event => {
+    if (event.key === "Tab" || event.key === "Escape") els.app.dataset.pointerFocus = "false";
+  }, true);
   const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
   function applyTheme() {
     const dark = themeSetting === "dark" || (themeSetting === "auto" && systemDark.matches);
@@ -505,8 +517,9 @@
   let taskBindings = new WeakMap();
   function bindPreviewTasks(tasks, snapshot) {
     taskBindings = new WeakMap();
+    const markers = new Map(Object.entries(tasks));
     for (const box of els.preview.querySelectorAll("li.task-list-item > input.task-list-item-checkbox")) {
-      const marker = tasks[box.parentElement.getAttribute("data-sourcepos")];
+      const marker = markers.get(box.parentElement.getAttribute("data-sourcepos"));
       box.disabled = !marker;
       if (marker) {
         box.checked = marker.checked;
@@ -588,6 +601,7 @@
       matches.length ? `${matches.length} heading${matches.length === 1 ? "" : "s"}` : "No matching headings";
   }
   async function jumpToHeading() {
+    if (sidebarOpen) { headingFilter.focus(); return; }
     if (initializing || outline.open) return;
     const snapshot = session.snapshot();
     const rows = await invoke("document_headings", {markdown: snapshot.content});
@@ -600,11 +614,72 @@
     outline.showModal();
     headingFilter.focus();
   }
+  const narrowOutline = window.matchMedia("(max-width: 800px)");
+  let headingRequest = 0, sidebarBusy = false, sidebarAgain = false;
+  async function refreshSidebar() {
+    if (!sidebarOpen) return;
+    if (sidebarBusy) { sidebarAgain = true; return; }
+    sidebarBusy = true;
+    const request = ++headingRequest;
+    const snapshot = session.snapshot();
+    try {
+      const rows = await invoke("document_headings", {markdown:snapshot.content});
+      if (!sidebarOpen || request !== headingRequest || !session.isCurrent(snapshot)) return;
+      headingRows = rows;
+      outlineSnapshot = snapshot;
+      headingPage = 0;
+      filterHeadings();
+    } catch (error) {
+      if (!sidebarOpen || request !== headingRequest || !session.isCurrent(snapshot)) return;
+      headingRows = [];
+      outlineSnapshot = null;
+      filterHeadings();
+      $("heading-count").textContent = String(error);
+    } finally {
+      sidebarBusy = false;
+      if (sidebarAgain) { sidebarAgain = false; refreshSidebar(); }
+    }
+  }
+  function hideOutline() {
+    if (sidebarOpen) {
+      sidebarOpen = false;
+      ++headingRequest;
+      clearTimeout(timers.sidebar);
+      els.app.dataset.outline = "false";
+      $("outline-title").textContent = "Jump to Heading";
+      $("heading-cancel").textContent = "Cancel";
+      syncChecks();
+      editor.remeasure();
+    }
+    outline.close();
+  }
+  function focusDocument() {
+    if (viewMode === "preview") els.previewPane.focus();
+    else editor.focus();
+  }
+  async function toggleSidebar() {
+    if (sidebarOpen) { hideOutline(); focusDocument(); return; }
+    if (narrowOutline.matches) { syncChecks(); return jumpToHeading(); }
+    sidebarOpen = true;
+    els.app.dataset.outline = "true";
+    $("outline-title").textContent = "Document Outline";
+    $("heading-cancel").textContent = "Hide";
+    headingFilter.value = "";
+    headingRows = [];
+    outlineSnapshot = null;
+    filterHeadings();
+    outline.show();
+    headingFilter.focus();
+    syncChecks();
+    editor.remeasure();
+    await refreshSidebar();
+  }
+  narrowOutline.addEventListener("change", () => { if (narrowOutline.matches && sidebarOpen) hideOutline(); });
   async function chooseHeading() {
     const line = Number(headingList.value);
     if (!line || !outlineSnapshot) return;
     const snapshot = outlineSnapshot;
-    outline.close();
+    if (!sidebarOpen) outline.close();
     if (!session.isCurrent(snapshot)) return;
     if (viewMode === "preview" && await renderNow() && session.isCurrent(snapshot)) {
       const heading = els.preview.querySelector(`:is(h1,h2,h3,h4,h5,h6)[data-sourcepos^="${line}:"]`);
@@ -635,7 +710,14 @@
   });
   headingList.addEventListener("dblclick", () => chooseHeading().catch(showError));
   $("heading-form").addEventListener("submit", event => { event.preventDefault(); chooseHeading().catch(showError); });
-  $("heading-cancel").addEventListener("click", () => outline.close());
+  $("heading-cancel").addEventListener("click", () => {
+    const pinned = sidebarOpen;
+    hideOutline();
+    if (pinned) focusDocument();
+  });
+  outline.addEventListener("keydown", event => {
+    if (sidebarOpen && event.key === "Escape") { event.preventDefault(); hideOutline(); focusDocument(); }
+  });
   outline.addEventListener("close", () => { if (!outline.open) { headingRows = []; outlineSnapshot = null; headingList.replaceChildren(); } });
 
   function jumpFragment(fragment) {
@@ -771,7 +853,7 @@
 
   function loadDocument({ path = null, name = null, content = "", version = null, dirty = false, id = draftId(), recovered = false, format = null, revision = 0 }) {
     rememberPlace();
-    if (outline.open) outline.close();
+    if (outline.open && !sidebarOpen) outline.close();
     if (comparison.open) comparison.close();
     clearRecovery();
     previewAssets.clear();
@@ -786,6 +868,7 @@
     doc.ignoredVersion = null;
     editor.setText(content.replace(/\r\n?/g, "\n"));
     session.reset(editor.getText(), dirty, revision);
+    if (sidebarOpen) { headingRows = []; outlineSnapshot = null; filterHeadings(); refreshSidebar(); }
     els.preview.replaceChildren();
     els.previewPane.scrollTop = 0;
     anchors = null;
@@ -1297,6 +1380,7 @@
       await syncRecentMenu();
     }),
     jump_heading: jumpToHeading,
+    document_outline: toggleSidebar,
     settings: () => settings.showModal(),
     close_others_before_quit: () => notify("Close each document window before quitting.", 12000),
     close_window: () => runFileAction(() => finishClose(() => appWindow.destroy())),
@@ -1390,7 +1474,7 @@
   ]);
 
   async function runAction(id) {
-    if ((outline.open || comparison.open || settings.open) && id !== "quit") {
+    if (((outline.open && !sidebarOpen) || comparison.open || settings.open) && id !== "quit") {
       // Native check items toggle before the event arrives, even behind a dialog.
       syncChecks();
       return;
@@ -1417,6 +1501,7 @@
     setView(viewMode);
     applyEditorLayout();
     editor.setPairing(writing.pairing);
+    applyWritingModes();
     setZoom(zoom);
     const split = store.get("split", 50);
     if (split !== 50) setSplit(split);

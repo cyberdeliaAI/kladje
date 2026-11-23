@@ -16,6 +16,15 @@ export function wordCount(text) {
   return words;
 }
 
+export function selectedProseWords(state) {
+  const metadata = frontmatterLines(state.doc);
+  const start = metadata ? state.doc.line(metadata).to : 0;
+  return state.selection.ranges.reduce((total, range) => {
+    const from = Math.max(start, range.from);
+    return total + (from < range.to ? wordCount(state.sliceDoc(from, range.to)) : 0);
+  }, 0);
+}
+
 function measure(doc, ranges) {
   let words = 0, pairs = 0;
   const repeated = new Map();
