@@ -829,11 +829,27 @@
       })) return false;
       format.encoding = "utf8";
     }
-    let result;
+    let result, copied = false;
     try {
       session.beginWrite(snapshot);
       notify("Saving…", 60000);
-      result = await invoke("write_file", { path, content, format, expected });
+      try {
+        result = await invoke("write_file", { path, content, format, expected });
+      } catch (error) {
+        if (String(error) !== "KLADJE_COPY_REQUIRED") throw error;
+        await saveRecovery();
+        if (!await T.dialog.ask("This volume cannot safely publish this file at the chosen name. Save a complete copy inside a new folder beside it and continue editing the copy? Relative links will resolve from the new folder.", {
+          title: "Save a Protected Copy", okLabel: "Save Copy", cancelLabel: "Cancel",
+        })) {
+          session.endWrite();
+          notify("Copy cancelled · document remains open");
+          refreshChrome();
+          return false;
+        }
+        result = await invoke("save_protected_copy", { path, content, format });
+        path = result.version.target;
+        copied = true;
+      }
     } catch (error) {
       session.endWrite();
       session.requireSave();
@@ -859,7 +875,7 @@
     const clean = confirmed && session.acknowledge(snapshot);
     if (clean) clearRecovery();
     else saveRecovery();
-    if (confirmed) notify(clean ? "Saved" : "Earlier edits saved · newer edits are unsaved");
+    if (confirmed) notify(clean ? (copied ? `Saved copy to ${path}` : "Saved") : "Earlier edits saved · newer edits are unsaved");
     else notify("Save unconfirmed · recovery retained · retry Save or use Save As", 60000);
     refreshChrome();
     if (moved) {

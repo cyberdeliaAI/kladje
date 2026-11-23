@@ -204,7 +204,7 @@ pub fn insert_path(document: &Path, image: &Path, copy: bool) -> Result<Option<S
     }
     let ext = raster_type(&bytes).unwrap().trim_start_matches("image/");
     let tmp = stage(&root, &bytes)?;
-    publish(tmp, &root, "image", ext).map(Some)
+    publish(tmp, &root, "image", ext, &bytes).map(Some)
 }
 
 fn stage(folder: &Path, bytes: &[u8]) -> Result<tempfile::NamedTempFile, String> {
@@ -223,6 +223,7 @@ fn publish(
     folder: &Path,
     prefix: &str,
     ext: &str,
+    bytes: &[u8],
 ) -> Result<String, String> {
     for n in 1..=10000 {
         let name = format!("{prefix}-{n}.{ext}");
@@ -232,6 +233,18 @@ fn publish(
                 return Ok(name);
             }
             Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => tmp = e.file,
+            Err(e) if crate::storage::unsupported(&e.error) => {
+                let result = crate::storage::protected_copy(&folder.join(&name), bytes)?;
+                if let Some(warning) = result.warning {
+                    return Err(warning);
+                }
+                return result
+                    .version
+                    .target()
+                    .strip_prefix(folder)
+                    .map(|p| p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"))
+                    .map_err(|e| e.to_string());
+            }
             Err(e) => return Err(e.to_string()),
         }
     }
@@ -317,6 +330,32 @@ fn paste_in_assets(root: &Path, bytes: &[u8], ext: &str) -> Result<String, Strin
             return Ok(name);
         }
         let error = io::Error::last_os_error();
+        if crate::storage::unsupported(&error) {
+            // Publish the complete directory relative to the pinned assets handle.
+            let (prepared, _file, folder) =
+                crate::storage::stage_folder(root, name.as_ref(), bytes)
+                    .map_err(|e| e.to_string())?;
+            let from = CString::new(prepared.path().file_name().unwrap().as_bytes()).unwrap();
+            let to = CString::new(folder.as_bytes()).unwrap();
+            if unsafe { libc::renameat(root_fd, from.as_ptr(), assets.as_raw_fd(), to.as_ptr()) }
+                != 0
+            {
+                return Err(io::Error::last_os_error().to_string());
+            }
+            let _ = prepared.keep();
+            assets
+                .sync_all()
+                .and_then(|_| dir.sync_all())
+                .map_err(|e| e.to_string())?;
+            let relative = format!("{folder}/{name}");
+            let installed = open_relative(root, &Path::new("assets").join(&relative))
+                .and_then(|f| read_raster(f, IMAGE_LIMIT))
+                .map_err(|e| e.to_string())?;
+            if installed != bytes {
+                return Err("Could not confirm the pasted image.".into());
+            }
+            return Ok(relative);
+        }
         if error.kind() != io::ErrorKind::AlreadyExists {
             return Err(format!(
                 "Could not publish the screenshot in assets: {error}"
@@ -340,7 +379,7 @@ fn paste_in_assets(root: &Path, bytes: &[u8], ext: &str) -> Result<String, Strin
     if !handle.metadata().map_err(|e| e.to_string())?.is_dir() {
         return Err("assets must be a directory.".into());
     }
-    publish(stage(&folder, bytes)?, &folder, "screenshot", ext)
+    publish(stage(&folder, bytes)?, &folder, "screenshot", ext, bytes)
 }
 
 #[cfg(test)]
