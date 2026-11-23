@@ -70,6 +70,19 @@
   if (!["auto", "light", "dark"].includes(themeSetting)) themeSetting = "auto";
   let syncEnabled = storedFlag("sync", true);
   let gutter = storedFlag("gutter", false), wrap = storedFlag("wrap", true), measure = storedFlag("measure", true);
+  const settings = $("settings");
+  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false};
+  for (const [key, fallback] of Object.entries(writing)) {
+    writing[key] = storedFlag(key, fallback);
+    const control = $(key);
+    control.checked = writing[key];
+    control.addEventListener("change", () => {
+      writing[key] = control.checked;
+      store.set(key, control.checked);
+      if (key === "pairing") editor.setPairing(control.checked);
+      if (key === "readingTime") updateStats();
+    });
+  }
   let checkUpdate = Promise.resolve();
   function syncChecks() {
     const checked = ["view_" + viewMode, "theme_" + themeSetting];
@@ -258,15 +271,22 @@
   function updateStats() {
     const counts = editor.statistics();
     const c = editor.cursor();
-    const selection = c.selected === null ? " · large selection" : c.selected ? ` · ${number.format(c.selected)} selected` : "";
+    const selection = c.selected === null ? " · large selection" : c.selected ? ` · ${number.format(c.selectedWords)} words / ${number.format(c.selected)} characters selected` : "";
     const column = c.column === null ? "" : `, Col ${c.column}`;
     els.stats.innerHTML = "";
     const position = document.createElement("span");
     position.className = "optional";
     position.textContent = `Ln ${number.format(c.line)}${column}${selection}  ·  `;
+    const encoding = {utf8:"UTF-8", utf8bom:"UTF-8 BOM", utf16le:"UTF-16 LE", utf16be:"UTF-16 BE", latin1:"Latin-1"};
+    const format = doc.format ? (encoding[doc.format.encoding] || "") + " · " + doc.format.eol.toUpperCase() : "";
+    const details = document.createElement("span");
+    details.className = "optional";
+    const minutes = counts && writing.readingTime && counts.words ? Math.ceil(counts.words / 200) : 0;
+    details.textContent = (minutes ? ` · ~${minutes} min read` : "") + (format ? " · " + format : "");
+    els.stats.title = position.textContent + (counts ? counts.words + " words" : c.lines + " lines") + details.textContent;
     els.stats.append(
       position,
-      counts ? `${number.format(counts.words)} ${counts.words === 1 ? "word" : "words"}  ·  ${number.format(counts.characters)} characters` : `${number.format(c.lines)} lines`,
+      counts ? `${number.format(counts.words)} ${counts.words === 1 ? "word" : "words"}  ·  ${number.format(counts.characters)} characters` : `${number.format(c.lines)} lines`, details,
     );
   }
 
@@ -361,6 +381,7 @@
   let renderPromise = null;
   let renderAgain = false;
   let renderCost = 0;
+  let previewAssets = new Map();
 
   function scheduleRender() {
     if (viewMode === "editor") return; // rendered on demand when the preview is shown
@@ -389,7 +410,7 @@
           }
           let html, failure;
           try {
-            html = await invoke("render", { markdown: snapshot.content, source, remote });
+            html = await invoke("render", { markdown: snapshot.content, source, remote, knownImages: [...previewAssets.keys()] });
           } catch (error) {
             failure = error;
           }
@@ -398,7 +419,8 @@
             continue;
           }
           if (html === undefined) throw failure || new Error("Missing preview");
-          patchPreview(html);
+          patchPreview(typeof html === "string" ? html : html.html, html.assets || {});
+          bindPreviewTasks(html.tasks || {}, snapshot);
           ready = true;
           renderCost = performance.now() - started;
         } while (renderAgain);
@@ -424,7 +446,7 @@
    * Unchanged blocks keep their DOM nodes, so images do not reload and the
    * scroll position stays put while typing.
    */
-  function patchPreview(html) {
+  function patchPreview(html, assets) {
     const template = document.createElement("template");
     template.innerHTML = html;
     for (const link of template.content.querySelectorAll("a[href]")) {
@@ -438,8 +460,17 @@
 
     const root = els.preview;
     const oldNodes = Array.from(root.childNodes);
+    // Compare short content-addressed references before expanding validated local images.
+    const nextAssets = new Map();
+    for (const img of template.content.querySelectorAll('img[src^="data:,kladje-"]')) {
+      const key = img.getAttribute("src");
+      const uri = assets[key] || previewAssets.get(key);
+      if (uri) nextAssets.set(key, uri);
+      else markMissing(img);
+    }
     const newNodes = Array.from(template.content.childNodes);
     const newKeys = newNodes.map(keyOf);
+    previewAssets = nextAssets;
     const oldKey = (i) => nodeKeys.get(oldNodes[i]);
 
     let head = 0;
@@ -459,9 +490,41 @@
     const before = oldNodes[oldEnd] || null;
     for (let i = head; i < newEnd; i++) {
       nodeKeys.set(newNodes[i], newKeys[i]);
-      root.insertBefore(newNodes[i], before);
+      const node = newNodes[i];
+      if (node.nodeType === 1) {
+        const images = node.matches('img') ? [node] : node.querySelectorAll('img[src^="data:,kladje-"]');
+        for (const img of images) {
+          const uri = nextAssets.get(img.getAttribute("src"));
+          if (uri) img.src = uri;
+        }
+      }
+      root.insertBefore(node, before);
     }
   }
+
+  let taskBindings = new WeakMap();
+  function bindPreviewTasks(tasks, snapshot) {
+    taskBindings = new WeakMap();
+    for (const box of els.preview.querySelectorAll("li.task-list-item > input.task-list-item-checkbox")) {
+      const marker = tasks[box.parentElement.getAttribute("data-sourcepos")];
+      box.disabled = !marker;
+      if (marker) {
+        box.checked = marker.checked;
+        const label = box.parentElement.textContent.trim().split("\n")[0].slice(0, 160);
+        box.setAttribute("aria-label", label || "Task");
+        taskBindings.set(box, {marker, snapshot});
+      } else box.removeAttribute("aria-label");
+    }
+  }
+  els.preview.addEventListener("change", event => {
+    const binding = taskBindings.get(event.target);
+    if (!binding) return;
+    const {marker, snapshot} = binding;
+    if (closing || !session.isCurrent(snapshot) || !editor.toggleTask(marker.offset, marker.checked)) {
+      event.target.checked = marker.checked;
+      scheduleRender();
+    }
+  });
 
   // The live preview routes links through the native opener. Supply the real
   // destinations to the print engine so PDF annotations work outside Kladje.
@@ -711,6 +774,7 @@
     if (outline.open) outline.close();
     if (comparison.open) comparison.close();
     clearRecovery();
+    previewAssets.clear();
     doc.id = id;
     doc.remote = false;
     doc.recovered = recovered;
@@ -1047,10 +1111,38 @@
     });
   }
 
+  // The platform's paste-as-plain-text shortcut bypasses writing preferences.
+  let literalPasteUntil = 0;
+  els.editorPane.addEventListener("keydown", event => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
+      literalPasteUntil = event.shiftKey ? performance.now() + 1000 : 0;
+    }
+  }, true);
+
   els.editorPane.addEventListener("paste", event => {
-    // Text and rich text with a plain-text representation use native CodeMirror paste.
     const data = event.clipboardData;
-    if (!event.target.closest(".cm-content") || !data || initializing || closing || data.getData("text/plain")) return;
+    if (!event.target.closest(".cm-content") || !data || initializing || closing) return;
+    if (literalPasteUntil > performance.now()) { literalPasteUntil = 0; return; }
+    const plain = data.getData("text/plain");
+    if (plain && writing.linkPaste && editor.pasteUrl(plain)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    const html = writing.htmlPaste && data.getData("text/html");
+    if (html && html.length <= 1024 * 1024) {
+      event.preventDefault();
+      event.stopPropagation();
+      const before = session.snapshot(), selection = editor.selection();
+      return invoke("clipboard_markdown", {html}).then(converted => {
+        if (!session.isCurrent(before) || !editor.selection().eq(selection) || closing) {
+          return notify("The insertion point changed. Paste again.");
+        }
+        const text = converted.replace(/\n$/, "") || plain;
+        if (text) editor.pasteText(text);
+      }).catch(showError);
+    }
+    if (plain) return;
     const file = Array.from(data.files).find(f => f.type.startsWith("image/"));
     if (!file) return;
     event.preventDefault();
@@ -1064,7 +1156,7 @@
       if (!current()) return notify("The insertion point changed. Paste the image again.");
       const message = doc.path ? "Save this image in the assets folder beside this document and insert a relative link?" :
         "Choose where to save this document, then store the image in the assets folder beside it?";
-      if (!await T.dialog.ask(message, {title: "Paste Image", okLabel: doc.path ? "Save Image" : "Save Document and Image", cancelLabel: "Cancel"})) return;
+      if ((!doc.path || writing.confirmImage) && !await T.dialog.ask(message, {title: "Paste Image", okLabel: doc.path ? "Save Image" : "Save Document and Image", cancelLabel: "Cancel"})) return;
       if (!current()) return notify("The insertion point changed. Paste the image again.");
       if (!doc.path && !await save()) return;
       const encoded = await clipboardBase64(file);
@@ -1205,6 +1297,27 @@
       await syncRecentMenu();
     }),
     jump_heading: jumpToHeading,
+    settings: () => settings.showModal(),
+    close_window: () => runFileAction(() => finishClose(() => appWindow.destroy())),
+    reveal: () => doc.path ? invoke("reveal_document", {path:doc.path}) : notify("Save this document first to reveal it."),
+    fold: () => editor.fold(),
+    find_selection: () => editor.findSelection(),
+    copy_formatted: async () => {
+      const markdown = editor.selectedText();
+      if (!markdown) return notify("Select Markdown to copy as formatted text.");
+      const html = await invoke("formatted_selection", {markdown});
+      if (html) {
+        const copy = event => {
+          event.clipboardData.setData("text/plain", markdown);
+          event.clipboardData.setData("text/html", html);
+          event.preventDefault();
+        };
+        document.addEventListener("copy", copy, {once:true});
+        try {
+          if (!document.execCommand("copy")) throw Error("The system could not copy formatted text.");
+        } finally { document.removeEventListener("copy", copy); }
+      }
+    },
     save: () => queuedSave(false),
     save_as: () => queuedSave(true),
     import: () => runFileAction(chooseAndImport),
@@ -1272,11 +1385,11 @@
 
   const EDITING = new Set([
     "undo", "redo", "bold", "italic", "strike", "code", "link", "h1", "h2", "h3", "h4", "h5", "h6", "h0",
-    "bullet", "numbered", "task", "quote", "codeblock", "table", "table_row", "rule",
+    "find_selection", "fold", "copy_formatted", "bullet", "numbered", "task", "quote", "codeblock", "table", "table_row", "rule",
   ]);
 
   async function runAction(id) {
-    if ((outline.open || comparison.open) && id !== "quit") {
+    if ((outline.open || comparison.open || settings.open) && id !== "quit") {
       // Native check items toggle before the event arrives, even behind a dialog.
       syncChecks();
       return;
@@ -1284,7 +1397,10 @@
     if (!closing && id.startsWith("recent:")) return runFileAction(() => openRecent(id.slice(7))).catch(showError);
     const action = Object.hasOwn(actions, id) && actions[id];
     if (!action || closing) return;
-    if (EDITING.has(id) && (initializing || viewMode === "preview")) return; // nothing to edit in
+    if (EDITING.has(id)) {
+      if (initializing) return;
+      if (viewMode === "preview") setView("split");
+    }
     try {
       return await action();
     } catch (error) {
@@ -1299,6 +1415,7 @@
     els.editorPane.inert = true;
     setView(viewMode);
     applyEditorLayout();
+    editor.setPairing(writing.pairing);
     setZoom(zoom);
     const split = store.get("split", 50);
     if (split !== 50) setSplit(split);

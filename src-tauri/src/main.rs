@@ -62,16 +62,57 @@ fn render(
     markdown: String,
     source: Option<String>,
     remote: Option<bool>,
-) -> Result<String, String> {
-    Ok(state
+    known_images: Option<Vec<String>>,
+) -> Result<kladje::markdown::Rendered, String> {
+    state.renderer.preview_update(
+        &markdown,
+        source.as_deref().map(Path::new),
+        remote.unwrap_or(false),
+        known_images.unwrap_or_default(),
+    )
+}
+
+#[tauri::command(async)]
+fn clipboard_markdown(html: String) -> Result<String, String> {
+    if html.len() > 1024 * 1024 {
+        return Err("Clipboard HTML exceeds 1 MiB.".into());
+    }
+    kladje::import::html_to_markdown(&html)
+}
+
+#[tauri::command(async)]
+fn formatted_selection(state: State<'_, AppState>, markdown: String) -> Result<String, String> {
+    if markdown.len() > 256 * 1024 {
+        return Err("Select up to 256 KiB to copy formatted text.".into());
+    }
+    let html = state
         .renderer
-        .render_document(
+        .render_document(&markdown, Target::Export, None, false)?
+        .html;
+    #[cfg(target_os = "macos")]
+    {
+        clipboard::write(
+            &objc2_app_kit::NSPasteboard::generalPasteboard(),
             &markdown,
-            Target::Preview,
-            source.as_deref().map(Path::new),
-            remote.unwrap_or(false),
-        )?
-        .html)
+            &html,
+        )?;
+        Ok(String::new())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(html)
+}
+
+#[cfg(target_os = "macos")]
+mod clipboard;
+
+#[tauri::command(async)]
+fn reveal_document(path: String) -> Result<(), String> {
+    let path = Path::new(&path);
+    fileio::markdown_path(path)?;
+    if !path.is_absolute() || !path.is_file() {
+        return Err("The document is no longer at its saved location.".into());
+    }
+    tauri_plugin_opener::reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -315,15 +356,27 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(&item("new_template", "New from Template…", None)?)
         .item(&item("open", "Open…", Some("CmdOrCtrl+O"))?)
         .item(&recent)
+        .item(&item(
+            "reveal",
+            if cfg!(target_os = "macos") {
+                "Reveal in Finder"
+            } else {
+                "Show in Folder"
+            },
+            None,
+        )?)
         .separator()
         .item(&item("save", "Save", Some("CmdOrCtrl+S"))?)
         .item(&item("save_as", "Save As…", Some("CmdOrCtrl+Shift+S"))?)
         .item(&item("compare_disk", "Compare with Disk…", None)?)
         .separator()
         .item(&item("import", "Import…", Some("CmdOrCtrl+Shift+I"))?)
-        .item(&export);
+        .item(&export)
+        .separator()
+        .item(&item("close_window", "Close Window", Some("CmdOrCtrl+W"))?);
     if !cfg!(target_os = "macos") {
         file = file
+            .item(&item("settings", "Settings…", Some("CmdOrCtrl+Comma"))?)
             .separator()
             .item(&item("quit", "Quit", Some("CmdOrCtrl+Q"))?);
     }
@@ -338,6 +391,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .cut()
         .copy()
         .paste()
+        .item(&item("copy_formatted", "Copy as Formatted Text", None)?)
         .select_all()
         .separator()
         .item(&item(
@@ -346,6 +400,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             Some("CmdOrCtrl+Shift+J"),
         )?)
         .item(&item("find", "Find and Replace…", Some("CmdOrCtrl+F"))?)
+        .item(&item(
+            "find_selection",
+            "Use Selection for Find",
+            Some("CmdOrCtrl+E"),
+        )?)
         .build()?;
 
     let heading = SubmenuBuilder::new(app, "Heading")
@@ -355,14 +414,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(&item("h4", "Heading 4", Some("CmdOrCtrl+4"))?)
         .item(&item("h5", "Heading 5", Some("CmdOrCtrl+5"))?)
         .item(&item("h6", "Heading 6", Some("CmdOrCtrl+6"))?)
-        .item(&item("h0", "Paragraph", Some("CmdOrCtrl+0"))?)
+        .item(&item("h0", "Paragraph", Some("CmdOrCtrl+Alt+0"))?)
         .build()?;
 
     let format = SubmenuBuilder::new(app, "Format")
         .item(&item("bold", "Bold", Some("CmdOrCtrl+B"))?)
         .item(&item("italic", "Italic", Some("CmdOrCtrl+I"))?)
         .item(&item("strike", "Strikethrough", Some("CmdOrCtrl+Shift+X"))?)
-        .item(&item("code", "Inline Code", Some("CmdOrCtrl+E"))?)
+        .item(&item("code", "Inline Code", Some("CmdOrCtrl+Shift+C"))?)
         .item(&item("link", "Link", Some("CmdOrCtrl+K"))?)
         .separator()
         .item(&item("insert_image", "Insert Local Image…", None)?)
@@ -416,13 +475,18 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             "Remote Images for This Document…",
             None,
         )?)
-        .item(&check("sync_scroll", "Toggle Scroll Sync", None)?)
+        .item(&check("sync_scroll", "Synchronize Scrolling", None)?)
+        .item(&item("fold", "Fold or Unfold at Cursor", None)?)
         .item(&check("gutter", "Line Numbers", None)?)
         .item(&check("wrap", "Wrap Long Lines", None)?)
         .item(&check("measure", "Limit Writing Width", None)?)
         .item(&item("zoom_in", "Larger Text", Some("CmdOrCtrl+="))?)
         .item(&item("zoom_out", "Smaller Text", Some("CmdOrCtrl+-"))?)
-        .item(&item("zoom_reset", "Default Text Size", None)?)
+        .item(&item(
+            "zoom_reset",
+            "Default Text Size",
+            Some("CmdOrCtrl+0"),
+        )?)
         .separator()
         .item(&theme)
         .separator()
@@ -436,6 +500,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         // chance to ask about unsaved changes, so Quit is routed through it.
         let app_menu = SubmenuBuilder::new(app, "Kladje")
             .about(None)
+            .item(&item("settings", "Settings…", Some("CmdOrCtrl+Comma"))?)
             .separator()
             .services()
             .separator()
@@ -542,6 +607,9 @@ fn main() {
             export_html,
             insert_image,
             paste_image,
+            clipboard_markdown,
+            formatted_selection,
+            reveal_document,
             print_document,
             log_message,
             quit

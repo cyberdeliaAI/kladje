@@ -6,6 +6,7 @@ The P0 document-safety baseline and P1 single-document workflows have been exerc
 
 ## What you can do
 
+- Pair brackets and quotes, paste a URL over selected text, and use **Writing Settings** to enable rich-text paste or estimated reading time. Copy selected Markdown as formatted text from **Edit**.
 - Edit Markdown with native menu shortcuts, heading and list commands, undo and redo, and Find and Replace. Open **Help → Markdown Guide** for an editable guide.
 - Reopen any of the last ten files from **File → Open Recent**. Search headings with **⌘⇧J** on macOS, including in editor-only view.
 - Toggle line numbers, wrapping and writing width in **View**. Use **Format → Insert Table Row Below** to extend an existing Markdown table.

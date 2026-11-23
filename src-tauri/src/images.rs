@@ -23,6 +23,10 @@ fn raster_type(bytes: &[u8]) -> Option<&'static str> {
 }
 
 fn read_raster(file: File, limit: usize) -> io::Result<Vec<u8>> {
+    read_raster_ref(&file, limit)
+}
+
+fn read_raster_ref(file: &File, limit: usize) -> io::Result<Vec<u8>> {
     let meta = file.metadata()?;
     if !meta.is_file() || meta.len() > limit as u64 {
         return Err(io::Error::other(
@@ -131,6 +135,90 @@ fn open_relative(root: &Path, relative: &Path) -> io::Result<File> {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(file)
+}
+
+/// Cached payloads contain only bytes from a currently accessible, confined
+/// raster file. Export always performs its own fresh read.
+pub(crate) struct PreviewRaster {
+    pub token: String,
+    pub uri: String,
+    pub size: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct RasterCache {
+    #[cfg(unix)]
+    entries: std::collections::VecDeque<(PathBuf, FileStamp, std::sync::Arc<PreviewRaster>)>,
+}
+
+#[cfg(unix)]
+#[derive(PartialEq)]
+struct FileStamp(u64, u64, u64, i64, i64, i64, i64);
+#[cfg(unix)]
+fn file_stamp(m: &std::fs::Metadata) -> FileStamp {
+    use std::os::unix::fs::MetadataExt;
+    FileStamp(
+        m.dev(),
+        m.ino(),
+        m.len(),
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ctime(),
+        m.ctime_nsec(),
+    )
+}
+
+impl RasterCache {
+    pub fn local(
+        &mut self,
+        src: &str,
+        document: &Path,
+        remaining: &mut usize,
+    ) -> Option<std::sync::Arc<PreviewRaster>> {
+        use sha2::{Digest, Sha256};
+        let rel = relative(src)?;
+        let root = document.parent()?;
+        let file = open_relative(root, &rel).ok()?;
+        let meta = file.metadata().ok()?;
+        let limit = IMAGE_LIMIT.min(*remaining);
+        if !meta.is_file() || meta.len() > limit as u64 {
+            return None;
+        }
+        #[cfg(unix)]
+        let (path, stamp) = (root.join(rel), file_stamp(&meta));
+        #[cfg(unix)]
+        if let Some(index) = self.entries.iter().position(|(p, _, _)| *p == path) {
+            let entry = self.entries.remove(index)?;
+            if entry.1 == stamp {
+                *remaining -= entry.2.size;
+                let hit = entry.2.clone();
+                self.entries.push_back(entry);
+                return Some(hit);
+            }
+        }
+        let bytes = read_raster_ref(&file, limit).ok()?;
+        let asset = std::sync::Arc::new(PreviewRaster {
+            token: format!("data:,kladje-{:x}", Sha256::digest(&bytes)),
+            uri: format!(
+                "data:{};base64,{}",
+                raster_type(&bytes)?,
+                STANDARD.encode(&bytes)
+            ),
+            size: bytes.len(),
+        });
+        #[cfg(unix)]
+        if stamp.6 != 0 && file_stamp(&file.metadata().ok()?) == stamp {
+            while self.entries.len() >= 128
+                || self.entries.iter().map(|e| e.2.size).sum::<usize>() + asset.size
+                    > DOCUMENT_IMAGE_LIMIT
+            {
+                self.entries.pop_front()?;
+            }
+            self.entries.push_back((path, stamp, asset.clone()));
+        }
+        *remaining -= asset.size;
+        Some(asset)
+    }
 }
 
 pub fn source_url(

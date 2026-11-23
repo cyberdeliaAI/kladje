@@ -28,6 +28,7 @@ pub const PREVIEW_ID_PREFIX: &str = "uc-";
 
 pub struct Renderer {
     syntaxes: SyntaxSet,
+    image_cache: Arc<Mutex<crate::images::RasterCache>>,
     pub syntax_css_light: String,
     pub syntax_css_dark: String,
 }
@@ -42,12 +43,22 @@ pub enum Target {
 }
 
 #[derive(serde::Serialize)]
+pub struct TaskMarker {
+    pub offset: usize,
+    pub checked: bool,
+}
+
+#[derive(serde::Serialize)]
 pub struct Rendered {
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub tasks: std::collections::HashMap<String, TaskMarker>,
+    pub assets: std::collections::HashMap<String, String>,
     pub html: String,
     pub omitted: usize,
 }
 
 struct ImageUsage {
+    assets: std::collections::HashMap<String, String>,
     remaining: usize,
     images: usize,
     attempts: usize,
@@ -90,6 +101,7 @@ impl Renderer {
     pub fn new() -> Self {
         let themes = two_face::theme::extra();
         Renderer {
+            image_cache: Default::default(),
             syntaxes: two_face::syntax::extra_newlines(),
             syntax_css_light: syntax_styles(
                 themes.get(EmbeddedThemeName::Github),
@@ -121,7 +133,21 @@ impl Renderer {
         remote: bool,
     ) -> Result<Rendered, String> {
         catch_unwind(AssertUnwindSafe(|| {
-            self.render_inner(markdown, target, source, remote)
+            self.render_inner(markdown, target, source, remote, None)
+        }))
+        .map_err(|_| "Preview unavailable. Your source is still open.".to_owned())?
+    }
+
+    pub fn preview_update(
+        &self,
+        markdown: &str,
+        source: Option<&Path>,
+        remote: bool,
+        known: Vec<String>,
+    ) -> Result<Rendered, String> {
+        let known = known.into_iter().take(128).collect();
+        catch_unwind(AssertUnwindSafe(|| {
+            self.render_inner(markdown, Target::Preview, source, remote, Some(known))
         }))
         .map_err(|_| "Preview unavailable. Your source is still open.".to_owned())?
     }
@@ -132,10 +158,64 @@ impl Renderer {
         target: Target,
         source: Option<&Path>,
         remote: bool,
+        known: Option<std::collections::HashSet<String>>,
     ) -> Result<Rendered, String> {
         let opts = comrak_options(target);
         let arena = Arena::new();
         let root = parse_document(&arena, markdown, &opts);
+
+        // Only bind a source editing command when every list control was produced
+        // by our Markdown renderer. Raw HTML may supply its own classes/positions.
+        let mut tasks = std::collections::HashMap::new();
+        if known.is_some()
+            && markdown.contains('[')
+            && !root.descendants().any(|n| {
+                matches!(
+                    n.data().value,
+                    NodeValue::HtmlBlock(_) | NodeValue::HtmlInline(_)
+                )
+            })
+        {
+            let mut offset = 0;
+            let lines: Vec<_> = markdown
+                .split('\n')
+                .map(|line| {
+                    let start = offset;
+                    offset += line.encode_utf16().count() + 1;
+                    (start, line)
+                })
+                .collect();
+            for node in root.descendants() {
+                let ast = node.data();
+                if let NodeValue::TaskItem(task) = &ast.value {
+                    if !node
+                        .parent()
+                        .is_some_and(|p| matches!(p.data().value, NodeValue::List(_)))
+                    {
+                        continue;
+                    }
+                    let pos = task.symbol_sourcepos.start;
+                    let Some(&(start, line)) = lines.get(pos.line.saturating_sub(1)) else {
+                        continue;
+                    };
+                    let column = pos.column.saturating_sub(1);
+                    let Some(marker) = line.as_bytes().get(column.saturating_sub(1)..column + 2)
+                    else {
+                        continue;
+                    };
+                    if !matches!(marker, b"[ ]" | b"[x]" | b"[X]") {
+                        continue;
+                    }
+                    tasks.insert(
+                        ast.sourcepos.to_string(),
+                        TaskMarker {
+                            offset: start + line[..column].encode_utf16().count(),
+                            checked: task.symbol.is_some(),
+                        },
+                    );
+                }
+            }
+        }
 
         for node in root.descendants() {
             let mut ast = node.data_mut();
@@ -177,6 +257,7 @@ impl Renderer {
         format_html_with_plugins(root, &opts, &mut html, &plugins)
             .map_err(|_| "Could not format Markdown.")?;
         let usage = Arc::new(Mutex::new(ImageUsage {
+            assets: Default::default(),
             remaining: crate::images::DOCUMENT_IMAGE_LIMIT,
             images: 0,
             attempts: 0,
@@ -188,12 +269,16 @@ impl Renderer {
             source.map(Path::to_owned),
             remote && target == Target::Preview,
             usage.clone(),
+            known,
+            self.image_cache.clone(),
         )
         .clean(&html)
         .to_string();
-        let counts = usage.lock().unwrap();
+        let mut counts = usage.lock().unwrap();
         let omitted = counts.images.saturating_sub(counts.accepted);
         Ok(Rendered {
+            tasks,
+            assets: std::mem::take(&mut counts.assets),
             html: clean,
             omitted,
         })
@@ -408,6 +493,8 @@ fn sanitizer(
     source: Option<PathBuf>,
     remote: bool,
     usage: Arc<Mutex<ImageUsage>>,
+    known: Option<std::collections::HashSet<String>>,
+    cache: Arc<Mutex<crate::images::RasterCache>>,
 ) -> ammonia::Builder<'static> {
     let mut b = ammonia::Builder::default();
     b.add_tags([
@@ -505,6 +592,22 @@ fn sanitizer(
             totals.attempts += 1;
             if totals.attempts > 128 {
                 return None;
+            }
+            if let (Some(known), Some(source)) = (&known, &source) {
+                if !value.starts_with("data:") && url::Url::parse(value).is_err() {
+                    let asset = cache
+                        .lock()
+                        .ok()?
+                        .local(value, source, &mut totals.remaining)?;
+                    totals.accepted += 1;
+                    if !known.contains(&asset.token) {
+                        totals
+                            .assets
+                            .entry(asset.token.clone())
+                            .or_insert_with(|| asset.uri.clone());
+                    }
+                    return Some(Cow::Owned(asset.token.clone()));
+                }
             }
             let url =
                 crate::images::source_url(value, source.as_deref(), remote, &mut totals.remaining);
