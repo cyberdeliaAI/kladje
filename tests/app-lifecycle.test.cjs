@@ -623,3 +623,17 @@ test("comparison treats CRLF as the same text and a missing disk version leaves 
   assert.equal(a.text(), "one\ntwo");
   assert.ok(!a.calls.some(([cmd]) => cmd === "write_file"));
 });
+
+test("the document's accessible status follows dirty edits, saves and failed saves", async () => {
+  const a = await app();
+  assert.equal(a.get("doc-state").textContent, "");
+  a.edit("revised");
+  await a.fire(50);
+  assert.match(a.get("doc-state").textContent, /Unsaved changes/);
+  a.api.write_file = () => { throw Error("Disk full"); };
+  await a.menu("save");
+  assert.match(a.get("doc-state").textContent, /Unsaved changes/);
+  a.api.write_file = () => ({version:a.disk.version, confirmed:true});
+  await a.menu("save");
+  assert.equal(a.get("doc-state").textContent, "");
+});
