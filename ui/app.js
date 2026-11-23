@@ -9,7 +9,7 @@
     document.body.textContent = "Kladje has to be started as an application.";
     return;
   }
-  const { invoke, convertFileSrc } = T.core;
+  const { invoke } = T.core;
   const appWindow = T.window.getCurrentWindow();
 
   const $ = (id) => document.getElementById(id);
@@ -61,7 +61,7 @@
     byte => byte.toString(16).padStart(2, "0")).join("");
   const doc = { id: draftId(), hasRecovery: false, recovered: false, path: null, name: "Untitled", version: null, format: null };
   let config = { syntaxCssLight: "", syntaxCssDark: "", idPrefix: "" };
-  let viewMode = store.get("view", "split");
+  let viewMode = store.get("view", window.matchMedia("(max-width: 640px)").matches ? "editor" : "split");
   let themeSetting = store.get("theme", "auto");
   let syncEnabled = store.get("sync", true);
   let zoom = store.get("zoom", 1);
@@ -85,7 +85,6 @@
     const i = name.lastIndexOf(".");
     return i > 0 ? name.slice(0, i) : name;
   };
-  const isWindowsPath = (p) => /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\");
 
   function resolvePath(dir, relative) {
     const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
@@ -158,7 +157,12 @@
   function refreshChrome() {
     const dirty = session.isDirty();
     els.docName.classList.toggle("dirty", dirty);
-    els.docName.firstElementChild.textContent = doc.recovered ? `${doc.name} (recovered)` : doc.name;
+    const label = doc.recovered ? `${doc.name} (recovered)` : doc.name;
+    const filename = els.docName.firstElementChild;
+    const stateLabel = $("doc-state");
+    const stateText = dirty ? " — Unsaved changes" : "";
+    if (filename.textContent !== label) filename.textContent = label;
+    if (stateLabel.textContent !== stateText) stateLabel.textContent = stateText;
     els.docName.title = (doc.path || "Not saved yet") + (dirty ? " — edited" : "");
     const title = `${dirty ? "• " : ""}${doc.name} — Kladje`;
     if (title !== shownTitle) {
@@ -170,9 +174,15 @@
   }
 
   const number = new Intl.NumberFormat("en-US");
+  let statsDocument, statsRevision, words = 0, characters = 0;
   function updateStats() {
-    const text = editor.getText();
-    const words = (text.match(/[^\s]+/g) || []).length;
+    if (statsDocument !== session.document || statsRevision !== session.document.revision) {
+      const text = editor.getText();
+      words = (text.match(/\S+/g) || []).length;
+      characters = text.length;
+      statsDocument = session.document;
+      statsRevision = session.document.revision;
+    }
     const c = editor.cursor();
     const selection = c.selected ? ` · ${number.format(c.selected)} selected` : "";
     els.stats.innerHTML = "";
@@ -181,7 +191,7 @@
     position.textContent = `Ln ${number.format(c.line)}, Col ${c.column}${selection}  ·  `;
     els.stats.append(
       position,
-      `${number.format(words)} ${words === 1 ? "word" : "words"}  ·  ${number.format(text.length)} characters`,
+      `${number.format(words)} ${words === 1 ? "word" : "words"}  ·  ${number.format(characters)} characters`,
     );
   }
 
@@ -213,6 +223,7 @@
     editor.remeasure();
     if (viewMode !== "editor") renderNow().then(() => activePane === "editor" && syncFromEditor());
     if (viewMode !== "preview") editor.focus();
+    else els.previewPane.focus();
   }
 
   function setZoom(value) {
@@ -226,6 +237,7 @@
   function setSplit(percent) {
     const clamped = Math.min(80, Math.max(20, percent));
     els.panes.style.setProperty("--split", clamped + "%");
+    els.divider.setAttribute("aria-valuenow", String(Math.round(clamped)));
     store.set("split", clamped);
     anchors = null;
     editor.remeasure();
@@ -234,6 +246,13 @@
   els.viewSwitch.addEventListener("click", (e) => {
     const button = e.target.closest("button[data-view]");
     if (button) setView(button.dataset.view);
+  });
+
+  els.divider.addEventListener("keydown", (event) => {
+    const current = Number(els.divider.getAttribute("aria-valuenow"));
+    const next = {ArrowLeft: current - 5, ArrowRight: current + 5, Home: 20, End: 80, Enter: 50};
+    if (event.key === "Escape") { event.preventDefault(); editor.focus(); }
+    if (Object.hasOwn(next, event.key)) { event.preventDefault(); setSplit(next[event.key]); }
   });
 
   els.divider.addEventListener("pointerdown", (e) => {
@@ -279,23 +298,44 @@
       renderAgain = true;
       return renderPromise;
     }
-    renderPromise = (async () => {
+    renderPromise = Promise.resolve().then(async () => {
+      let ready = false;
       try {
         do {
           renderAgain = false;
           const started = performance.now();
-          const html = await invoke("render", { markdown: editor.getText() });
+          const snapshot = session.snapshot();
+          const source = doc.path, remote = doc.remote;
+          if (snapshot.content.length > 256 * 1024) {
+            els.preview.textContent = "Live preview is paused for this large document. You can keep editing and saving.";
+            return false;
+          }
+          let html, failure;
+          try {
+            html = await invoke("render", { markdown: snapshot.content, source, remote });
+          } catch (error) {
+            failure = error;
+          }
+          if (!session.isCurrent(snapshot) || source !== doc.path || remote !== doc.remote) {
+            renderAgain = true;
+            continue;
+          }
+          if (html === undefined) throw failure || new Error("Missing preview");
           patchPreview(html);
+          ready = true;
           renderCost = performance.now() - started;
         } while (renderAgain);
       } catch (error) {
         report(error);
+        els.preview.textContent = "Preview unavailable. Your source is still open.";
+        ready = false;
       } finally {
         renderPromise = null;
       }
       anchors = null;
       if (activePane === "editor") syncFromEditor();
-    })();
+      return ready;
+    });
     return renderPromise;
   }
 
@@ -310,7 +350,14 @@
   function patchPreview(html) {
     const template = document.createElement("template");
     template.innerHTML = html;
-    resolveImages(template.content);
+    for (const link of template.content.querySelectorAll("a[href]")) {
+      link.dataset.destination = link.getAttribute("href");
+      link.setAttribute("href", "#");
+    }
+    for (const img of template.content.querySelectorAll("img")) {
+      if (!img.hasAttribute("src")) markMissing(img);
+      else img.referrerPolicy = "no-referrer";
+    }
 
     const root = els.preview;
     const oldNodes = Array.from(root.childNodes);
@@ -339,6 +386,19 @@
     }
   }
 
+  // The live preview routes links through the native opener. Supply the real
+  // destinations to the print engine so PDF annotations work outside Kladje.
+  window.addEventListener("beforeprint", () => {
+    for (const link of els.preview.querySelectorAll("a[data-destination]")) {
+      const href = link.dataset.destination;
+      if (/^(?:https?:\/\/|mailto:|tel:|#)/i.test(href)) link.setAttribute("href", href);
+      else link.removeAttribute("href");
+    }
+  });
+  window.addEventListener("afterprint", () => {
+    for (const link of els.preview.querySelectorAll("a[data-destination]")) link.setAttribute("href", "#");
+  });
+
   /** Lines shift as you type; kept nodes take over the fresh source positions. */
   function copyPositions(from, to) {
     if (from.nodeType !== 1) return;
@@ -353,59 +413,45 @@
     for (let i = 0; i < a.length; i++) set(a[i], b[i]);
   }
 
-  /** Point relative and file: image paths at the real files next to the document. */
-  function resolveImages(fragment) {
-    for (const img of fragment.querySelectorAll("img[src]")) {
-      const path = localImagePath(img.getAttribute("src"));
-      if (path) img.setAttribute("src", convertFileSrc(path));
-      img.setAttribute("loading", "lazy");
-    }
+  function markMissing(img) {
+    const message = document.createElement("span");
+    message.className = "asset-missing";
+    message.textContent = "Image unavailable" + (img.alt ? " · " + img.alt : "");
+    message.title = "Check the relative image path or enable HTTPS images in View.";
+    img.replaceWith(message);
+  }
+  els.preview.addEventListener("error", event => {
+    if (event.target.tagName === "IMG") markMissing(event.target);
+  }, true);
+
+  function jumpFragment(fragment) {
+    let id;
+    try { id = decodeURIComponent(fragment); } catch { id = fragment; }
+    const target = els.preview.querySelector(`[id="${CSS.escape(config.idPrefix + id)}"]`);
+    if (!target) { notify("Heading or reference not found", 8000); return; }
+    activePane = "preview";
+    target.scrollIntoView({ block: "start" });
+    target.setAttribute("tabindex", "-1");
+    target.focus({preventScroll: true});
   }
 
-  function localImagePath(src) {
-    if (/^(https?:|data:|blob:|asset:|\/\/)/i.test(src)) return null;
-    if (/^file:/i.test(src)) {
-      try {
-        const path = decodeURIComponent(new URL(src).pathname);
-        return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path;
-      } catch {
-        return null;
-      }
-    }
-    let relative = src.split(/[?#]/)[0];
-    try {
-      relative = decodeURIComponent(relative);
-    } catch {}
-    if (relative.startsWith("/") || isWindowsPath(relative)) return relative;
-    return doc.path ? resolvePath(dirname(doc.path), relative) : null;
-  }
-
-  // Links never navigate the app itself.
-  els.preview.addEventListener("click", (e) => {
-    const link = e.target.closest("a[href]");
+  els.preview.addEventListener("click", (event) => {
+    const link = event.target.closest("a[data-destination]");
     if (!link || !els.preview.contains(link)) return;
-    e.preventDefault();
-    const href = link.getAttribute("href");
-    if (href.startsWith("#")) {
-      let id = href.slice(1);
-      try {
-        id = decodeURIComponent(id);
-      } catch {}
-      const target = els.preview.querySelector(`[id="${CSS.escape(config.idPrefix + id)}"]`);
-      if (target) {
-        activePane = "preview";
-        target.scrollIntoView({ block: "start" });
-      }
-    } else if (/^(https?:|mailto:|tel:)/i.test(href)) {
-      T.opener.openUrl(href).catch(showError);
-    } else if (doc.path && MARKDOWN_EXT.includes(extension(href.split(/[?#]/)[0]))) {
-      let relative = href.split(/[?#]/)[0];
-      try {
-        relative = decodeURIComponent(relative);
-      } catch {}
-      const path = relative.startsWith("/") || isWindowsPath(relative) ? relative : resolvePath(dirname(doc.path), relative);
-      runFileAction(() => openPath(path)).catch(showError);
+    event.preventDefault();
+    const href = link.dataset.destination;
+    if (href.startsWith("#")) return jumpFragment(href.slice(1));
+    if (/^(https?:\/\/|mailto:|tel:)/i.test(href)) return T.opener.openUrl(href).catch(showError);
+    const [file, fragment] = href.split(/#(.*)/s);
+    let relative;
+    try { relative = decodeURIComponent(file.split("?")[0]); } catch { return notify("Invalid document link"); }
+    if (!doc.path || !MARKDOWN_EXT.includes(extension(relative)) || /^(?:[a-z]+:|[/\\])/i.test(relative) || relative.includes("\\")) {
+      return notify("Unsupported document link", 8000);
     }
+    const path = resolvePath(dirname(doc.path), relative);
+    return runFileAction(async () => {
+      if (await openPath(path) && fragment && await renderNow()) jumpFragment(fragment);
+    }).catch(showError);
   });
 
   // Double-click in the preview jumps to that place in the source.
@@ -463,23 +509,27 @@
 
   function syncFromEditor() {
     if (!syncEnabled || viewMode !== "split") return;
-    if (!anchors) buildAnchors();
     const source = editor.scroller;
     const target = els.previewPane;
     const sourceMax = source.scrollHeight - source.clientHeight;
     if (source.scrollTop <= 0) target.scrollTop = 0;
     else if (source.scrollTop >= sourceMax - 1) target.scrollTop = target.scrollHeight;
-    else target.scrollTop = interpolate(editor.topLine(), "line", "top");
+    else {
+      if (!anchors) buildAnchors();
+      target.scrollTop = interpolate(editor.topLine(), "line", "top");
+    }
   }
 
   function syncFromPreview() {
     if (!syncEnabled || viewMode !== "split") return;
-    if (!anchors) buildAnchors();
     const source = els.previewPane;
     const sourceMax = source.scrollHeight - source.clientHeight;
     if (source.scrollTop <= 0) editor.scroller.scrollTop = 0;
     else if (source.scrollTop >= sourceMax - 1) editor.scroller.scrollTop = editor.scroller.scrollHeight;
-    else editor.scrollToLine(interpolate(source.scrollTop, "top", "line"));
+    else {
+      if (!anchors) buildAnchors();
+      editor.scrollToLine(interpolate(source.scrollTop, "top", "line"));
+    }
   }
 
   // Only the pane the user is actually driving moves the other one; that is
@@ -508,6 +558,7 @@
   function loadDocument({ path = null, name = null, content = "", version = null, dirty = false, id = draftId(), recovered = false, format = null, revision = 0 }) {
     clearRecovery();
     doc.id = id;
+    doc.remote = false;
     doc.recovered = recovered;
     doc.hasRecovery = recovered;
     doc.format = format || { encoding: "utf8", eol: content.includes("\r\n") ? "crlf" : "lf" };
@@ -653,6 +704,7 @@
     else notify("Save unconfirmed · recovery retained · retry Save or use Save As", 60000);
     refreshChrome();
     if (moved) {
+      doc.remote = false;
       // Relative image paths now resolve against the new folder.
       els.preview.replaceChildren();
       renderNow();
@@ -676,6 +728,9 @@
 
   async function importPath(path) {
     const markdown = await invoke("import_file", { path });
+    if (extension(path) === "docx" && !await T.dialog.ask("Import the text, supported styles, lists and tables? Embedded media, page layout and review annotations are omitted. The Word file stays intact.", {
+      title: "Word Import", okLabel: "Import Markdown", cancelLabel: "Cancel",
+    })) return false;
     if (!await replaceDocument({ name: `${stem(path)}.md`, content: markdown, dirty: true })) return false;
     notify(`Imported ${basename(path)} — save it to keep the Markdown version.`);
   }
@@ -733,13 +788,34 @@
   }
 
   async function printDocument() {
+    const snapshot = session.snapshot();
+    if (!await renderNow()) return showError("Print needs a current preview.");
+    const images = Array.from(els.preview.querySelectorAll("img[src]"));
+    let timeout;
     try {
-      await renderNow(); // also when the preview is hidden
-      await new Promise((resolve) => setTimeout(resolve, 60)); // let layout settle
+      const decoded = Promise.all(images.map(image => image.decode())).then(() => true, () => false);
+      const loaded = await Promise.race([decoded, new Promise(resolve => { timeout = setTimeout(() => resolve(false), 10000); })]);
+      if ((!loaded || els.preview.querySelector(".asset-missing")) && !await T.dialog.ask("Some images are unavailable. Print the document with these images omitted?", {
+        title: "Print", okLabel: "Print Anyway", cancelLabel: "Cancel",
+      })) return;
+      await document.fonts.ready;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (!session.isCurrent(snapshot)) return notify("Document changed while preparing print. Print again to use the latest text.", 15000);
       await invoke("print_document");
-    } catch (error) {
-      await showError(error);
+    } finally { clearTimeout(timeout); }
+  }
+
+  async function insertImage(image) {
+    if (!doc.path && (!await T.dialog.ask("Save this document to give its image a relative path?", {title: "Insert Local Image", okLabel: "Save Document", cancelLabel: "Cancel"}) || !await save())) return;
+    image ||= await T.dialog.open({title: "Insert Local Image", multiple: false, filters: [{name: "Images", extensions: ["png","jpg","jpeg","gif","webp"]}]});
+    if (!image) return;
+    let relative = await invoke("insert_image", {source: doc.path, image, copy: false});
+    if (relative === null) {
+      if (!await T.dialog.ask("Copy this image beside the Markdown file so the reference travels with it?", {title: "Insert Local Image", okLabel: "Copy Image", cancelLabel: "Cancel"})) return;
+      relative = await invoke("insert_image", {source: doc.path, image, copy: true});
     }
+    if (viewMode === "preview") setView("split");
+    editor.insertImage(relative);
   }
 
   // ---------------------------------------------------------------- crash recovery
@@ -862,7 +938,14 @@
     save_as: () => queuedSave(true),
     import: () => runFileAction(chooseAndImport),
     export_html: () => runFileAction(exportHtml),
-    export_pdf: printDocument,
+    export_pdf: () => runFileAction(printDocument),
+    insert_image: () => runFileAction(() => insertImage()),
+    remote_images: () => runFileAction(async () => {
+      const allowed = await T.dialog.ask(doc.remote ? "HTTPS images are enabled for this document. Block them again?" : "Loading HTTPS images contacts their hosts and shares your IP address. Allow this for the current document?", {
+        title: "Remote Images", okLabel: doc.remote ? "Block Images" : "Allow Images", cancelLabel: "Cancel",
+      });
+      if (allowed) {doc.remote = !doc.remote; await renderNow();}
+    }),
     guide: () => runFileAction(openGuide),
     quit: () => runFileAction(() => finishClose(() => invoke("quit"))),
 
@@ -882,6 +965,8 @@
     h2: () => editor.setHeading(2),
     h3: () => editor.setHeading(3),
     h4: () => editor.setHeading(4),
+    h5: () => editor.setHeading(5),
+    h6: () => editor.setHeading(6),
     h0: () => editor.setHeading(0),
     bullet: () => editor.toggleList("bullet"),
     numbered: () => editor.toggleList("numbered"),
@@ -910,7 +995,7 @@
   };
 
   const EDITING = new Set([
-    "undo", "redo", "bold", "italic", "strike", "code", "link", "h1", "h2", "h3", "h4", "h0",
+    "undo", "redo", "bold", "italic", "strike", "code", "link", "h1", "h2", "h3", "h4", "h5", "h6", "h0",
     "bullet", "numbered", "task", "quote", "codeblock", "table", "rule",
   ]);
 
@@ -946,10 +1031,13 @@
 
     const initialDocument = runFileAction(openInitialDocument);
     await T.event.listen("menu", (event) => runAction(event.payload));
-    await T.event.listen("open-requested", async () => {
-      const path = await invoke("take_pending_open");
-      if (path) return runFileAction(() => openOrImport(path)).catch(showError);
-    });
+    const drainOpenRequests = () => runFileAction(async () => {
+      let path;
+      while ((path = await invoke("take_pending_open"))) await tryOpen(path);
+    }).catch(showError);
+    await T.event.listen("open-requested", drainOpenRequests);
+    // LaunchServices may have delivered a file between setup and registration.
+    const pendingDocuments = drainOpenRequests();
 
     // Closing the window with unsaved work asks first.
     await appWindow.onCloseRequested((event) => {
@@ -961,13 +1049,14 @@
     try {
       await T.webview.getCurrentWebview().onDragDropEvent((event) => {
         const paths = event.payload.type === "drop" ? event.payload.paths : null;
-        if (paths && paths.length) return runFileAction(() => openOrImport(paths[0])).catch(showError);
+        if (paths && paths.length) return runFileAction(() => /\.(png|jpe?g|gif|webp)$/i.test(paths[0]) ? insertImage(paths[0]) : openOrImport(paths[0])).catch(showError);
       });
     } catch (error) {
       report(error);
     }
 
     await initialDocument;
+    await pendingDocuments;
     initializing = false;
     els.editorPane.inert = closing;
     if (viewMode !== "preview") editor.focus();
