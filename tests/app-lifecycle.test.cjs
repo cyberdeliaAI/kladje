@@ -828,3 +828,47 @@ test("a later recovery failure cannot replace or retire an already restored draf
   assert.ok(!a.calls.some(([cmd,args]) => cmd === "recovery_clear" && args.id === first.id));
   assert.equal(a.children[0].text(), "original");
 });
+
+test("Quit identifies the folder of each same-named document before asking for a decision", async () => {
+  for (const folder of ["work", "home"]) {
+    const path = "/notes/" + folder + "/notes.md";
+    const a = await app({}, ({disk}) => { disk.path = path; });
+    a.edit("unsaved revision");
+    let prompt;
+    a.dialog.message = message => { prompt = message; return "Cancel"; };
+    await a.menu("quit");
+    assert.ok(prompt.includes(path));
+    assert.equal(a.text(), "unsaved revision");
+    assert.equal(a.disk.content, "original");
+  }
+});
+
+test("an untitled Close prompt gives a bounded identifying line and Cancel keeps the draft", async () => {
+  const parent = await app();
+  await parent.menu("new");
+  const a = parent.children[0];
+  const note = "A walk at low tide\n" + "🪶".repeat(600);
+  a.edit(note);
+  let prompt;
+  a.dialog.message = message => { prompt = message; return "Cancel"; };
+  await a.events.close({preventDefault() {}});
+  assert.match(prompt, /A walk at low tide/);
+  assert.ok(prompt.length < 200);
+  assert.equal(a.text(), note);
+});
+
+test("paused preview skips reading the full document and resumes below its limit", async () => {
+  const a = await app();
+  await a.menu("view_editor");
+  a.edit("a".repeat(256 * 1024 + 1));
+  let reads = 0;
+  a.view.getText = () => { reads++; return a.text(); };
+  await a.menu("view_split");
+  await new Promise(setImmediate);
+  assert.match(a.get("preview").textContent, /Live preview is paused/);
+  assert.equal(reads, 0);
+  a.api.render = ({markdown}) => markdown;
+  a.edit("short draft");
+  await a.fire(70);
+  assert.equal(a.rendered.at(-1), "short draft");
+});
