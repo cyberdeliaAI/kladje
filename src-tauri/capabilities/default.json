@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main editor window",
-  "windows": ["main"],
+  "description": "Permissions for document editor windows",
+  "windows": ["main", "document-*"],
   "permissions": [
     "core:default",
     "core:window:allow-set-title",

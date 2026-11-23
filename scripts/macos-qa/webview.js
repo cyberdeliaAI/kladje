@@ -13,7 +13,8 @@ window.addEventListener("load", async () => {
       await new Promise((resolve) => setTimeout(resolve, 16));
     }
   }
-  const menu = (id) => event.emit("menu", id);
+  const label = window.__TAURI__.window.getCurrentWindow().label;
+  const menu = (id) => event.emitTo(label, "menu", id);
   const report = { checks: [], sizes: [] };
   const preview = document.getElementById("preview");
   const check = (value, name) => {
@@ -28,6 +29,12 @@ window.addEventListener("load", async () => {
   let step = 0;
   const checkpoint = (message) => write(window.qaResultPath + "." + ++step + ".txt", message);
   try {
+    if (label !== "main") {
+      await wait(() => document.activeElement.id === "uc-café-1", "sibling fragment in its own window");
+      await write(window.qaResultPath + ".sibling.txt", text());
+      await window.__TAURI__.window.getCurrentWindow().destroy();
+      return;
+    }
     await wait(
       () => preview.querySelector("#uc-start") && !document.getElementById("editor-pane").inert,
       "native file open",
@@ -83,8 +90,14 @@ window.addEventListener("load", async () => {
     }
     const external = preview.querySelector('a[data-destination$="/qa-link"]')?.dataset.destination;
     preview.querySelector('a[data-destination*="sibling"]').click();
-    await wait(() => document.activeElement.id === "uc-café-1", "cross-file fragment");
-    check(text().includes("# Café"), "sibling link with encoded filename and Unicode duplicate fragment");
+    let sibling;
+    for (let i = 0; i < 200 && !sibling; i++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      try { sibling = await core.invoke("read_file", {path:window.qaResultPath + ".sibling.txt"}); } catch {}
+    }
+    check(sibling?.content.includes("# Café") && text().includes("# Start"), "sibling fragment opens in its own window and retains the original source");
+    edit(sibling.content);
+    await wait(() => preview.querySelector("#uc-café-1"), "heading fixture");
     const outline = document.getElementById("outline");
     const filter = document.getElementById("heading-filter");
     const list = document.getElementById("heading-list");

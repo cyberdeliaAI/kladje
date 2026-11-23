@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use kladje::markdown::{Renderer, Target, PREVIEW_ID_PREFIX};
 use kladje::recovery::Recovery;
-use kladje::{export, fileio, import, storage};
+use kladje::{export, fileio, history, import, storage};
 use serde_json::{json, Value};
 
 const SHIM: &str = r#"
@@ -44,9 +44,26 @@ const SHIM: &str = r#"
   const note = (kind, detail) => { dev.log.push([kind, detail]); };
   window.__TAURI__ = {
     core: {
-      invoke: (cmd, args) => {
+      invoke: async (cmd, args) => {
+        if (cmd === "open_document_window") {
+          // Browser preview uses fixture files. Exercise native ownership and Quit in the desktop build.
+          const url = new URL(location.href);
+          url.hash = encodeURIComponent(JSON.stringify(args.request));
+          window.open(url, "_blank", "noopener");
+          return;
+        }
+        if (cmd === "setup" && location.hash.length > 1) {
+          const request = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+          const launch = {...request};
+          if (request.kind === "open") launch.file = await call("read_file",request);
+          if (request.kind === "import") launch.content = await call("import_file",request);
+          if (request.kind === "template") launch.content = (await call("read_file",request)).content;
+          return {...await call("setup"), launch};
+        }
+        if (cmd === "begin_close") return true;
+        if (cmd === "quit_vote") {note("quit decision",args.allow); dev.emit("cancel-quit",args.epoch); return;}
         if (cmd === "print_document") { note("print"); return Promise.resolve(); }
-        if (cmd === "quit") { note("quit"); return Promise.resolve(); }
+        if (cmd === "quit") { note("quit"); dev.emit("prepare-quit",{epoch:Date.now(),rememberWindow:true}); return; }
         if (cmd === "log_message") { note("log", args.message); console.log("[ui]", args.message); return Promise.resolve(); }
         return call(cmd, args);
       },
@@ -233,9 +250,20 @@ fn invoke(
             "idPrefix": PREVIEW_ID_PREFIX,
             "pendingOpen": null,
         }),
-        "set_recent_menu" | "set_menu_checks" | "window_bounds" | "restore_window_bounds" => {
-            Value::Null
+        "update_history" => {
+            let mut store = history::Store::new(fixtures.with_file_name("recent-documents.json"));
+            json!(store.update(
+                serde_json::from_value(args["change"].clone()).map_err(|e| e.to_string())?,
+                serde_json::from_value(args["seed"].clone()).map_err(|e| e.to_string())?
+            )?)
         }
+        "document_ready"
+        | "take_fragment"
+        | "cancel_close"
+        | "accept_reload"
+        | "set_menu_checks"
+        | "window_bounds"
+        | "restore_window_bounds" => Value::Null,
         "document_headings" => json!(kladje::markdown::headings(&text("markdown"))?),
         "render" => json!(renderer.preview_update(
             &text("markdown"),

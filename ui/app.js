@@ -31,6 +31,7 @@
 
   // ---------------------------------------------------------------- settings
 
+  let applyingPreference = false;
   const store = {
     get(key, fallback) {
       try {
@@ -41,6 +42,7 @@
       }
     },
     set(key, value) {
+      if (applyingPreference) return true;
       try {
         localStorage.setItem("kladje." + key, JSON.stringify(value));
         return true;
@@ -141,49 +143,60 @@
     return parts.join(sep);
   }
 
-  function recentPaths() {
-    const saved = store.get("recent", []);
-    if (!Array.isArray(saved)) return [];
-    return [...new Set(saved.filter(path => typeof path === "string" && path.length <= 32768 &&
-      /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(path) && !/[\x00-\x1f]/.test(path)))].slice(0, 10);
+  let history = {paths:[], places:[]};
+  const recentPaths = () => history.paths;
+  const savedPlaces = () => history.places;
+  async function updateHistory(change) {
+    const paths = store.get("recent", []), places = store.get("places", []);
+    const lastPath = store.get("lastPath", null);
+    const seed = {lastPath:typeof lastPath === "string" ? lastPath : null, paths:Array.isArray(paths) ? paths.filter(p => typeof p === "string") : [],
+      places:Array.isArray(places) ? places.filter(p => p && typeof p.path === "string" &&
+        typeof p.digest === "string" && Number.isSafeInteger(p.offset) && Number.isFinite(p.top)) : []};
+    try {
+      history = await invoke("update_history", {change, seed});
+      store.remove("recent");
+      store.remove("places");
+      store.remove("lastPath");
+    } catch (error) { notify(`Recent documents: ${error}`, 12000); }
   }
-
-  let recentUpdate = Promise.resolve();
-  function syncRecentMenu() {
-    const paths = recentPaths();
-    recentUpdate = recentUpdate.then(() => invoke("set_recent_menu", {paths})).catch(report);
-    return recentUpdate;
-  }
-
-  function rememberPath(path) {
-    if (!path) return;
-    const paths = recentPaths();
-    if (paths[0] === path) return;
-    store.set("recent", [path, ...paths.filter(item => item !== path)].slice(0, 10));
-    store.set("places", savedPlaces());
-    syncRecentMenu();
-  }
-
-  function savedPlaces() {
-    const places = store.get("places", []);
-    const paths = recentPaths();
-    return Array.isArray(places) ? places.filter(p => p && paths.includes(p.path)).slice(0, 10) : [];
-  }
-
+  const rememberPath = (path, resume = true) => updateHistory({kind:"touch", path, resume});
   function rememberPlace() {
-    if (!doc.path || !doc.version || session.isDirty() || !recentPaths().includes(doc.path)) return;
-    const place = {path: doc.path, digest: doc.version.digest, ...editor.location()};
-    store.set("places", [place, ...savedPlaces().filter(p => p.path !== doc.path)].slice(0,10));
+    if (!doc.path || !doc.version || session.isDirty()) return;
+    return updateHistory({kind:"position", place:{path:doc.path, digest:doc.version.digest, ...editor.location()}});
+  }
+
+  function applyPreference(key) {
+    applyingPreference = true;
+    try {
+      if (key in writing) {
+        writing[key] = storedFlag(key, writing[key]);
+        $(key).checked = writing[key];
+        if (key === "pairing") editor.setPairing(writing.pairing);
+        if (key === "readingTime") updateStats();
+        if (key === "focusParagraph" || key === "typewriter") applyWritingModes();
+      } else if (key === "theme") setTheme(store.get(key, "auto"));
+      else if (key === "view") setView(store.get(key, "split"));
+      else if (key === "zoom") setZoom(store.get(key, 1));
+      else if (key === "split") setSplit(store.get(key, 50));
+      else if (key === "sync") { syncEnabled = storedFlag(key, true); syncChecks(); }
+      else if (["gutter","wrap","measure"].includes(key)) {
+        gutter = storedFlag("gutter", false);
+        wrap = storedFlag("wrap", true);
+        measure = storedFlag("measure", true);
+        applyEditorLayout();
+      }
+    } finally { applyingPreference = false; }
   }
 
   window.addEventListener("storage", event => {
-    if (event.key === "kladje.recent" || event.key === null) syncRecentMenu();
+    if (event.key?.startsWith("kladje.")) applyPreference(event.key.slice(7));
   });
 
   async function openRecent(path) {
+    await updateHistory({kind:"read"});
     if (!recentPaths().includes(path)) return;
     try {
-      return await openOrImport(path, {throwOnRead: true});
+      return await openOrImport(path);
     } catch (error) {
       // A permission or format error should keep the entry available.
       if (await invoke("file_version", {path})) return showError(error);
@@ -193,12 +206,10 @@
     });
     if (answer === "Cancel") return;
     if (answer === "Locate…" || answer === "Yes") {
-      if (!await chooseAndOpen() || recentPaths()[0] === path && doc.path === path) return;
+      if (!await chooseAndOpen() || recentPaths()[0] === path) return;
     } else if (answer !== "Remove from Recent" && answer !== "No") return;
-    store.set("recent", recentPaths().filter(item => item !== path));
-    store.set("places", savedPlaces());
-    if (store.get("lastPath", null) === path) store.remove("lastPath");
-    await syncRecentMenu();
+    await updateHistory({kind:"remove", path});
+
   }
 
   let noticeTimer = 0;
@@ -331,8 +342,7 @@
     anchors = null;
     editor.remeasure();
     if (viewMode !== "editor") renderNow().then(() => activePane === "editor" && syncFromEditor());
-    if (viewMode !== "preview") editor.focus();
-    else els.previewPane.focus();
+    if (!applyingPreference) focusDocument();
   }
 
   function setZoom(value) {
@@ -745,9 +755,7 @@
       return notify("Unsupported document link", 8000);
     }
     const path = resolvePath(dirname(doc.path), relative);
-    return runFileAction(async () => {
-      if (await openPath(path) && fragment && await renderNow()) jumpFragment(fragment);
-    }).catch(showError);
+    return runFileAction(() => openWindow({kind:"open", path, fragment})).catch(showError);
   });
 
   // Double-click in the preview jumps to that place in the source.
@@ -852,7 +860,6 @@
   // ---------------------------------------------------------------- documents
 
   function loadDocument({ path = null, name = null, content = "", version = null, dirty = false, id = draftId(), recovered = false, format = null, revision = 0 }) {
-    rememberPlace();
     if (outline.open && !sidebarOpen) outline.close();
     if (comparison.open) comparison.close();
     clearRecovery();
@@ -873,28 +880,37 @@
     els.previewPane.scrollTop = 0;
     anchors = null;
     activePane = "editor";
-    if (path && !recovered) store.set("lastPath", path);
-    else if (!path) store.remove("lastPath");
+
     if (dirty && !recovered) saveRecovery();
     refreshChrome();
     renderNow();
     if (viewMode !== "preview") editor.focus();
   }
 
-  async function openPath(path, { silent = false, throwOnRead = false } = {}) {
+  async function openPath(path, { silent = false } = {}) {
     let file;
     try {
-      file = await invoke("read_file", { path });
+      file = await invoke("read_file", { path, bind:true });
     } catch (error) {
-      if (throwOnRead) throw error;
       if (!silent) await showError(error);
       return false;
     }
-    if (!await replaceDocument(file)) return false;
-    rememberPath(path);
-    const place = savedPlaces().find(p => p.path === path && p.digest === file.version?.digest);
+    await displayFile(file);
+    return true;
+  }
+
+  async function displayFile(file, routed = false) {
+    loadDocument(file);
+    if (routed) await updateHistory({kind:"read"});
+    else await rememberPath(file.path);
+    const place = savedPlaces().find(p => p.path === file.path && p.digest === file.version?.digest);
     if (place) editor.restoreLocation(place);
     if (file.format.encoding === "latin1") notify("Opened as Latin-1 · its encoding will be preserved", 9000);
+  }
+
+  async function openWindow(request) {
+    await invoke("open_document_window", {request});
+    if (request.kind === "open" || request.kind === "import") await rememberPath(request.path, request.kind === "open");
     return true;
   }
 
@@ -913,20 +929,6 @@
     if (!session.isCurrent(before)) return false;
     if (answer === SAVE || answer === "Yes") return save();
     return answer === DISCARD || answer === "No";
-  }
-
-  // Read and validate the candidate before asking to discard the old document.
-  async function replaceDocument(next, {template = false} = {}) {
-    const previousVersion = doc.version;
-    if (!await confirmDiscard()) return false;
-    // The discard prompt can itself Save (As) into the file we just read.
-    if (next.version && previousVersion !== doc.version && next.version.target === doc.version?.target) {
-      const before = session.snapshot();
-      next = await invoke("read_file", { path: next.path });
-      if (!session.isCurrent(before)) return false;
-    }
-    loadDocument(template ? {name: "Untitled.md", content: next.content, dirty: true} : next);
-    return true;
   }
 
   function runFileAction(action) {
@@ -981,7 +983,7 @@
       session.beginWrite(snapshot);
       notify("Saving…", 60000);
       try {
-        result = await invoke("write_file", { path, content, format, expected });
+        result = await invoke("write_file", { path, content, format, expected, bind:true });
       } catch (error) {
         if (String(error) !== "KLADJE_COPY_REQUIRED") throw error;
         await saveRecovery();
@@ -1015,8 +1017,7 @@
     doc.ignoredVersion = null;
     doc.path = path;
     doc.name = basename(path);
-    if (confirmed && moved) rememberPath(path);
-    if (recentPaths().includes(path)) store.set("lastPath", path);
+    if (confirmed && moved) await rememberPath(path);
     if (confirmed) doc.recovered = false;
     if (!confirmed) session.requireSave();
     const clean = confirmed && session.acknowledge(snapshot);
@@ -1039,10 +1040,7 @@
     const path = await T.dialog.open({title: "New from Template", multiple: false,
       filters: [{name: "Markdown or plain text", extensions: MARKDOWN_EXT}]});
     if (!path) return;
-    const file = await invoke("read_file", {path});
-    // A template provides text only. Save must choose a new destination and
-    // recovery belongs to the new draft, never to the template's path.
-    await replaceDocument(file, {template: true});
+    return openWindow({kind:"template", path});
   }
 
   const comparison = $("comparison");
@@ -1093,13 +1091,10 @@
   }
 
   async function importPath(path) {
-    const markdown = await invoke("import_file", { path });
     if (extension(path) === "docx" && !await T.dialog.ask("Import the text, supported styles, lists and tables? Embedded media, page layout and review annotations are omitted. The Word file stays intact.", {
       title: "Word Import", okLabel: "Import Markdown", cancelLabel: "Cancel",
     })) return false;
-    if (!await replaceDocument({ name: `${stem(path)}.md`, content: markdown, dirty: true })) return false;
-    rememberPath(path);
-    notify(`Imported ${basename(path)} — save it to keep the Markdown version.`);
+    return openWindow({kind:"import", path});
   }
 
   async function chooseAndImport() {
@@ -1112,8 +1107,8 @@
     if (path) await importPath(path);
   }
 
-  const openOrImport = (path, options) =>
-    ["html", "htm", "xhtml", "docx"].includes(extension(path)) ? importPath(path) : openPath(path, options);
+  const openOrImport = path =>
+    ["html", "htm", "xhtml", "docx"].includes(extension(path)) ? importPath(path) : openWindow({kind:"open", path});
 
   async function tryOpen(path) {
     try {
@@ -1126,7 +1121,7 @@
 
   async function openGuide() {
     const response = await fetch("guide.md");
-    return replaceDocument({ name: "Markdown Guide.md", content: await response.text() });
+    loadDocument({ name: "Markdown Guide.md", content: await response.text() });
   }
 
   async function exportHtml() {
@@ -1325,6 +1320,8 @@
         return;
       }
     }
+    await invoke("accept_reload", {path:doc.path, version:file.version});
+    if (!session.isCurrent(before)) return;
     const top = editor.scroller.scrollTop;
     editor.replaceText(file.content.replace(/\r\n?/g, "\n"));
     doc.version = file.version;
@@ -1339,50 +1336,96 @@
 
   let checkingDisk = false;
   window.addEventListener("focus", () => {
+    syncChecks();
     if (initializing || checkingDisk || busy || closing) return;
     checkingDisk = true;
     return runFileAction(checkDisk).catch(e => notify(String(e), 15000)).finally(() => { checkingDisk = false; });
   });
 
+  async function rememberBounds() {
+    try {
+      const bounds = await invoke("window_bounds");
+      if (bounds) store.set("bounds", bounds);
+    } catch (error) { report(error); }
+  }
+
   let closing = false;
   async function finishClose(close) {
     if (closing || !await confirmDiscard()) return;
-    rememberPlace();
     closing = true;
+    editor.setFrozen(true);
     els.editorPane.inert = true;
     try {
-      try {
-        const bounds = await invoke("window_bounds");
-        if (bounds) store.set("bounds", bounds);
-      } catch (error) { report(error); }
+      if (!await invoke("begin_close")) {
+        closing = false;
+        editor.setFrozen(false);
+        els.editorPane.inert = false;
+        return;
+      }
+      await rememberPlace();
+      await rememberBounds();
       await clearRecovery();
       await close();
     } catch (error) {
       closing = false;
+      editor.setFrozen(false);
       els.editorPane.inert = false;
       if (session.isDirty()) saveRecovery();
+      await invoke("cancel_close");
       throw error;
     }
+  }
+
+  let quitEpoch = null, cancelledThrough = 0;
+  function cancelQuit() {
+    if (quitEpoch === null) return;
+    quitEpoch = null;
+    editor.setFrozen(false);
+    closing = false;
+    els.app.inert = false;
+    els.editorPane.inert = initializing;
+  }
+
+  function prepareQuit({epoch, rememberWindow}) {
+    return session.run(async () => {
+      if (closing || quitEpoch !== null || epoch <= cancelledThrough) return;
+      quitEpoch = epoch;
+      editor.setFrozen(true);
+      closing = true;
+      els.app.inert = true;
+      els.editorPane.inert = true;
+      let allow = false;
+      try {
+        await saveRecovery();
+        allow = await confirmDiscard();
+        if (allow) {
+          await rememberPlace();
+          if (rememberWindow) await rememberBounds();
+        }
+        await recoveryIO;
+      } catch (error) { await showError(error); }
+      // Don't Save is provisional until every window has agreed.
+      if (quitEpoch !== epoch) return;
+      try { await invoke("quit_vote", {epoch, allow, draft:doc.hasRecovery ? doc.id : null}); }
+      finally { if (!allow) cancelQuit(); }
+    }).catch(error => { cancelQuit(); report(error); });
   }
 
   // ---------------------------------------------------------------- menu
 
   const TABLE = "| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |";
   const actions = {
-    new: () => runFileAction(() => replaceDocument({})),
+    new: () => runFileAction(() => openWindow({kind:"new"})),
+    new_tab: () => runFileAction(() => invoke("open_document_window", {request:{kind:"new"}, tab:true})),
     open: () => runFileAction(chooseAndOpen),
     new_template: () => runFileAction(newFromTemplate),
     compare_disk: () => runFileAction(compareWithDisk),
     clear_recent: () => runFileAction(async () => {
-      store.remove("places");
-      store.remove("recent");
-      store.remove("lastPath");
-      await syncRecentMenu();
+      await updateHistory({kind:"clear"});
     }),
     jump_heading: jumpToHeading,
     document_outline: toggleSidebar,
     settings: () => settings.showModal(),
-    close_others_before_quit: () => notify("Close each document window before quitting.", 12000),
     close_window: () => runFileAction(() => finishClose(() => appWindow.destroy())),
     reveal: () => doc.path ? invoke("reveal_document", {path:doc.path}) : notify("Save this document first to reveal it."),
     fold: () => editor.fold(),
@@ -1415,8 +1458,8 @@
       });
       if (allowed) {doc.remote = !doc.remote; await renderNow();}
     }),
-    guide: () => runFileAction(openGuide),
-    quit: () => runFileAction(() => finishClose(() => invoke("quit"))),
+    guide: () => runFileAction(() => openWindow({kind:"guide"})),
+    quit: () => invoke("quit"),
 
     undo: () => editor.undo(),
     redo: () => editor.redo(),
@@ -1515,12 +1558,25 @@
     }
     applyTheme();
 
-    const bounds = store.get("bounds", null);
+    const bounds = !config.launch && store.get("bounds", null);
     if (bounds && typeof bounds === "object") {
       try { await invoke("restore_window_bounds", {bounds}); }
       catch (error) { store.remove("bounds"); report(error); }
     }
-    const initialDocument = runFileAction(openInitialDocument);
+    const target = {target:appWindow.label};
+    const fragment = async () => {
+      const anchor = await invoke("take_fragment");
+      if (anchor && await renderNow()) jumpFragment(anchor);
+    };
+    await T.event.listen("prepare-quit", event => prepareQuit(event.payload), target);
+    await T.event.listen("cancel-quit", ({payload}) => {
+      cancelledThrough = Math.max(cancelledThrough, payload);
+      if (quitEpoch === payload) cancelQuit();
+    });
+    await T.event.listen("document-fragment", () => {
+      if (!initializing) runFileAction(fragment).catch(showError);
+    }, target);
+    const initialDocument = runFileAction(openInitialDocument).catch(showError);
     await T.event.listen("menu", (event) => runAction(event.payload), {target:appWindow.label});
     const drainOpenRequests = () => runFileAction(async () => {
       let path;
@@ -1540,22 +1596,48 @@
     try {
       await T.webview.getCurrentWebview().onDragDropEvent((event) => {
         const paths = event.payload.type === "drop" ? event.payload.paths : null;
-        if (paths && paths.length) return runFileAction(() => /\.(png|jpe?g|gif|webp)$/i.test(paths[0]) ? insertImage(paths[0]) : openOrImport(paths[0])).catch(showError);
+        if (paths?.length) return runFileAction(async () => {
+          for (const path of paths) {
+            if (/\.(png|jpe?g|gif|webp)$/i.test(path)) await insertImage(path);
+            else await tryOpen(path);
+          }
+        }).catch(showError);
       });
     } catch (error) {
       report(error);
     }
 
     await initialDocument;
-    await syncRecentMenu();
+    await updateHistory({kind:"read"});
     await pendingDocuments;
     initializing = false;
     els.editorPane.inert = closing;
     if (viewMode !== "preview") editor.focus();
+    await fragment();
+    await invoke("document_ready");
     invoke("log_message", { message: "ready" }).catch(() => {});
   }
 
+  async function restoreDraft(id) {
+    const draft = await invoke("recovery_claim", {id, restore:true});
+    loadDocument({...draft, dirty:true, recovered:true});
+    notify("Recovered edits · save to keep them", 15000);
+  }
+
   async function openInitialDocument() {
+    const launch = config.launch;
+    delete config.launch;
+    if (launch) {
+      switch (launch.kind) {
+        case "open": return displayFile(launch.file, true);
+        case "guide": return openGuide();
+        case "new": return loadDocument({});
+        case "template": return loadDocument({name:"Untitled.md", content:launch.content, dirty:true});
+        case "import": return loadDocument({name:stem(launch.path) + ".md", content:launch.content, dirty:true});
+        case "restore": return restoreDraft(launch.id);
+      }
+    }
+    let restored = false;
     try {
       for (const entry of await invoke("recovery_list")) {
         if (entry.problem) {
@@ -1566,15 +1648,17 @@
           title: "Recovered edits", kind: "warning", buttons: { yes: "Restore", no: "Discard Draft", cancel: "Later" },
         });
         if (choice === "Restore" || choice === "Yes") {
-          const draft = await invoke("recovery_claim", { id: entry.id });
-          loadDocument({ ...draft, dirty: true, recovered: true });
-          notify("Recovered edits · save to keep them", 15000);
-          return;
+          if (restored) await openWindow({kind:"restore", id:entry.id});
+          else { await restoreDraft(entry.id); restored = true; }
         }
         if (choice === "Discard Draft" || choice === "No") {
           await invoke("recovery_claim", { id: entry.id });
           await invoke("recovery_clear", { id: entry.id });
         }
+      }
+      if (restored) {
+        if (config.pendingOpen) await tryOpen(config.pendingOpen);
+        return;
       }
       const legacy = store.get("recovery", null);
       if (legacy && typeof legacy.content === "string") {
@@ -1588,6 +1672,7 @@
           await invoke("recovery_write", { draft });
           store.remove("recovery");
           loadDocument({ ...draft, dirty: true, recovered: true });
+          if (config.pendingOpen) await tryOpen(config.pendingOpen);
           return;
         }
         if (choice === "Discard Draft" || choice === "No") store.remove("recovery");
@@ -1595,8 +1680,13 @@
     } catch (error) {
       await showError(`Recovery could not finish: ${error}. Existing drafts have been retained.`);
     }
-    if (config.pendingOpen && (await tryOpen(config.pendingOpen))) return;
-    const last = store.get("lastPath", null);
+    if (config.pendingOpen) {
+      if (["html","htm","xhtml","docx"].includes(extension(config.pendingOpen))) {
+        if (await tryOpen(config.pendingOpen)) return loadDocument({});
+      } else if (await openPath(config.pendingOpen)) return;
+    }
+    await updateHistory({kind:"read"});
+    const last = history.lastPath;
     if (last && (await openPath(last, { silent: true }))) return;
     if (!store.get("welcomed", false)) {
       store.set("welcomed", true);
