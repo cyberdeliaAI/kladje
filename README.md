@@ -1,59 +1,60 @@
 # Kladje
 
-A light, fast Markdown editor with a live preview, for macOS, Windows and Linux.
-Built with Rust and Tauri 2: the system webview draws the window, everything
-else (rendering, files, import, export) is Rust.
+Kladje is a single-document Markdown editor with a live preview. Write in the source pane, read in the preview, or keep both in view with synchronized scrolling. It uses CodeMirror for editing, Rust for rendering and file operations, and Tauri 2 for the native window and menus.
 
-## Features
+The P0 document-safety baseline has been tested on Apple silicon macOS. Windows and Linux native validation is pending.
 
-- Source editor on the left, live preview on the right, with scroll sync.
-  Switch between editor only, both, or preview only.
-- CommonMark and GitHub Flavored Markdown: tables, task lists, footnotes,
-  strikethrough, autolinks, callouts (`> [!NOTE]`), plus definition lists,
-  highlight, sub/superscript, emoji shortcodes and front matter.
-- Syntax highlighting for code blocks and math (`$…$`, `$$…$$`) without any
-  JavaScript: both are rendered in Rust.
-- Import: HTML, Word (`.docx`) and plain text.
-- Export: standalone HTML, and PDF through the print dialog.
-- Safe by default: raw HTML in a document is sanitised, so opening an untrusted
-  file never runs script.
-- Careful with your text: atomic saves, recovery of unsaved work after a crash,
-  a warning when another program changes the file, original line endings kept.
-- Light and dark theme, following the system or set by hand.
+## What you can do
 
-## Build
+- Edit Markdown with native menu shortcuts, heading and list commands, undo and redo, and Find and Replace. Open **Help → Markdown Guide** for an editable guide.
+- Preview tables, task lists, footnotes, strikethrough, fenced code with syntax highlighting, and math. Switch between editor, preview and split views in light or dark mode.
+- Open Markdown and plain text, import HTML or Word documents as editable Markdown, export HTML, and print or save a PDF through the system print dialog.
+- Save explicitly with **⌘S**. If you keep typing during a save, newer edits stay marked as unsaved. When another program changes the file, you can keep your edits, reload from disk, or save a separate copy.
+- Restore private drafts after an unexpected exit. Kladje keeps up to three recovery generations per document. On macOS, saving through a symlink preserves the link.
 
-Requirements: [Rust](https://rustup.rs) and the
-[Tauri prerequisites](https://tauri.app/start/prerequisites/) for your platform.
+## Build the macOS app
 
-```bash
-cd src-tauri
-cargo run              # development build
-cargo test             # unit tests
+Install the Xcode Command Line Tools, Rust with Cargo, and Node.js with npm. The verified environment used macOS 27.2.1 on Apple silicon, Rust 1.100.0 and Node.js 26.13.1. The minimum Rust version for the locked dependencies still needs qualification. [Tauri prerequisites for macOS](https://v2.tauri.app/start/prerequisites/#macos)
+
+From the repository root, run
+
+```sh
+npm ci
+npm run build -- --ci --bundles app
 ```
 
-For an installable bundle (`.app`/`.dmg`, `.msi`, `.deb`/`.AppImage`) Node.js is
-needed for the Tauri CLI:
+The application bundle is written to `src-tauri/target/release/bundle/macos/Kladje.app`.
 
-```bash
-npm install
-npm run build
+## Development
+
+With dependencies installed, start the desktop app in development mode with `npm run dev`. The UI uses plain HTML, CSS and JavaScript. Its CodeMirror bundle is checked in. After changing `editor-src/editor.entry.js`, regenerate the bundle with `npm run build:editor`.
+
+Run the Rust and JavaScript regression suites from the repository root
+
+```sh
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+npm test
 ```
 
-## Layout
+The Rust suite exercises rendering, import, export, file formats, atomic saves and recovery. The JavaScript tests control the timing of disk reads and writes while driving document, menu and window events.
 
-| Path | What |
-| :-- | :-- |
-| `src-tauri/src/markdown.rs` | Markdown → sanitised HTML |
-| `src-tauri/src/import.rs` | HTML and `.docx` → Markdown |
-| `src-tauri/src/export.rs` | Standalone HTML export |
-| `src-tauri/src/fileio.rs` | Decoding and atomic writes |
-| `src-tauri/src/main.rs` | Window, menu and commands |
-| `ui/` | Interface: plain HTML, CSS and JavaScript, no build step |
-| `editor-src/` | Source of the editor bundle (`ui/vendor/editor.js`) |
+## Known limitations
 
-The editor bundle is checked in, so Node.js is only needed when you change
-`editor-src/editor.entry.js` (`npm run build:editor`) or build an installer.
+- Preview resource isolation remains a release blocker. Documents can load remote images, and the local image scope is broad. Use trusted documents while these controls are under review.
+- Files are limited to 64 MiB. Supported encodings include UTF-8, BOM-marked UTF-16 and printable Latin-1. Format changes such as converting edited Latin-1 text to UTF-8 require confirmation.
+- Recovery is periodic. Edits made since the last completed snapshot can be lost on a crash. Network shares, removable media and physical power-loss behavior still need testing.
+- HTML exports retain image paths. Moving the exported file can break relative images. Word import supports a subset of document formatting.
+- Open Recent, a heading outline and dedicated image insertion are planned features.
 
-`cargo run --example devserver` serves the interface in a normal browser with
-the real Rust core behind it, which is handy for working on the UI.
+## Planning documents
+
+The [development roadmap](docs/planning/DEVELOPMENT_ROADMAP.md) records the verified P0 behavior and remaining release gates. The original audit and feature matrix describe the earlier baseline.
+
+- [Project audit](docs/planning/PROJECT_AUDIT.md)
+- [Feature matrix](docs/planning/FEATURE_MATRIX.md)
+- [UX review](docs/planning/UX_REVIEW.md)
+- [Product vision](docs/planning/PRODUCT_VISION.md)
+
+## Licensing
+
+The project license for Kladje's own code is pending. The bundled editor and MathML stylesheet carry their upstream licenses. [Third-party frontend notices](ui/vendor/THIRD-PARTY-NOTICES.txt)

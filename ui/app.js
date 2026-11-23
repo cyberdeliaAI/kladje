@@ -27,7 +27,7 @@
   };
 
   const MARKDOWN_EXT = ["md", "markdown", "mdown", "mkd", "mdx", "txt"];
-  const IMPORT_EXT = ["html", "htm", "docx", "txt"];
+  const IMPORT_EXT = ["html", "htm", "xhtml", "docx", "txt"];
 
   // ---------------------------------------------------------------- settings
 
@@ -57,12 +57,15 @@
 
   // ---------------------------------------------------------------- state
 
-  const doc = { path: null, name: "Untitled", mtime: null, crlf: false };
+  const draftId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
+    byte => byte.toString(16).padStart(2, "0")).join("");
+  const doc = { id: draftId(), hasRecovery: false, recovered: false, path: null, name: "Untitled", version: null, format: null };
   let config = { syntaxCssLight: "", syntaxCssDark: "", idPrefix: "" };
   let viewMode = store.get("view", "split");
   let themeSetting = store.get("theme", "auto");
   let syncEnabled = store.get("sync", true);
   let zoom = store.get("zoom", 1);
+  let initializing = true;
   let busy = false; // a dialog or file operation is in progress
 
   // ---------------------------------------------------------------- helpers
@@ -130,6 +133,7 @@
     onSelection: () => schedule("stats", updateStats, 60),
   });
 
+  const session = new DocumentSession(() => editor.getText());
   const timers = {};
   function schedule(name, fn, delay) {
     clearTimeout(timers[name]);
@@ -137,18 +141,24 @@
   }
 
   function onDocumentChanged() {
+    session.changed();
+    if (els.notice.textContent === "Saved") {
+      els.notice.classList.remove("visible");
+      els.notice.textContent = "";
+    }
     scheduleRender();
     schedule("chrome", refreshChrome, 50);
     schedule("recovery", saveRecovery, 900);
+    if (!timers.recoveryDeadline) timers.recoveryDeadline = setTimeout(saveRecovery, 5000);
   }
 
   // ---------------------------------------------------------------- chrome
 
   let shownTitle = null;
   function refreshChrome() {
-    const dirty = !editor.isClean();
+    const dirty = session.isDirty();
     els.docName.classList.toggle("dirty", dirty);
-    els.docName.firstElementChild.textContent = doc.name;
+    els.docName.firstElementChild.textContent = doc.recovered ? `${doc.name} (recovered)` : doc.name;
     els.docName.title = (doc.path || "Not saved yet") + (dirty ? " — edited" : "");
     const title = `${dirty ? "• " : ""}${doc.name} — Kladje`;
     if (title !== shownTitle) {
@@ -394,7 +404,7 @@
         relative = decodeURIComponent(relative);
       } catch {}
       const path = relative.startsWith("/") || isWindowsPath(relative) ? relative : resolvePath(dirname(doc.path), relative);
-      guarded(() => openPath(path));
+      runFileAction(() => openPath(path)).catch(showError);
     }
   });
 
@@ -495,21 +505,25 @@
 
   // ---------------------------------------------------------------- documents
 
-  function loadDocument({ path = null, name = null, content = "", mtime = null, dirty = false }) {
-    doc.crlf = content.includes("\r\n");
+  function loadDocument({ path = null, name = null, content = "", version = null, dirty = false, id = draftId(), recovered = false, format = null, revision = 0 }) {
+    clearRecovery();
+    doc.id = id;
+    doc.recovered = recovered;
+    doc.hasRecovery = recovered;
+    doc.format = format || { encoding: "utf8", eol: content.includes("\r\n") ? "crlf" : "lf" };
     doc.path = path;
     doc.name = path ? basename(path) : name || "Untitled";
-    doc.mtime = mtime;
+    doc.version = version;
+    doc.ignoredVersion = null;
     editor.setText(content.replace(/\r\n?/g, "\n"));
-    if (dirty) editor.markDirty();
+    session.reset(editor.getText(), dirty, revision);
     els.preview.replaceChildren();
     els.previewPane.scrollTop = 0;
     anchors = null;
     activePane = "editor";
     if (path) store.set("lastPath", path);
     else store.remove("lastPath");
-    if (dirty) saveRecovery();
-    else clearRecovery();
+    if (dirty && !recovered) saveRecovery();
     refreshChrome();
     renderNow();
     if (viewMode !== "preview") editor.focus();
@@ -523,37 +537,49 @@
       if (!silent) await showError(error);
       return false;
     }
-    loadDocument({ path: file.path, content: file.content, mtime: file.mtime });
-    if (file.converted) notify("This file was not UTF-8. It has been converted and will be saved as UTF-8.", 9000);
+    if (!await replaceDocument(file)) return false;
+    if (file.format.encoding === "latin1") notify("Opened as Latin-1 · its encoding will be preserved", 9000);
     return true;
   }
 
   /** Ask what to do with unsaved changes. Resolves true when it is fine to continue. */
   async function confirmDiscard() {
-    if (editor.isClean()) return true;
+    if (!session.isDirty()) return true;
     const SAVE = "Save";
     const DISCARD = "Don't Save";
     const CANCEL = "Cancel";
+    const before = session.snapshot();
     const answer = await T.dialog.message(`Do you want to save the changes you made to “${doc.name}”?`, {
       title: "Unsaved changes",
       kind: "warning",
       buttons: { yes: SAVE, no: DISCARD, cancel: CANCEL },
     });
+    if (!session.isCurrent(before)) return false;
     if (answer === SAVE || answer === "Yes") return save();
     return answer === DISCARD || answer === "No";
   }
 
-  /** Run an action that replaces the document, after dealing with unsaved changes. */
-  async function guarded(action) {
-    if (busy) return;
-    busy = true;
-    try {
-      if (await confirmDiscard()) await action();
-    } catch (error) {
-      await showError(error);
-    } finally {
-      busy = false;
+  // Read and validate the candidate before asking to discard the old document.
+  async function replaceDocument(next) {
+    const previousVersion = doc.version;
+    if (!await confirmDiscard()) return false;
+    // The discard prompt can itself Save (As) into the file we just read.
+    if (next.version && previousVersion !== doc.version && next.version.target === doc.version?.target) {
+      const before = session.snapshot();
+      next = await invoke("read_file", { path: next.path });
+      if (!session.isCurrent(before)) return false;
     }
+    loadDocument(next);
+    return true;
+  }
+
+  function runFileAction(action) {
+    return session.run(() => !closing && action());
+  }
+
+  function queuedSave(saveAs) {
+    const identity = session.document;
+    return runFileAction(() => identity === session.document && save(saveAs));
   }
 
   async function save(saveAs = false) {
@@ -566,27 +592,73 @@
       });
       if (!path) return false;
     }
-    let content = editor.getText();
-    if (doc.crlf) content = content.replace(/\n/g, "\r\n");
+    let expected = doc.version;
+    if (path !== doc.path) {
+      const destination = await invoke("file_version", { path });
+      if (destination && doc.version && destination.target === doc.version.target) {
+        expected = doc.version;
+      } else {
+        expected = destination;
+        if (destination && !await T.dialog.ask(`Replace the existing file “${basename(path)}” with this document?`, {
+          title: "Save As", kind: "warning", okLabel: "Replace File", cancelLabel: "Cancel",
+        })) return false;
+      }
+    }
+    const snapshot = session.snapshot();
+    const content = snapshot.content;
+    const format = { ...doc.format };
+    if (format.eol === "mixed" && content.split("\n").length - 1 !== format.separators.length) {
+      if (!await T.dialog.ask("The number of lines changed in this mixed-ending document. Save using LF throughout?", {
+        title: "Line-ending conversion", okLabel: "Use LF", cancelLabel: "Cancel",
+      })) return false;
+      format.eol = "lf";
+      delete format.separators;
+    }
+    if (format.encoding === "latin1" && /[^\u0000-\u00ff]/u.test(content)) {
+      if (!await T.dialog.ask("Some characters cannot be stored in Latin-1. Save this document as UTF-8?", {
+        title: "Encoding conversion", okLabel: "Use UTF-8", cancelLabel: "Cancel",
+      })) return false;
+      format.encoding = "utf8";
+    }
+    let result;
     try {
-      doc.mtime = await invoke("write_file", { path, content });
+      session.beginWrite(snapshot);
+      notify("Saving…", 60000);
+      result = await invoke("write_file", { path, content, format, expected });
     } catch (error) {
-      await showError(error);
+      session.endWrite();
+      session.requireSave();
+      refreshChrome();
+      saveRecovery();
+      notify("Save failed · edits remain open", 30000);
+      const message = String(error);
+      await showError(/save as/i.test(message) ? message : message + "\nUse Save As to save a separate copy.");
       return false;
     }
+    session.endWrite();
+    const confirmed = result.confirmed;
     const moved = path !== doc.path;
+    doc.version = result.version;
+    doc.format = format;
+    doc.ignoredVersion = null;
     doc.path = path;
     doc.name = basename(path);
     store.set("lastPath", path);
-    editor.markClean();
-    clearRecovery();
+    if (confirmed) doc.recovered = false;
+    if (!confirmed) session.requireSave();
+    const clean = confirmed && session.acknowledge(snapshot);
+    if (clean) clearRecovery();
+    else saveRecovery();
+    if (confirmed) notify(clean ? "Saved" : "Earlier edits saved · newer edits are unsaved");
+    else notify("Save unconfirmed · recovery retained · retry Save or use Save As", 60000);
     refreshChrome();
     if (moved) {
       // Relative image paths now resolve against the new folder.
       els.preview.replaceChildren();
       renderNow();
     }
-    return true;
+    if (result.warning) await showError(result.warning);
+    return clean;
   }
 
   async function chooseAndOpen() {
@@ -599,12 +671,12 @@
         { name: "All files", extensions: ["*"] },
       ],
     });
-    if (path) await openPath(path);
+    if (path) await openOrImport(path);
   }
 
   async function importPath(path) {
     const markdown = await invoke("import_file", { path });
-    loadDocument({ name: `${stem(path)}.md`, content: markdown, dirty: true });
+    if (!await replaceDocument({ name: `${stem(path)}.md`, content: markdown, dirty: true })) return false;
     notify(`Imported ${basename(path)} — save it to keep the Markdown version.`);
   }
 
@@ -632,7 +704,7 @@
 
   async function openGuide() {
     const response = await fetch("guide.md");
-    loadDocument({ name: "Markdown Guide.md", content: await response.text() });
+    return replaceDocument({ name: "Markdown Guide.md", content: await response.text() });
   }
 
   async function exportHtml() {
@@ -646,8 +718,13 @@
         filters: [{ name: "HTML", extensions: ["html"] }],
       });
       if (!path) return;
-      await invoke("export_html", { path, markdown: editor.getText(), title: stem(doc.name) });
-      notify(`Exported ${basename(path)}`);
+      const expected = await invoke("file_version", { path });
+      if (expected && !await T.dialog.ask(`Replace “${basename(path)}” with this HTML export?`, {
+        title: "Export HTML", okLabel: "Replace File", cancelLabel: "Cancel",
+      })) return;
+      const result = await invoke("export_html", { path, markdown: editor.getText(), title: stem(doc.name), source: doc.path, expected });
+      if (result.warning) await showError(result.warning);
+      if (result.confirmed) notify(`Exported ${basename(path)}`);
     } catch (error) {
       await showError(error);
     } finally {
@@ -667,84 +744,127 @@
 
   // ---------------------------------------------------------------- crash recovery
 
-  function saveRecovery() {
-    if (editor.isClean()) return clearRecovery();
-    const ok = store.set("recovery", {
-      path: doc.path,
-      name: doc.name,
-      crlf: doc.crlf,
-      content: editor.getText(),
-      time: Date.now(),
-    });
-    if (!ok) store.remove("recovery"); // too large for local storage
+  // Snapshot publication and retirement must have the same ordering, including
+  // when an old document is replaced while its final snapshot is in flight.
+  let recoveryIO = Promise.resolve();
+  function recoveryOperation(action) {
+    const result = recoveryIO.then(action);
+    recoveryIO = result.catch(error => notify(`Recovery storage: ${error}. Save your document to keep these edits.`, 60000));
+    return result;
   }
-  const clearRecovery = () => {
+
+  function cancelRecoveryTimers() {
     clearTimeout(timers.recovery);
-    store.remove("recovery");
-  };
+    clearTimeout(timers.recoveryDeadline);
+    timers.recoveryDeadline = 0;
+  }
+
+  function saveRecovery() {
+    cancelRecoveryTimers();
+    if (!session.isDirty()) return clearRecovery();
+    const draft = {
+      id: doc.id, revision: session.document.revision, path: doc.path, name: doc.name,
+      format: doc.format,
+      version: doc.version, content: editor.getText(), time: Date.now(),
+    };
+    doc.hasRecovery = true;
+    return recoveryOperation(() => invoke("recovery_write", { draft })).catch(() => {
+      if (doc.id === draft.id && session.isDirty() && !timers.recoveryDeadline)
+        timers.recoveryDeadline = setTimeout(saveRecovery, 5000);
+    });
+  }
+
+  function clearRecovery() {
+    cancelRecoveryTimers();
+    if (!doc.hasRecovery) return recoveryIO;
+    const id = doc.id;
+    doc.hasRecovery = false;
+    return recoveryOperation(() => invoke("recovery_clear", { id })).catch(() => {
+      if (doc.id === id) doc.hasRecovery = true;
+    });
+  }
 
   // ---------------------------------------------------------------- changes made by other programs
 
-  let checkingDisk = false;
+  function sameVersion(a, b) {
+    return a && b && a.target === b.target && a.digest === b.digest && a.identity === b.identity;
+  }
+
   async function checkDisk() {
-    if (!doc.path || checkingDisk || busy) return;
-    checkingDisk = true;
-    try {
-      const path = doc.path;
-      const mtime = await invoke("file_mtime", { path });
-      if (path !== doc.path || mtime == null || doc.mtime == null || mtime === doc.mtime) return;
-      doc.mtime = mtime; // ask only once per change
-      if (editor.isClean()) {
-        const file = await invoke("read_file", { path });
-        const top = editor.scroller.scrollTop;
-        const text = file.content.replace(/\r\n?/g, "\n");
-        if (text !== editor.getText()) {
-          doc.crlf = file.content.includes("\r\n");
-          editor.replaceText(text);
-          editor.markClean();
-          editor.scroller.scrollTop = top;
-          refreshChrome();
-          notify(`${doc.name} changed on disk and was reloaded.`);
-        }
-      } else {
-        const reload = await T.dialog.ask(
-          `“${doc.name}” was changed by another program. Reload it and lose your unsaved changes?`,
-          { title: "File changed on disk", kind: "warning", okLabel: "Reload", cancelLabel: "Keep My Changes" },
-        );
-        if (reload) await openPath(path);
+    if (!doc.path || !doc.version || closing) return;
+    const before = session.snapshot();
+    const version = await invoke("file_version", { path: doc.path });
+    if (sameVersion(version, doc.version) || (session.isDirty() && sameVersion(version, doc.ignoredVersion))) return;
+    if (!version) {
+      session.requireSave();
+      saveRecovery();
+      refreshChrome();
+      notify("File was moved or deleted · use Save As to keep a copy", 30000);
+      return;
+    }
+    const file = await invoke("read_file", { path: doc.path });
+    if (!session.isCurrent(before)) {
+      notify("File changed on disk while you were editing · your edits are still open", 15000);
+      return;
+    }
+    if (session.isDirty()) {
+      const reload = await T.dialog.ask(`“${doc.name}” changed on disk. Reload the disk version and discard the edits in this window? Choose Keep Edits to keep writing or use Save As.`, {
+        title: "Conflicting changes", kind: "warning", okLabel: "Reload Disk Version", cancelLabel: "Keep Edits",
+      });
+      if (!session.isCurrent(before)) return;
+      if (!reload) {
+        doc.ignoredVersion = file.version;
+        return;
       }
+    }
+    const top = editor.scroller.scrollTop;
+    editor.replaceText(file.content.replace(/\r\n?/g, "\n"));
+    doc.version = file.version;
+    doc.ignoredVersion = null;
+    doc.format = file.format;
+    session.acknowledge(session.snapshot());
+    clearRecovery();
+    editor.scroller.scrollTop = top;
+    refreshChrome();
+    notify(`${doc.name} was reloaded from disk.`);
+  }
+
+  let checkingDisk = false;
+  window.addEventListener("focus", () => {
+    if (initializing || checkingDisk || busy || closing) return;
+    checkingDisk = true;
+    return runFileAction(checkDisk).catch(e => notify(String(e), 15000)).finally(() => { checkingDisk = false; });
+  });
+
+  let closing = false;
+  async function finishClose(close) {
+    if (closing || !await confirmDiscard()) return;
+    closing = true;
+    els.editorPane.inert = true;
+    try {
+      await clearRecovery();
+      await close();
     } catch (error) {
-      report(error);
-    } finally {
-      checkingDisk = false;
+      closing = false;
+      els.editorPane.inert = false;
+      if (session.isDirty()) saveRecovery();
+      throw error;
     }
   }
-  window.addEventListener("focus", checkDisk);
 
   // ---------------------------------------------------------------- menu
 
   const TABLE = "| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |";
   const actions = {
-    new: () => guarded(() => loadDocument({})),
-    open: () => guarded(chooseAndOpen),
-    save: () => save(false),
-    save_as: () => save(true),
-    import: () => guarded(chooseAndImport),
-    export_html: exportHtml,
+    new: () => runFileAction(() => replaceDocument({})),
+    open: () => runFileAction(chooseAndOpen),
+    save: () => queuedSave(false),
+    save_as: () => queuedSave(true),
+    import: () => runFileAction(chooseAndImport),
+    export_html: () => runFileAction(exportHtml),
     export_pdf: printDocument,
-    guide: () => guarded(openGuide),
-    quit: async () => {
-      if (busy) return;
-      busy = true;
-      try {
-        if (await confirmDiscard()) {
-          clearRecovery();
-          await invoke("quit");
-        }
-      } finally {
-        busy = false;
-      }
-    },
+    guide: () => runFileAction(openGuide),
+    quit: () => runFileAction(() => finishClose(() => invoke("quit"))),
 
     undo: () => editor.undo(),
     redo: () => editor.redo(),
@@ -794,21 +914,22 @@
     "bullet", "numbered", "task", "quote", "codeblock", "table", "rule",
   ]);
 
-  function runAction(id) {
+  async function runAction(id) {
     const action = actions[id];
-    if (!action) return;
-    if (EDITING.has(id) && viewMode === "preview") return; // nothing to edit in
-    Promise.resolve()
-      .then(action)
-      .catch((error) => {
-        report(error);
-        showError(error);
-      });
+    if (!action || closing) return;
+    if (EDITING.has(id) && (initializing || viewMode === "preview")) return; // nothing to edit in
+    try {
+      return await action();
+    } catch (error) {
+      report(error);
+      await showError(error);
+    }
   }
 
   // ---------------------------------------------------------------- start
 
   async function start() {
+    els.editorPane.inert = true;
     setView(viewMode);
     setZoom(zoom);
     const split = store.get("split", 50);
@@ -823,62 +944,75 @@
     }
     applyTheme();
 
+    const initialDocument = runFileAction(openInitialDocument);
     await T.event.listen("menu", (event) => runAction(event.payload));
     await T.event.listen("open-requested", async () => {
       const path = await invoke("take_pending_open");
-      if (path) guarded(() => openOrImport(path));
+      if (path) return runFileAction(() => openOrImport(path)).catch(showError);
     });
 
     // Closing the window with unsaved work asks first.
-    await appWindow.onCloseRequested(async (event) => {
-      if (busy) return event.preventDefault();
-      busy = true;
-      try {
-        if (await confirmDiscard()) clearRecovery();
-        else event.preventDefault();
-      } finally {
-        busy = false;
-      }
+    await appWindow.onCloseRequested((event) => {
+      event.preventDefault();
+      return runFileAction(() => finishClose(() => appWindow.destroy())).catch(showError);
     });
 
     // Drop a file on the window to open (or import) it.
     try {
       await T.webview.getCurrentWebview().onDragDropEvent((event) => {
         const paths = event.payload.type === "drop" ? event.payload.paths : null;
-        if (paths && paths.length) guarded(() => openOrImport(paths[0]));
+        if (paths && paths.length) return runFileAction(() => openOrImport(paths[0])).catch(showError);
       });
     } catch (error) {
       report(error);
     }
 
-    await openInitialDocument();
+    await initialDocument;
+    initializing = false;
+    els.editorPane.inert = closing;
+    if (viewMode !== "preview") editor.focus();
     invoke("log_message", { message: "ready" }).catch(() => {});
   }
 
   async function openInitialDocument() {
-    const recovery = store.get("recovery", null);
-    if (recovery && typeof recovery.content === "string") {
-      let restore = false;
-      try {
-        restore = await T.dialog.ask(
-          `Kladje closed with unsaved changes to “${recovery.name}”. Restore them?`,
-          { title: "Restore unsaved changes", kind: "warning", okLabel: "Restore", cancelLabel: "Discard" },
-        );
-      } catch (error) {
-        report(error);
-      }
-      if (restore) {
-        const mtime = recovery.path ? await invoke("file_mtime", { path: recovery.path }).catch(() => null) : null;
-        loadDocument({
-          path: recovery.path,
-          name: recovery.name,
-          content: recovery.crlf ? recovery.content.replace(/\n/g, "\r\n") : recovery.content,
-          mtime,
-          dirty: true,
+    try {
+      for (const entry of await invoke("recovery_list")) {
+        if (entry.problem) {
+          await showError(entry.problem);
+          continue;
+        }
+        const choice = await T.dialog.message(`An unsaved draft of “${entry.name}” was recovered from ${new Date(entry.time).toLocaleString()}.`, {
+          title: "Recovered edits", kind: "warning", buttons: { yes: "Restore", no: "Discard Draft", cancel: "Later" },
         });
-        return;
+        if (choice === "Restore" || choice === "Yes") {
+          const draft = await invoke("recovery_claim", { id: entry.id });
+          loadDocument({ ...draft, dirty: true, recovered: true });
+          notify("Recovered edits · save to keep them", 15000);
+          return;
+        }
+        if (choice === "Discard Draft" || choice === "No") {
+          await invoke("recovery_claim", { id: entry.id });
+          await invoke("recovery_clear", { id: entry.id });
+        }
       }
-      clearRecovery();
+      const legacy = store.get("recovery", null);
+      if (legacy && typeof legacy.content === "string") {
+        const choice = await T.dialog.message(`Restore “${legacy.name}” as a separate draft? Its original disk version is unknown.`, {
+          title: "Older recovery draft", buttons: { yes: "Restore", no: "Discard Draft", cancel: "Later" },
+        });
+        if (choice === "Restore" || choice === "Yes") {
+          const draft = { id: draftId(), name: legacy.name || "Untitled", path: null, version: null,
+            format: { encoding: "utf8", eol: legacy.crlf ? "crlf" : "lf" }, revision: 0,
+            content: legacy.content, time: Date.now() };
+          await invoke("recovery_write", { draft });
+          store.remove("recovery");
+          loadDocument({ ...draft, dirty: true, recovered: true });
+          return;
+        }
+        if (choice === "Discard Draft" || choice === "No") store.remove("recovery");
+      }
+    } catch (error) {
+      await showError(`Recovery could not finish: ${error}. Existing drafts have been retained.`);
     }
     if (config.pendingOpen && (await tryOpen(config.pendingOpen))) return;
     const last = store.get("lastPath", null);
@@ -897,6 +1031,8 @@
 
   start().catch((error) => {
     report(error);
+    initializing = false;
+    els.editorPane.inert = false;
     showError(error);
   });
 })();

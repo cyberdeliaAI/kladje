@@ -9,23 +9,14 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use kladje::markdown::{Renderer, Target, PREVIEW_ID_PREFIX};
-use kladje::{export, fileio, import};
+use kladje::recovery::{Candidate, Draft, Recovery};
+use kladje::{export, fileio, import, storage};
 
 struct AppState {
     renderer: Renderer,
     /// A file the OS asked us to open (command line, double-click, "Open with")
     /// that the window has not picked up yet.
     pending_open: Mutex<Option<String>>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Opened {
-    path: String,
-    content: String,
-    /// The file was not UTF-8 and has been converted for editing.
-    converted: bool,
-    mtime: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -58,27 +49,23 @@ fn render(state: State<'_, AppState>, markdown: String) -> String {
 }
 
 #[tauri::command(async)]
-fn read_file(path: String) -> Result<Opened, String> {
-    let p = Path::new(&path);
-    let decoded = fileio::read_text(p)?;
-    Ok(Opened {
-        mtime: fileio::mtime_ms(p),
-        path,
-        content: decoded.text,
-        converted: decoded.converted,
-    })
+fn read_file(path: String) -> Result<fileio::Opened, String> {
+    fileio::open_document(Path::new(&path))
 }
 
 #[tauri::command(async)]
-fn write_file(path: String, content: String) -> Result<Option<u64>, String> {
-    let p = Path::new(&path);
-    fileio::write_atomic(p, content.as_bytes())?;
-    Ok(fileio::mtime_ms(p))
+fn write_file(
+    path: String,
+    content: String,
+    format: fileio::TextFormat,
+    expected: Option<storage::Version>,
+) -> Result<storage::Written, String> {
+    fileio::write_document(Path::new(&path), &content, &format, expected.as_ref())
 }
 
 #[tauri::command(async)]
-fn file_mtime(path: String) -> Option<u64> {
-    fileio::mtime_ms(Path::new(&path))
+fn file_version(path: String) -> Result<Option<storage::Version>, String> {
+    storage::version(Path::new(&path))
 }
 
 #[tauri::command(async)]
@@ -92,9 +79,54 @@ fn export_html(
     path: String,
     markdown: String,
     title: String,
-) -> Result<(), String> {
+    source: Option<String>,
+    expected: Option<storage::Version>,
+) -> Result<storage::Written, String> {
     let html = export::standalone_html(&state.renderer, &markdown, &title);
-    fileio::write_atomic(Path::new(&path), html.as_bytes())
+    export::write_html(
+        Path::new(&path),
+        &html,
+        source.as_deref().map(Path::new),
+        expected.as_ref(),
+    )
+}
+
+type DraftStore<'a> = State<'a, Mutex<Recovery>>;
+
+#[tauri::command(async)]
+fn recovery_list(store: DraftStore<'_>) -> Result<Vec<Candidate>, String> {
+    store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .list()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+fn recovery_claim(store: DraftStore<'_>, id: String) -> Result<Draft, String> {
+    store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .claim(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+fn recovery_write(store: DraftStore<'_>, draft: Draft) -> Result<(), String> {
+    store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .write(draft)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+fn recovery_clear(store: DraftStore<'_>, id: String) -> Result<(), String> {
+    store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clear(&id)
+        .map_err(|e| e.to_string())
 }
 
 /// Opens the system print dialog, which is also how a PDF is produced.
@@ -253,7 +285,7 @@ fn main() {
         .skip(1)
         .map(PathBuf::from)
         .find(|p| p.is_file())
-        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .and_then(|p| std::path::absolute(p).ok())
         .map(|p| p.to_string_lossy().into_owned());
 
     let app = tauri::Builder::default()
@@ -264,6 +296,9 @@ fn main() {
             pending_open: Mutex::new(from_args),
         })
         .setup(|app| {
+            app.manage(Mutex::new(Recovery::new(
+                app.path().app_data_dir()?.join("recovery-v1"),
+            )));
             build_menu(app.handle())?;
             Ok(())
         })
@@ -276,7 +311,11 @@ fn main() {
             render,
             read_file,
             write_file,
-            file_mtime,
+            file_version,
+            recovery_list,
+            recovery_claim,
+            recovery_write,
+            recovery_clear,
             import_file,
             export_html,
             print_document,
@@ -286,12 +325,22 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while starting Kladje");
 
-    app.run(|_app, _event| {
+    app.run(|app, event| {
+        // Dock/system Quit can bypass our menu. A confirmed quit calls exit(0).
+        if let tauri::RunEvent::ExitRequested {
+            code: None, api, ..
+        } = &event
+        {
+            if app.get_webview_window("main").is_some() {
+                api.prevent_exit();
+                let _ = app.emit("menu", "quit");
+            }
+        }
         // macOS delivers "open this document" as an event, not as an argument.
         #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Opened { urls } = &_event {
+        if let tauri::RunEvent::Opened { urls } = &event {
             if let Some(path) = urls.iter().find_map(|u| u.to_file_path().ok()) {
-                request_open(_app, path);
+                request_open(app, path);
             }
         }
     });

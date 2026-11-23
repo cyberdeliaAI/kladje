@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Kladje - a light, fast Markdown editor (Rust + Tauri)",
   "scripts": {
+    "test": "node --test tests",
     "dev": "tauri dev",
     "build": "tauri build",
     "build:editor": "esbuild editor-src/editor.entry.js --bundle --minify --format=iife --target=es2020 --outfile=ui/vendor/editor.js",
