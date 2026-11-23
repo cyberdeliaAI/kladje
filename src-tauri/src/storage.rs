@@ -29,6 +29,76 @@ pub struct Written {
     pub warning: Option<String>,
 }
 
+/// A marker used only for a missing publication primitive, never for permission,
+/// conflict, quota or I/O failures.
+pub const COPY_REQUIRED: &str = "KLADJE_COPY_REQUIRED";
+
+pub(crate) fn unsupported(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported || {
+        #[cfg(unix)]
+        {
+            matches!(error.raw_os_error(), Some(libc::ENOTSUP | libc::ENOSYS))
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+}
+
+/// Publish a complete regular file as a new directory entry on a filesystem
+/// lacking safe regular-file replacement. Renaming a nonempty directory cannot
+/// overwrite a file, symlink, or another nonempty directory.
+pub fn protected_copy(requested: &Path, bytes: &[u8]) -> Result<Written, String> {
+    let name = requested
+        .file_name()
+        .ok_or("Choose a filename for the copy.")?;
+    let parent = requested
+        .parent()
+        .ok_or("Choose a folder for the copy.")?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let (dir, file, folder_name) = stage_folder(&parent, name, bytes).map_err(|e| e.to_string())?;
+    let folder = parent.join(folder_name);
+    if folder.try_exists().map_err(|e| e.to_string())? {
+        return Err("Copy folder already exists. Try saving the copy again.".into());
+    }
+    let path = folder.join(name);
+    let expected = stamp(&path, &file.metadata().map_err(|e| e.to_string())?, bytes);
+    fs::rename(dir.path(), &folder).map_err(|e| e.to_string())?;
+    // The staging directory no longer exists under its old name.
+    let _ = dir.keep();
+    let confirmed = sync_directory(&parent).is_ok()
+        && version(&path).ok().flatten().as_ref() == Some(&expected);
+    Ok(Written {
+        version: expected,
+        confirmed,
+        warning: (!confirmed).then(|| {
+            format!(
+                "Could not confirm the copy at {}. Keep your edits open.",
+                path.display()
+            )
+        }),
+    })
+}
+
+pub(crate) fn stage_folder(
+    parent: &Path,
+    name: &std::ffi::OsStr,
+    bytes: &[u8],
+) -> io::Result<(tempfile::TempDir, File, String)> {
+    let dir = tempfile::Builder::new()
+        .prefix(".kladje-copy-")
+        .tempdir_in(parent)?;
+    let mut file = File::create_new(dir.path().join(name))?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    sync_directory(dir.path())?;
+    let token = dir.path().file_name().unwrap().to_string_lossy();
+    let folder = format!("Kladje Copy {}", token.trim_start_matches(".kladje-copy-"));
+    Ok((dir, file, folder))
+}
+
 fn target(path: &Path) -> io::Result<PathBuf> {
     match fs::symlink_metadata(path) {
         Ok(_) => fs::canonicalize(path), // A dangling link is an error.
@@ -217,7 +287,13 @@ fn replace_using(
         }
         let mut warnings = Vec::new();
         let displaced = if let Some(expected) = expected {
-            let old = swap(staged, &resolved)?;
+            let old = swap(staged, &resolved).map_err(|e| {
+                if unsupported(&e) {
+                    io::Error::other(COPY_REQUIRED)
+                } else {
+                    e
+                }
+            })?;
             // Validate the actual displaced object, including replacements in the
             // interval between the last comparison and the atomic exchange.
             if !read(&old)
@@ -227,7 +303,13 @@ fn replace_using(
             }
             Some(old)
         } else {
-            staged.persist_noclobber(&resolved)?;
+            staged.persist_noclobber(&resolved).map_err(|e| {
+                if unsupported(&e.error) {
+                    io::Error::other(COPY_REQUIRED)
+                } else {
+                    e.error
+                }
+            })?;
             None
         };
         if let Err(e) = flush(parent) {
@@ -258,7 +340,13 @@ fn replace_using(
             },
         })
     })();
-    result.map_err(|e| format!("{}: {e}", path.display()))
+    result.map_err(|e| {
+        if e.to_string() == COPY_REQUIRED {
+            COPY_REQUIRED.into()
+        } else {
+            format!("{}: {e}", path.display())
+        }
+    })
 }
 
 #[cfg(unix)]

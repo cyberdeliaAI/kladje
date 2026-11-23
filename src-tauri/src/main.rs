@@ -105,6 +105,15 @@ fn write_file(
 }
 
 #[tauri::command(async)]
+fn save_protected_copy(
+    path: String,
+    content: String,
+    format: fileio::TextFormat,
+) -> Result<storage::Written, String> {
+    fileio::copy_document(Path::new(&path), &content, &format)
+}
+
+#[tauri::command(async)]
 fn file_version(path: String) -> Result<Option<storage::Version>, String> {
     storage::version(Path::new(&path))
 }
@@ -523,6 +532,7 @@ fn main() {
             read_file,
             comparison_text,
             write_file,
+            save_protected_copy,
             file_version,
             recovery_list,
             recovery_claim,

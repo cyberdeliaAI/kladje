@@ -247,6 +247,11 @@ impl TextFormat {
     }
 }
 
+pub fn copy_document(path: &Path, content: &str, format: &TextFormat) -> Result<Written, String> {
+    markdown_path(path)?;
+    storage::protected_copy(path, &format.encode(content)?)
+}
+
 pub fn write_document(
     path: &Path,
     content: &str,
