@@ -80,27 +80,40 @@ fn warm_illustrated_edits_have_bounded_ipc_payloads() {
 #[test]
 fn only_renderer_owned_list_markers_receive_edit_coordinates() {
     let r = Renderer::new();
-    let md = "🌱 notes\n\n> - [X] first\n> - [ ] second\n\n```\n- [x] code\n```";
+    let md = "🌱 <kbd>notes</kbd>\n\n> - [X] first\n> - [ ] second\n\n```\n- [x] code\n```";
     let preview = r.preview_update(md, None, false, vec![], false).unwrap();
     let source: Vec<_> = md.encode_utf16().collect();
     assert_eq!(preview.tasks.len(), 2);
     for (pos, task) in preview.tasks {
-        assert!(preview.html.contains(&format!("data-sourcepos=\"{pos}\"")));
+        assert!(preview
+            .html
+            .contains(&format!("data-kladje-task=\"{pos}\"")));
         assert_eq!(
             source[task.offset],
             if task.checked { b'X' } else { b' ' } as u16
         );
     }
-    assert!(r
-        .preview_update(&format!("{md}\n\n<input>"), None, false, vec![], false)
-        .unwrap()
-        .tasks
-        .is_empty());
-    assert!(r
-        .render_document(md, Target::Export, None, false)
-        .unwrap()
-        .tasks
-        .is_empty());
+}
+
+#[test]
+fn html_and_table_controls_stay_read_only_beside_a_real_task() {
+    let r = Renderer::new();
+    let md = "- [ ] one\n\n<ul><li class=\"task-list-item\" data-sourcepos=\"1:1-1:9\"><input class=\"task-list-item-checkbox\" data-kladje-task=\"1:1-1:9\"></li></ul>\n\n| Status |\n| --- |\n| [x] |";
+    let render = || r.preview_update(md, None, false, vec![], false).unwrap();
+    let result = render();
+    assert_eq!(result.tasks.len(), 1);
+    assert_eq!(result.tasks["1:1-1:9"].offset, 3);
+    assert_eq!(
+        result.html.matches("data-kladje-task=\"1:1-1:9\"").count(),
+        1
+    );
+    assert_eq!(result.html.matches("disabled=\"\"").count(), 3);
+    assert_eq!(render().html, result.html, "unchanged blocks can be reused");
+
+    let export = r.render_document(md, Target::Export, None, false).unwrap();
+    assert!(export.tasks.is_empty());
+    assert!(!export.html.contains("data-kladje-task"));
+    assert_eq!(export.html.matches("disabled=\"\"").count(), 3);
 }
 
 #[test]

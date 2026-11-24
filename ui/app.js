@@ -962,12 +962,12 @@
     // Rendered checkboxes start out disabled, so without markers now or before nothing needs a visit.
     if (!markers.size && !tasksBound) return;
     tasksBound = markers.size > 0;
-    for (const box of els.preview.querySelectorAll("li.task-list-item > input.task-list-item-checkbox")) {
-      const marker = markers.get(box.parentElement.getAttribute("data-sourcepos"));
+    for (const box of els.preview.querySelectorAll("input[data-kladje-task]")) {
+      const marker = markers.get(box.getAttribute("data-kladje-task"));
       box.disabled = !marker;
       if (marker) {
         box.checked = marker.checked;
-        const label = box.parentElement.textContent.trim().split("\n")[0].slice(0, 160);
+        const label = box.closest("li")?.textContent.trim().split("\n")[0].slice(0, 160);
         box.setAttribute("aria-label", label || "Task");
         taskBindings.set(box, {marker, snapshot});
       } else box.removeAttribute("aria-label");

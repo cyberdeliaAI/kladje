@@ -19,9 +19,7 @@ final class Proof: NSObject, WKNavigationDelegate {
         info.leftMargin = 42
         info.rightMargin = 42
         info.horizontalPagination = .fit
-        info.dictionary()[NSPrintInfo.AttributeKey.allPages] = false
-        info.dictionary()[NSPrintInfo.AttributeKey.firstPage] = 1
-        info.dictionary()[NSPrintInfo.AttributeKey.lastPage] = 3
+        info.dictionary()[NSPrintInfo.AttributeKey.allPages] = true
         info.jobDisposition = .save
         info.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = output
         let operation = webView.printOperation(with: info)
@@ -33,14 +31,30 @@ final class Proof: NSObject, WKNavigationDelegate {
             didRun: #selector(finished(_:success:context:)), contextInfo: nil)
     }
     @objc func finished(_ operation: NSPrintOperation, success: Bool, context: UnsafeMutableRawPointer?) {
-        guard success, let pdf = PDFDocument(url: output), pdf.pageCount == 2,
+        guard success, let pdf = PDFDocument(url: output), pdf.pageCount >= 4,
               pdf.page(at: 0)?.string?.contains("First proof page") == true,
               pdf.page(at: 0)?.string?.contains("Second proof page") == false,
               pdf.page(at: 1)?.string?.contains("Second proof page") == true else {
             fputs("Expected each proof heading on a separate PDF page.\n", stderr)
             exit(1)
         }
-        print("Native WebKit printed both proof pages.")
+        guard let page = pdf.page(at: 1),
+              let criteria = pdf.findString("Criteria", withOptions: []).first?.bounds(for: page),
+              let pass = pdf.findString("Pass", withOptions: []).first?.bounds(for: page),
+              let fail = pdf.findString("Fail", withOptions: []).first?.bounds(for: page),
+              let due = pdf.findString("Due", withOptions: []).first?.bounds(for: page),
+              pass.minX - criteria.minX > 1.5 * (fail.minX - pass.minX),
+              due.maxX <= page.bounds(for: .mediaBox).maxX else {
+            fputs("Expected the text column to be wider than a status column, with the last heading on the page.\n", stderr)
+            exit(1)
+        }
+        let rows = (2..<pdf.pageCount).compactMap { pdf.page(at: $0)?.string }
+            .joined(separator: "\n").split(whereSeparator: { $0.isWhitespace }).filter { $0.hasPrefix("Row-") }
+        guard rows.map(String.init) == (0..<100).map({ String(format: "Row-%03d", $0) }) else {
+            fputs("The long table must print every row exactly once and in order.\n", stderr)
+            exit(1)
+        }
+        print("Native WebKit preserved the page break, proportional columns and every row of a multipage table.")
         exit(0)
     }
 }
