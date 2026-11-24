@@ -321,6 +321,7 @@ fn invoke(
                 expected.as_ref()
             )?)
         }
+        "file_stamp" => json!(storage::disk_stamp(&path("path")?)?),
         "file_version" => json!(storage::version(&path("path")?)?),
         "move_document" => {
             let expected: Option<storage::Version> =

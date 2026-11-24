@@ -239,6 +239,51 @@ pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<(Vec<u8>, Version)
     Ok((bytes, version))
 }
 
+/// An inexpensive wake-up hint. The content digest remains authoritative on
+/// focus, before saving, and before accepting an external revision.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct DiskStamp {
+    target: PathBuf,
+    change: String,
+}
+
+pub fn disk_stamp(path: &Path) -> Result<Option<DiskStamp>, String> {
+    let probe = || -> io::Result<DiskStamp> {
+        let target = fs::canonicalize(path)?;
+        let meta = fs::metadata(&target)?;
+        #[cfg(unix)]
+        let change = {
+            use std::os::unix::fs::MetadataExt;
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}",
+                meta.dev(),
+                meta.ino(),
+                meta.len(),
+                meta.mtime(),
+                meta.mtime_nsec(),
+                meta.ctime(),
+                meta.ctime_nsec()
+            )
+        };
+        #[cfg(windows)]
+        let change = {
+            use std::os::windows::fs::MetadataExt;
+            format!(
+                "{}:{}:{}",
+                meta.file_size(),
+                meta.creation_time(),
+                meta.last_write_time()
+            )
+        };
+        Ok(DiskStamp { target, change })
+    };
+    match probe() {
+        Ok(stamp) => Ok(Some(stamp)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 pub fn version(path: &Path) -> Result<Option<Version>, String> {
     match fs::symlink_metadata(path) {
         Ok(_) => read(path).map(|(_, stamp)| Some(stamp)),
@@ -734,6 +779,28 @@ mod tests {
 #[cfg(test)]
 mod moving {
     use super::*;
+
+    #[test]
+    fn disk_probe_tracks_missing_files_and_replacements_without_reading_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("draft.md");
+        assert_eq!(disk_stamp(&path).unwrap(), None);
+        fs::write(&path, b"one").unwrap();
+        let first = disk_stamp(&path).unwrap();
+        assert_eq!(disk_stamp(&path).unwrap(), first);
+        let new = dir.path().join("incoming.md");
+        fs::write(&new, b"two").unwrap();
+        #[cfg(unix)]
+        File::open(&new)
+            .unwrap()
+            .set_modified(fs::metadata(&path).unwrap().modified().unwrap())
+            .unwrap();
+        fs::rename(&new, &path).unwrap();
+        #[cfg(unix)]
+        assert_ne!(disk_stamp(&path).unwrap(), first);
+        fs::remove_file(&path).unwrap();
+        assert_eq!(disk_stamp(&path).unwrap(), None);
+    }
 
     #[test]
     fn a_move_keeps_the_file_and_never_replaces_another() {

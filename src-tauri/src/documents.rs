@@ -45,6 +45,12 @@ pub struct Document {
     pub recovery: Recovery,
 }
 
+impl Document {
+    pub fn source_path(&self) -> Option<&Path> {
+        self.source.as_deref()
+    }
+}
+
 pub struct Documents {
     root: PathBuf,
     serial: u64,

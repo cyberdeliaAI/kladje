@@ -21,13 +21,18 @@ window.addEventListener("load", async () => {
       catch { await delay(100); }
     }
     try {
+      if (typeof command.autosave === "boolean") {
+        const control = document.getElementById("autosave");
+        control.checked = command.autosave;
+        control.dispatchEvent(new Event("change"));
+      }
       if (command.edit) editor.replaceText(command.edit);
       if (command.menu) await event.emitTo(label,"menu",command.menu);
       if (command.wait) await delay(command.wait);
       const status = {
         text:editor.getText(), title:document.getElementById("doc-name").title,
         windows:(await windows.getAllWindows()).map(w=>w.label),
-        focused:await current.isFocused(), gutter:!!document.querySelector(".cm-lineNumbers"),
+        focused:await current.isFocused(), notice:document.getElementById("notice").textContent, gutter:!!document.querySelector(".cm-lineNumbers"),
         frozen:document.getElementById("app").inert,
         recent:(await core.invoke("update_history",{change:{kind:"read"}})).paths,
       };

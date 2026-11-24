@@ -224,6 +224,18 @@ fn move_document(
 }
 
 #[tauri::command(async)]
+fn file_stamp(
+    window: WebviewWindow,
+    docs: Windows<'_>,
+    path: String,
+) -> Result<Option<storage::DiskStamp>, String> {
+    if lock(&docs)?.get(window.label())?.source_path() != Some(Path::new(&path)) {
+        return Err("This window no longer owns that document.".into());
+    }
+    storage::disk_stamp(Path::new(&path))
+}
+
+#[tauri::command(async)]
 fn file_version(path: String) -> Result<Option<storage::Version>, String> {
     storage::version(Path::new(&path))
 }
@@ -1071,6 +1083,7 @@ fn main() {
             write_file,
             save_protected_copy,
             move_document,
+            file_stamp,
             file_version,
             recovery_list,
             recovery_claim,

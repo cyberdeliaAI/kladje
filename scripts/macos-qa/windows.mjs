@@ -113,7 +113,23 @@ export async function verifyWindows({app, executable, tmp, id, fixture}) {
     checks.push("Native windows share editor preferences and recent documents");
     openFiles(third);
     await wait(async()=> (await command(c)).focused,"third document focus");
+    // Keep this document in front throughout both external writes.
+    fs.writeFileSync(third,"updated by another editor");
+    await wait(async()=> (await command(c)).text==="updated by another editor","foreground external reload");
+    checks.push("An external edit reloads the clean, focused window without switching applications");
+    openFiles(third);
+    await wait(async()=> (await command(c)).focused,"foreground before autosave conflict");
+    const edited = await command(c,{autosave:true, edit:"local third draft"});
+    assert.equal(edited.focused,true);
+    fs.writeFileSync(third,"third document");
+    await answer("Keep Edits");
+    await delay(2500);
+    assert.equal((await command(c)).text,"local third draft");
+    assert.equal(fs.readFileSync(third,"utf8"),"third document");
+    await command(c,{autosave:false});
+    checks.push("Keep Edits preserves the draft and suppresses autosave after a real external conflict");
     menu("File","Close Window");
+    await answer("Don't Save",third);
     await wait(async()=> (await command("main")).windows.length===2,"one window to close");
     checks.push("Close removes only the chosen document");
     openFiles(sibling);
