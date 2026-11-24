@@ -97,6 +97,10 @@ window.addEventListener("load", async () => {
       try { sibling = await core.invoke("read_file", {path:window.qaResultPath + ".sibling.txt"}); } catch {}
     }
     check(sibling?.content.includes("# Café") && text().includes("# Start"), "sibling fragment opens in its own window and retains the original source");
+    const fourLines = "Dit\nis\neen\ntest";
+    edit(fourLines);
+    await wait(() => preview.querySelector("p")?.innerText === fourLines, "four visible lines in one preview paragraph");
+    check(text() === fourLines && preview.children.length === 1, "single Returns stay visible without inserting blank lines into the source");
     edit(sibling.content);
     await wait(() => preview.querySelector("#uc-café-1"), "heading fixture");
     const outline = document.getElementById("outline");
