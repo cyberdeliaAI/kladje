@@ -36,3 +36,7 @@ Thumbs.db
 *~
 .idea/
 .vscode/
+
+# Maintainer notes are kept in the local project archive.
+/docs/planning/
+/docs/MACOS_PREVIEW.md
