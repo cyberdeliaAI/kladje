@@ -698,6 +698,22 @@ test("unsupported volume copy needs consent and acknowledges only its saved revi
   assert.match(a.get("doc-name").title, /edited/);
 });
 
+test("a volume without atomic replacement saves in place and is mentioned once", async () => {
+  const a = await app();
+  a.api.write_file = ({content}) => { a.disk.content = content; return {version: a.disk.version, confirmed: true, basic: true}; };
+  a.dialog.ask = () => { throw Error("an in-place save must not ask for a copy"); };
+  a.edit("first");
+  await a.menu("save");
+  assert.equal(a.disk.content, "first");
+  assert.match(a.get("notice").textContent, /^Saved · this volume does not support protected replacement$/);
+  assert.match(a.get("doc-name").title, /a\.md$/);
+  a.edit("second");
+  await a.menu("save");
+  assert.equal(a.disk.content, "second");
+  assert.equal(a.get("notice").textContent, "Saved");
+  assert.ok(!a.calls.some(([cmd]) => cmd === "save_protected_copy"));
+});
+
 test("rich paste is opt-in and an async conversion cannot overwrite a newer selection or edit", async () => {
   const a = await app(), started = gate(), finish = gate();
   const paste = () => {

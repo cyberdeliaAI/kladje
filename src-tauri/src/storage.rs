@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 
 use crate::fileio::MAX_FILE_BYTES;
 
@@ -27,7 +26,13 @@ pub struct Written {
     pub version: Version,
     pub confirmed: bool,
     pub warning: Option<String>,
+    /// The volume has no atomic exchange. The file was replaced in place by
+    /// moving the previous version aside first.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub basic: bool,
 }
+
+type Swapped = Result<tempfile::TempPath, (io::Error, tempfile::TempPath)>;
 
 /// A marker used only for a missing publication primitive, never for permission,
 /// conflict, quota or I/O failures.
@@ -71,6 +76,7 @@ pub fn protected_copy(requested: &Path, bytes: &[u8]) -> Result<Written, String>
     let confirmed = sync_directory(&parent).is_ok()
         && version(&path).ok().flatten().as_ref() == Some(&expected);
     Ok(Written {
+        basic: false,
         version: expected,
         confirmed,
         warning: (!confirmed).then(|| {
@@ -97,6 +103,65 @@ pub(crate) fn stage_folder(
     let token = dir.path().file_name().unwrap().to_string_lossy();
     let folder = format!("Kladje Copy {}", token.trim_start_matches(".kladje-copy-"));
     Ok((dir, file, folder))
+}
+
+/// Publish a new name on a filesystem lacking an exclusive rename. An empty
+/// file claims the name and refuses an existing entry. The complete staged
+/// file then replaces that claim.
+pub(crate) fn claim(
+    mut staged: tempfile::TempPath,
+    target: &Path,
+) -> Result<(), (io::Error, tempfile::TempPath)> {
+    if let Err(e) = File::create_new(target) {
+        return Err((e, staged));
+    }
+    if let Err(e) = fs::rename(&staged, target) {
+        if fs::metadata(target).is_ok_and(|m| m.len() == 0) {
+            let _ = fs::remove_file(target);
+        }
+        return Err((e, staged));
+    }
+    // The staged name now belongs to the published file.
+    staged.disable_cleanup(true);
+    Ok(())
+}
+
+/// Replace an existing file on a filesystem lacking an atomic exchange. Whatever
+/// is at the target is moved aside first, so a competing writer's file is
+/// captured and returned for validation, never overwritten. The target name is
+/// absent for a moment. The previous and the staged file both stay on disk if
+/// the process stops in between.
+fn displace(staged: tempfile::TempPath, target: &Path) -> Swapped {
+    let parent = target.parent().unwrap_or(Path::new("."));
+    let mut previous = match tempfile::Builder::new()
+        .prefix(".kladje-previous-")
+        .tempfile_in(parent)
+    {
+        Ok(file) => file.into_temp_path(),
+        Err(e) => return Err((e, staged)),
+    };
+    if let Err(e) = fs::rename(target, &previous) {
+        return Err((e, staged));
+    }
+    match claim(staged, target) {
+        Ok(()) => Ok(previous),
+        Err((error, staged)) => {
+            // From here `previous` is the user's file. Never let it be cleaned up.
+            previous.disable_cleanup(true);
+            // Another writer may own the name by now. Otherwise put the file back.
+            if error.kind() != io::ErrorKind::AlreadyExists && fs::rename(&previous, target).is_ok()
+            {
+                return Err((error, staged));
+            }
+            Err((
+                io::Error::other(format!(
+                    "{error}. The previous version was kept at {}",
+                    previous.display()
+                )),
+                staged,
+            ))
+        }
+    }
 }
 
 /// Resolve an existing file or the canonical parent and filename of a new file.
@@ -208,7 +273,7 @@ fn replace_using(
     bytes: &[u8],
     expected: Option<&Version>,
     write: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
-    swap: impl FnOnce(NamedTempFile, &Path) -> io::Result<tempfile::TempPath>,
+    swap: impl FnOnce(tempfile::TempPath, &Path) -> Swapped,
     flush: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<Written, String> {
     let result = (|| -> io::Result<Written> {
@@ -287,14 +352,25 @@ fn replace_using(
             return Err(io::Error::other("The file changed on disk. Your edits are still open. Use Save As to keep a separate copy."));
         }
         let mut warnings = Vec::new();
+        let mut basic = false;
+        // Only a filesystem that also lacks plain replacement needs a separate copy.
+        let portable = |e: io::Error| {
+            if unsupported(&e) {
+                io::Error::other(COPY_REQUIRED)
+            } else {
+                e
+            }
+        };
+        let mut installed = installed;
         let displaced = if let Some(expected) = expected {
-            let old = swap(staged, &resolved).map_err(|e| {
-                if unsupported(&e) {
-                    io::Error::other(COPY_REQUIRED)
-                } else {
-                    e
+            let old = match swap(staged.into_temp_path(), &resolved) {
+                Ok(old) => old,
+                Err((e, staged)) if unsupported(&e) => {
+                    basic = true;
+                    displace(staged, &resolved).map_err(|(e, _)| portable(e))?
                 }
-            })?;
+                Err((e, _)) => return Err(e),
+            };
             // Validate the actual displaced object, including replacements in the
             // interval between the last comparison and the atomic exchange.
             if !read(&old)
@@ -304,15 +380,23 @@ fn replace_using(
             }
             Some(old)
         } else {
-            staged.persist_noclobber(&resolved).map_err(|e| {
-                if unsupported(&e.error) {
-                    io::Error::other(COPY_REQUIRED)
-                } else {
-                    e.error
+            if let Err(e) = staged.persist_noclobber(&resolved) {
+                if !unsupported(&e.error) {
+                    return Err(e.error);
                 }
-            })?;
+                basic = true;
+                claim(e.file.into_temp_path(), &resolved).map_err(|(e, _)| portable(e))?;
+            }
             None
         };
+        if basic {
+            // Such a filesystem may assign the published name a new identity.
+            if let Ok((_, current)) = read(&resolved) {
+                if current.digest == installed.digest {
+                    installed = current;
+                }
+            }
+        }
         if let Err(e) = flush(parent) {
             warnings.push(format!(
                 "The file was written, but its directory could not be flushed: {e}."
@@ -332,6 +416,7 @@ fn replace_using(
         }
         drop(original);
         Ok(Written {
+            basic,
             version: installed,
             confirmed: warnings.is_empty(),
             warning: if warnings.is_empty() {
@@ -351,12 +436,15 @@ fn replace_using(
 }
 
 #[cfg(unix)]
-fn exchange(staged: NamedTempFile, target: &Path) -> io::Result<tempfile::TempPath> {
+fn exchange(staged: tempfile::TempPath, target: &Path) -> Swapped {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
-    let staged = staged.into_temp_path();
-    let a = CString::new(staged.as_os_str().as_bytes())?;
-    let b = CString::new(target.as_os_str().as_bytes())?;
+    let names = CString::new(staged.as_os_str().as_bytes())
+        .and_then(|a| Ok((a, CString::new(target.as_os_str().as_bytes())?)));
+    let (a, b) = match names {
+        Ok(names) => names,
+        Err(e) => return Err((e.into(), staged)),
+    };
     // Atomically swap both names. A filesystem lacking exchange must fail safely.
     #[cfg(target_os = "macos")]
     let rc = unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_SWAP) };
@@ -372,13 +460,13 @@ fn exchange(staged: NamedTempFile, target: &Path) -> io::Result<tempfile::TempPa
         )
     };
     if rc != 0 {
-        return Err(io::Error::last_os_error());
+        return Err((io::Error::last_os_error(), staged));
     }
     Ok(staged)
 }
 
 #[cfg(windows)]
-fn exchange(staged: NamedTempFile, target: &Path) -> io::Result<tempfile::TempPath> {
+fn exchange(mut staged: tempfile::TempPath, target: &Path) -> Swapped {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
     let wide = |p: &Path| {
@@ -387,8 +475,10 @@ fn exchange(staged: NamedTempFile, target: &Path) -> io::Result<tempfile::TempPa
             .chain(Some(0))
             .collect::<Vec<_>>()
     };
-    let staged = staged.into_temp_path();
-    let mut backup = NamedTempFile::new_in(target.parent().unwrap())?.into_temp_path();
+    let mut backup = match tempfile::NamedTempFile::new_in(target.parent().unwrap()) {
+        Ok(file) => file.into_temp_path(),
+        Err(e) => return Err((e, staged)),
+    };
     let (dst, src, old) = (wide(target), wide(&staged), wide(&backup));
     // Preserve the backup on partial Windows replacement errors.
     backup.disable_cleanup(true);
@@ -403,13 +493,16 @@ fn exchange(staged: NamedTempFile, target: &Path) -> io::Result<tempfile::TempPa
         )
     } == 0
     {
-        return Err(io::Error::other(format!(
+        let error = io::Error::other(format!(
             "{} (check backup at {})",
             io::Error::last_os_error(),
             backup.display()
-        )));
+        ));
+        return Err((error, staged));
     }
     backup.disable_cleanup(false);
+    // The staged name now belongs to the replaced file.
+    staged.disable_cleanup(true);
     Ok(backup)
 }
 
@@ -548,12 +641,115 @@ mod conflicts {
             b"local",
             original.as_ref(),
             |file, bytes| file.write_all(bytes),
-            |_, _| Err(io::ErrorKind::PermissionDenied.into()),
+            |staged, _| Err((io::ErrorKind::PermissionDenied.into(), staged)),
             sync_directory,
         );
         assert!(result.is_err());
         assert_eq!(fs::read(&path).unwrap(), b"old");
         assert_eq!(dir.path().read_dir().unwrap().count(), 1);
+    }
+
+    fn no_exchange(staged: tempfile::TempPath, _: &Path) -> Swapped {
+        Err((io::ErrorKind::Unsupported.into(), staged))
+    }
+
+    #[test]
+    fn missing_exchange_replaces_in_place_and_leaves_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.md");
+        fs::write(&path, b"old").unwrap();
+        let mut baseline = version(&path).unwrap();
+        for text in [b"one".as_slice(), b"two"] {
+            let result = replace_using(
+                &path,
+                text,
+                baseline.as_ref(),
+                |file, bytes| file.write_all(bytes),
+                no_exchange,
+                sync_directory,
+            )
+            .unwrap();
+            assert!(result.confirmed && result.basic, "{:?}", result.warning);
+            assert_eq!(fs::read(&path).unwrap(), text);
+            assert_eq!(version(&path).unwrap().as_ref(), Some(&result.version));
+            assert_eq!(dir.path().read_dir().unwrap().count(), 1);
+            baseline = Some(result.version);
+        }
+    }
+
+    #[test]
+    fn missing_exchange_still_refuses_a_stale_baseline_and_keeps_a_racing_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.md");
+        fs::write(&path, b"old").unwrap();
+        let original = version(&path).unwrap();
+        fs::write(&path, b"external").unwrap();
+        let stale = replace_using(
+            &path,
+            b"local",
+            original.as_ref(),
+            |file, bytes| file.write_all(bytes),
+            no_exchange,
+            sync_directory,
+        );
+        assert!(stale.is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"external");
+        assert_eq!(dir.path().read_dir().unwrap().count(), 1);
+
+        // A writer that wins the interval after the last comparison is moved aside, never erased.
+        let current = version(&path).unwrap();
+        let result = replace_using(
+            &path,
+            b"local",
+            current.as_ref(),
+            |file, bytes| file.write_all(bytes),
+            |staged, target| {
+                fs::write(target, b"racing").unwrap();
+                no_exchange(staged, target)
+            },
+            sync_directory,
+        )
+        .unwrap();
+        assert!(!result.confirmed);
+        assert_eq!(fs::read(&path).unwrap(), b"local");
+        let kept = dir
+            .path()
+            .read_dir()
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| *p != path)
+            .unwrap();
+        assert_eq!(fs::read(&kept).unwrap(), b"racing");
+        assert!(result.warning.unwrap().contains(kept.to_str().unwrap()));
+    }
+
+    #[test]
+    fn claim_refuses_an_existing_name_and_displace_restores_after_a_failed_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.md");
+        fs::write(&path, b"existing").unwrap();
+        let stage = |text: &[u8]| {
+            let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+            file.write_all(text).unwrap();
+            file.into_temp_path()
+        };
+        let (error, staged) = claim(stage(b"new"), &path).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        drop(staged);
+        assert_eq!(fs::read(&path).unwrap(), b"existing");
+
+        // The staged file vanished, so installing fails after the original moved aside.
+        let staged = stage(b"lost");
+        fs::remove_file(&staged).unwrap();
+        assert!(displace(staged, &path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"existing");
+        assert_eq!(dir.path().read_dir().unwrap().count(), 1);
+
+        let fresh = dir.path().join("fresh.md");
+        claim(stage(b"fresh"), &fresh).unwrap();
+        assert_eq!(fs::read(&fresh).unwrap(), b"fresh");
+        assert_eq!(dir.path().read_dir().unwrap().count(), 2);
     }
 
     #[test]
@@ -570,7 +766,7 @@ mod conflicts {
                 |file, bytes| file.write_all(bytes),
                 |staged, target| {
                     if race {
-                        fs::write(target, b"external")?;
+                        fs::write(target, b"external").unwrap();
                     }
                     exchange(staged, target)
                 },
