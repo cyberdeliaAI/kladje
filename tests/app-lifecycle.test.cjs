@@ -725,6 +725,109 @@ test("rich paste is opt-in and an async conversion cannot overwrite a newer sele
   await a.menu("save");
   assert.equal(a.disk.content,"**one**");
 });
+const noDialogs = a => {
+  a.dialog.ask = () => { throw Error("autosave must not ask"); };
+  a.dialog.message = () => { throw Error("autosave must not open a dialog"); };
+  a.dialog.save = () => { throw Error("autosave must not choose a path"); };
+};
+const writes = a => a.calls.filter(([cmd]) => cmd === "write_file").length;
+
+test("autosave is off by default and, once on, saves after a typing pause and on blur without a dialog", async () => {
+  const a = await app();
+  noDialogs(a);
+  a.edit("not saved unasked");
+  await assert.rejects(a.fire(2000), /no pending timer/);
+  await a.events.blur();
+  assert.equal(writes(a), 0);
+  assert.equal(a.disk.content, "original");
+
+  await a.menu("settings");
+  a.get("autosave").checked = true;
+  await a.get("autosave").handlers.change();
+  a.get("settings").close();
+  assert.equal(a.values.get("kladje.autosave"), "true");
+  // Turning it on saves the pending edit. Later edits wait for a pause.
+  assert.equal(a.disk.content, "not saved unasked");
+  a.edit("after a pause");
+  assert.equal(a.disk.content, "not saved unasked");
+  await a.fire(2000);
+  assert.equal(a.disk.content, "after a pause");
+  assert.doesNotMatch(a.get("doc-name").title, /edited/);
+  a.edit("on switching away");
+  await a.events.blur();
+  assert.equal(a.disk.content, "on switching away");
+  const expected = a.calls.filter(([cmd]) => cmd === "write_file").at(-1)[1].expected;
+  assert.deepEqual(expected, a.disk.version);
+});
+
+test("autosave leaves untitled, recovered and undecided documents to an explicit Save", async () => {
+  const untitled = await app({"kladje.autosave": "true"}, ({api}) => { api.setup = () => ({}); });
+  noDialogs(untitled);
+  untitled.edit("draft without a file");
+  await untitled.fire(2000);
+  assert.equal(writes(untitled), 0);
+
+  const latin = await app({"kladje.autosave": "true"}, ({disk}) => { disk.format = {encoding: "latin1", eol: "lf"}; });
+  noDialogs(latin);
+  latin.edit("needs UTF-8 \u{1f600}");
+  await latin.fire(2000);
+  await latin.events.blur();
+  assert.equal(writes(latin), 0);
+  await latin.fire(50);
+  assert.match(latin.get("doc-name").title, /edited/);
+  latin.edit("plain again");
+  await latin.fire(2000);
+  assert.equal(latin.disk.content, "plain again");
+});
+
+test("a refused autosave pauses quietly until an explicit Save or reload settles the file", async () => {
+  const a = await app({"kladje.autosave": "true"});
+  noDialogs(a);
+  let attempts = 0;
+  a.api.write_file = () => { attempts++; throw "/notes/a.md: The file changed on disk. Your edits are still open. Use Save As to keep a separate copy."; };
+  a.edit("mine");
+  await a.fire(2000);
+  assert.equal(attempts, 1);
+  assert.match(a.get("notice").textContent, /^Autosave paused · the file changed on disk/);
+  assert.match(a.get("doc-name").title, /edited/);
+  assert.ok(a.calls.some(([cmd, args]) => cmd === "recovery_write" && args.draft.content === "mine"));
+  a.edit("mine, still typing");
+  await a.fire(2000);
+  await a.events.blur();
+  assert.equal(attempts, 1);
+  // An explicit Save reports the failure in the usual dialog and keeps autosave paused.
+  let shown = 0;
+  a.dialog.message = () => { shown++; };
+  await a.menu("save");
+  assert.equal(attempts, 2);
+  assert.equal(shown, 1);
+  // A successful explicit Save resumes it.
+  a.api.write_file = ({content}) => { attempts++; a.disk.content = content; return {version: a.disk.version, confirmed: true}; };
+  await a.menu("save");
+  a.edit("resumed");
+  await a.fire(2000);
+  assert.equal(a.disk.content, "resumed");
+});
+
+test("with autosave on, Close saves a titled document instead of asking, and still asks when that fails", async () => {
+  const a = await app({"kladje.autosave": "true"});
+  noDialogs(a);
+  a.edit("saved on the way out");
+  await a.menu("close_window");
+  assert.equal(a.disk.content, "saved on the way out");
+  assert.ok(a.calls.some(([cmd]) => cmd === "destroy"));
+
+  const b = await app({"kladje.autosave": "true"});
+  b.api.write_file = () => { throw "disk full"; };
+  let asked = 0;
+  b.dialog.message = () => { asked++; return "Cancel"; };
+  b.edit("cannot be written");
+  await b.menu("close_window");
+  assert.equal(asked, 1);
+  assert.ok(!b.calls.some(([cmd]) => cmd === "destroy"));
+  assert.equal(b.text(), "cannot be written");
+});
+
 test("Close Window uses the same dirty-document veto as Quit", async () => {
   const a = await app();
   a.edit("retain unsaved source");

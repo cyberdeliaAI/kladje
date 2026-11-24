@@ -92,6 +92,17 @@
     els.editorPane.dataset.typewriter = String(writing.typewriter);
   }
   let sidebarOpen = false;
+  // Writing to the original file without being asked is opt-in. A save that
+  // fails or needs a decision pauses it until an explicit Save settles things.
+  const AUTOSAVE_IDLE = 2000;
+  let autosave = storedFlag("autosave", false), autosavePaused = false;
+  $("autosave").checked = autosave;
+  $("autosave").addEventListener("change", () => {
+    autosave = $("autosave").checked;
+    store.set("autosave", autosave);
+    autosavePaused = false;
+    return requestAutosave();
+  });
   let checkUpdate = Promise.resolve();
   function syncChecks() {
     const checked = ["view_" + viewMode, "theme_" + themeSetting];
@@ -184,6 +195,9 @@
         wrap = storedFlag("wrap", true);
         measure = storedFlag("measure", true);
         applyEditorLayout();
+      } else if (key === "autosave") {
+        autosave = storedFlag(key, false);
+        $(key).checked = autosave;
       }
     } finally { applyingPreference = false; }
   }
@@ -262,6 +276,7 @@
     schedule("chrome", refreshChrome, 50);
     schedule("recovery", saveRecovery, 900);
     if (!timers.recoveryDeadline) timers.recoveryDeadline = setTimeout(saveRecovery, 5000);
+    if (autosave) schedule("autosave", requestAutosave, AUTOSAVE_IDLE);
   }
 
   // ---------------------------------------------------------------- chrome
@@ -869,6 +884,7 @@
     if (comparison.open) comparison.close();
     clearRecovery();
     previewAssets.clear();
+    autosavePaused = false;
     doc.id = id;
     doc.remote = false;
     doc.recovered = recovered;
@@ -922,6 +938,8 @@
   /** Ask what to do with unsaved changes. Resolves true when it is fine to continue. */
   async function confirmDiscard() {
     if (!session.isDirty()) return true;
+    // With autosave on, leaving a saved document needs no question.
+    if (autosaveReady() && await saveUnattended()) return true;
     const SAVE = "Save";
     const DISCARD = "Don't Save";
     const CANCEL = "Cancel";
@@ -941,6 +959,31 @@
 
   function runFileAction(action) {
     return session.run(() => !closing && action());
+  }
+
+  // Only a document that already has a file, an accepted disk baseline and no
+  // open question is saved unasked. Everything else waits for an explicit Save.
+  function autosaveReady() {
+    if (!autosave || autosavePaused || initializing || busy || comparison.open) return false;
+    if (!doc.path || !doc.version || doc.recovered || doc.ignoredVersion || !session.isDirty()) return false;
+    const { eol, encoding, separators } = doc.format;
+    const content = editor.getText();
+    if (eol === "mixed" && content.split("\n").length - 1 !== separators.length) return false;
+    return !(encoding === "latin1" && /[^\u0000-\u00ff]/u.test(content));
+  }
+  function requestAutosave() {
+    clearTimeout(timers.autosave);
+    if (closing || !autosaveReady()) return;
+    const identity = session.document;
+    return runFileAction(() => identity === session.document && autosaveReady() && saveUnattended()).catch(report);
+  }
+  window.addEventListener("blur", requestAutosave);
+  // An autosave never asks a question or opens a dialog. File actions run one
+  // at a time, so the flag covers exactly the save it wraps.
+  let unattended = false;
+  async function saveUnattended() {
+    unattended = true;
+    try { return await save(); } finally { unattended = false; }
   }
 
   function queuedSave(saveAs) {
@@ -993,7 +1036,7 @@
       try {
         result = await invoke("write_file", { path, content, format, expected, bind:true });
       } catch (error) {
-        if (String(error) !== "KLADJE_COPY_REQUIRED") throw error;
+        if (String(error) !== "KLADJE_COPY_REQUIRED" || unattended) throw error;
         await saveRecovery();
         if (!await T.dialog.ask("This volume cannot safely publish this file at the chosen name. Save a complete copy inside a new folder beside it and continue editing the copy? Relative links will resolve from the new folder.", {
           title: "Save a Protected Copy", okLabel: "Save Copy", cancelLabel: "Cancel",
@@ -1012,12 +1055,20 @@
       session.requireSave();
       refreshChrome();
       saveRecovery();
-      notify("Save failed · edits remain open", 30000);
       const message = String(error);
+      if (unattended) {
+        autosavePaused = true;
+        const reason = /changed on disk/i.test(message) ? "the file changed on disk" :
+          message === "KLADJE_COPY_REQUIRED" ? "this volume needs an explicit Save" : "the file could not be written";
+        notify(`Autosave paused · ${reason} · use Save or Save As`, 60000);
+        return false;
+      }
+      notify("Save failed · edits remain open", 30000);
       await showError(/save as/i.test(message) ? message : message + "\nUse Save As to save a separate copy.");
       return false;
     }
     session.endWrite();
+    if (result.confirmed) autosavePaused = false;
     const confirmed = result.confirmed;
     const moved = path !== doc.path;
     doc.version = result.version;
@@ -1308,6 +1359,7 @@
     if (sameVersion(version, doc.version) || (session.isDirty() && sameVersion(version, doc.ignoredVersion))) return;
     if (!version) {
       session.requireSave();
+      autosavePaused = true;
       saveRecovery();
       refreshChrome();
       notify("File was moved or deleted · use Save As to keep a copy", 30000);
@@ -1334,6 +1386,7 @@
     editor.replaceText(file.content.replace(/\r\n?/g, "\n"));
     doc.version = file.version;
     doc.ignoredVersion = null;
+    autosavePaused = false;
     doc.format = file.format;
     session.acknowledge(session.snapshot());
     clearRecovery();
