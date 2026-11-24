@@ -108,6 +108,12 @@ Press **⌘⇧J** on macOS (Ctrl+Shift+J elsewhere) to search headings. Type par
 
 Use **View** to toggle line numbers, wrapping or a narrower writing width. The footer counts Unicode code points and word-like segments of Markdown source. **Format → Insert Table Row Below** adds an empty row with the same number of columns.
 
+## Saving automatically
+
+Kladje saves when you press **⌘S**. To have it save for you, turn on **Save automatically** in **Settings**. A document that already has a file is then saved two seconds after you stop typing, when you switch to another window, and when you close it. A new document still needs a first Save to give it a name.
+
+Autosave never asks a question. If the file changed on disk, or a save would need a decision about encoding or line endings, it pauses and says so at the bottom of the window. Use **Save**, **Save As** or **File → Compare with Disk** to settle it, and autosave resumes after the next successful save.
+
 ## Reusing writing and images
 
 **File → New from Template** copies the text of a local Markdown or plain-text file into a new, unsaved draft. Save it where you want the new document. Relative image links resolve beside the saved draft.
