@@ -406,6 +406,69 @@ pub fn headings(markdown: &str) -> Result<Vec<Heading>, String> {
     .map_err(|_| "Could not read document headings.".into())
 }
 
+/// Check Markdown links and image descriptions on request. Remote addresses and
+/// fragments are outside the scope of this local check.
+pub fn check_document(markdown: &str, source: Option<&Path>) -> Result<String, String> {
+    if markdown.len() > 4 * 1024 * 1024 {
+        return Err("Check Document supports up to 4 MiB.".into());
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let arena = Arena::new();
+        let root = parse_document(&arena, markdown, &comrak_options(Target::Preview));
+        let mut result = Vec::new();
+        let mut checked = 0;
+        let mut skipped = 0;
+        let mut references = 0;
+        for node in root.descendants() {
+            let ast = node.data();
+            let (link, image) = match &ast.value {
+                NodeValue::Link(link) => (link, false),
+                NodeValue::Image(link) => (link, true),
+                _ => continue,
+            };
+            if references == 256 || result.len() >= 16 {
+                result.push("The rest of the document was not checked.".into());
+                break;
+            }
+            references += 1;
+            let line = ast.sourcepos.start.line;
+            if image && node.collect_text().trim().is_empty() {
+                result.push(format!("Line {line} · Image has no description."));
+            }
+            let url = &link.url;
+            if url.is_empty() {
+                result.push(format!("Line {line} · Empty destination."));
+                continue;
+            }
+            if url.starts_with('#')
+                || url.starts_with("//")
+                || url.split('/').next().is_some_and(|part| part.contains(':'))
+            {
+                continue;
+            }
+            match source
+                .and_then(Path::parent)
+                .and_then(|dir| crate::images::link_exists(dir, url))
+            {
+                Some(true) => checked += 1,
+                Some(false) => {
+                    checked += 1;
+                    result.push(format!("Line {line} · Local target is missing."));
+                }
+                None => skipped += 1,
+            }
+        }
+        if result.is_empty() {
+            result.push("No issues found in the items checked.".into());
+        }
+        result.push(format!(
+            "Local destinations checked: {checked}. Unchecked: {skipped}."
+        ));
+        result.join("\n")
+    }))
+    .map_err(|_| "Could not check this document.".into())
+}
+
 fn comrak_options(target: Target) -> Options<'static> {
     let mut o = Options::default();
 
@@ -711,6 +774,30 @@ mod tests {
     }
     fn export(md: &str) -> String {
         Renderer::new().render(md, Target::Export)
+    }
+
+    #[test]
+    fn document_check_confines_local_links_and_reports_source_lines() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("note.md");
+        std::fs::write(root.path().join("good file.md"), "").unwrap();
+        let md = "[good](good%20file.md#one)\n\n![](missing.png)\n\n[elsewhere](../parent.md)\n\n![remote](https://example.org/image.png)\n\n`![](code)`\n";
+        let report = check_document(md, Some(&source)).unwrap();
+        assert!(report.contains("Line 3 · Image has no description."));
+        assert!(report.contains("Line 3 · Local target is missing."));
+        assert!(report.contains("checked: 2. Unchecked: 1."), "{report}");
+        assert!(check_document(md, None)
+            .unwrap()
+            .contains("checked: 0. Unchecked: 3."));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.path(), root.path().join("alias")).unwrap();
+            let report = check_document("[alias](alias/good%20file.md)", Some(&source)).unwrap();
+            assert!(report.contains("Unchecked: 1."));
+        }
+        assert!(check_document(&"[x](#section) ".repeat(300), None)
+            .unwrap()
+            .contains("rest of the document"));
     }
 
     #[test]

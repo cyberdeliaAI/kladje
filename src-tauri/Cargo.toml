@@ -39,8 +39,8 @@ libc = "0.2"
 # keep WebKit's page count and the system print sheet in agreement.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSString"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSPasteboard", "NSPrintInfo", "NSPrintOperation", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSString", "NSURL", "NSValue", "NSDictionary"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSDocumentController", "NSPasteboard", "NSPrintInfo", "NSPrintOperation", "NSView", "NSWindow"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["WKWebView", "WKWebViewConfiguration", "WKPreferences", "objc2-app-kit"] }
 
 [target.'cfg(windows)'.dependencies]

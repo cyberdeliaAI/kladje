@@ -96,12 +96,12 @@ fn documents_on_exfat() {
         .err()
         .unwrap();
     assert!(
-        error.contains("os error 28"),
+        error.contains("disk is full") && error.contains("another disk"),
         "expected ENOSPC, received {error}"
     );
     let error = storage::protected_copy(&source, &full).err().unwrap();
     assert!(
-        error.contains("os error 28"),
+        error.contains("disk is full") && error.contains("another disk"),
         "expected ENOSPC, received {error}"
     );
     assert_eq!(names(dir.path()), before, "a partial file was left behind");

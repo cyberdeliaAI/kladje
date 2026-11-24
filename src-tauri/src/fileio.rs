@@ -57,7 +57,7 @@ pub fn markdown_path(path: &Path) -> Result<(), String> {
     ) {
         Ok(())
     } else {
-        Err(format!("“{}” is not a supported text document. Open Markdown or plain text, or import HTML and Word files.", path.display()))
+        Err(format!("“{}” is not a supported text document. Open Markdown or plain text, or import HTML and Word files.", storage::document_name(path)))
     }
 }
 

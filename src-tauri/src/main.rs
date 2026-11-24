@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use kladje::markdown::{Renderer, PREVIEW_ID_PREFIX};
 use kladje::recovery::{Candidate, Draft};
-use kladje::{export, fileio, history, storage};
+use kladje::{export, fileio, history, preferences, storage};
 
 struct AppState {
     renderer: Renderer,
@@ -249,6 +249,7 @@ fn export_html(
     source: Option<String>,
     expected: Option<storage::Version>,
     line_breaks: Option<bool>,
+    dark: Option<bool>,
 ) -> Result<storage::Written, String> {
     export::export_document(
         &state.renderer,
@@ -257,7 +258,10 @@ fn export_html(
         &title,
         source.as_deref().map(Path::new),
         expected.as_ref(),
-        line_breaks.unwrap_or(false),
+        export::ExportOptions {
+            line_breaks: line_breaks.unwrap_or(false),
+            dark: dark.unwrap_or(false),
+        },
     )
 }
 
@@ -409,21 +413,27 @@ fn take_fragment(window: WebviewWindow, docs: Windows<'_>) -> Result<Option<Stri
 
 /// Opens the system print dialog, which is also how a PDF is produced.
 #[tauri::command]
-fn print_document(window: WebviewWindow) -> Result<(), String> {
+fn print_document(window: WebviewWindow, page_numbers: Option<bool>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        use objc2_app_kit::{NSPrintInfo, NSWindow};
+        use objc2::runtime::ProtocolObject;
+        use objc2_app_kit::{NSPrintHeaderAndFooter, NSPrintInfo, NSWindow};
+        use objc2_foundation::{NSCopying, NSNumber};
         use objc2_web_kit::WKWebView;
         if !objc2::available!(macos = 11.0) {
             return Err("Native PDF printing requires macOS 11 or later.".into());
         }
         window
-            .with_webview(|platform| {
+            .with_webview(move |platform| {
                 // Tauri provides these live AppKit/WebKit handles on the main thread.
                 unsafe {
                     let webview = &*platform.inner().cast::<WKWebView>();
                     let parent = &*platform.ns_window().cast::<NSWindow>();
-                    let info = NSPrintInfo::sharedPrintInfo();
+                    let info = NSPrintInfo::sharedPrintInfo().copy();
+                    info.dictionary().setObject_forKey(
+                        &NSNumber::numberWithBool(page_numbers.unwrap_or(false)),
+                        ProtocolObject::from_ref(NSPrintHeaderAndFooter),
+                    );
                     info.setTopMargin(42.0);
                     info.setBottomMargin(42.0);
                     info.setLeftMargin(42.0);
@@ -444,7 +454,10 @@ fn print_document(window: WebviewWindow) -> Result<(), String> {
             .map_err(|e| e.to_string())
     }
     #[cfg(not(target_os = "macos"))]
-    window.print().map_err(|e| e.to_string())
+    {
+        let _ = page_numbers;
+        window.print().map_err(|e| e.to_string())
+    }
 }
 
 /// Front-end errors end up on stderr in development builds.
@@ -632,6 +645,53 @@ fn set_menu_checks(
     Ok(())
 }
 
+/// AppKit uses the represented URL for the document icon and its path menu.
+#[tauri::command]
+fn sync_document_icon(window: WebviewWindow, docs: Windows<'_>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let path = lock(&docs)?
+            .get(window.label())?
+            .source_path()
+            .map(Path::to_owned);
+        window
+            .with_webview(move |webview| {
+                use objc2_app_kit::NSWindow;
+                use objc2_foundation::NSURL;
+                let url = path.as_deref().and_then(NSURL::from_file_path);
+                // Tauri exposes the window on the AppKit thread during this callback.
+                unsafe {
+                    (&*webview.ns_window().cast::<NSWindow>()).setRepresentedURL(url.as_deref())
+                };
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, docs);
+    Ok(())
+}
+
+#[tauri::command]
+fn read_preferences(
+    store: State<'_, Mutex<preferences::Store>>,
+    seed: serde_json::Map<String, serde_json::Value>,
+) -> Result<preferences::Snapshot, String> {
+    store.lock().map_err(|e| e.to_string())?.read(seed)
+}
+
+#[tauri::command]
+fn set_preference(
+    app: AppHandle,
+    store: State<'_, Mutex<preferences::Store>>,
+    key: String,
+    value: serde_json::Value,
+) -> Result<preferences::Snapshot, String> {
+    let snapshot = store.lock().map_err(|e| e.to_string())?.set(key, value)?;
+    app.emit("preferences-changed", &snapshot)
+        .map_err(|e| e.to_string())?;
+    Ok(snapshot)
+}
+
 struct RecentMenu(Submenu<tauri::Wry>);
 
 #[tauri::command]
@@ -684,7 +744,40 @@ fn update_history(
         Ok(())
     };
     update().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        let recent = paths.to_vec();
+        app.run_on_main_thread(move || {
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::NSDocumentController;
+            use objc2_foundation::NSURL;
+            let controller = NSDocumentController::sharedDocumentController(
+                MainThreadMarker::new().expect("AppKit main thread"),
+            );
+            // Match File → Open Recent after a rename, removal or Clear, in most-recent-first order.
+            unsafe { controller.clearRecentDocuments(None) };
+            for path in recent.iter().rev() {
+                if let Some(url) = NSURL::from_file_path(path) {
+                    controller.noteNewRecentDocumentURL(&url);
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    }
     Ok(history)
+}
+
+#[tauri::command(async)]
+fn check_document(
+    window: WebviewWindow,
+    docs: Windows<'_>,
+    markdown: String,
+) -> Result<String, String> {
+    let path = lock(&docs)?
+        .get(window.label())?
+        .source_path()
+        .map(Path::to_owned);
+    kladje::markdown::check_document(&markdown, path.as_deref())
 }
 
 #[tauri::command(async)]
@@ -868,6 +961,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(&item("unfold_all", "Unfold All", None)?)
         .build()?;
 
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::menu::NativeIcon;
+        recent.set_native_icon(Some(NativeIcon::MultipleDocuments))?;
+        table.set_native_icon(Some(NativeIcon::ColumnView))?;
+    }
     let mut checks = Vec::new();
     let mut check = |id: &str, label: &str, accelerator: Option<&str>| -> tauri::Result<_> {
         let item = CheckMenuItem::with_id(app, id, label, true, false, accelerator)?;
@@ -908,6 +1007,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             "Refresh Preview",
             Some("CmdOrCtrl+Alt+R"),
         )?)
+        .item(&item("check_document", "Check Document…", None)?)
         .item(&check("document_outline", "Document Outline", None)?)
         .item(&check(
             "format_bar",
@@ -1043,6 +1143,9 @@ fn main() {
             pending_open: Mutex::new(from_args.collect()),
         })
         .setup(|app| {
+            app.manage(Mutex::new(preferences::Store::new(
+                app.path().app_data_dir()?.join("preferences.json"),
+            )));
             app.manage(Mutex::new(history::Store::new(
                 app.path().app_data_dir()?.join("recent-documents.json"),
             )));
@@ -1072,9 +1175,13 @@ fn main() {
             take_pending_open,
             update_history,
             set_menu_checks,
+            sync_document_icon,
+            read_preferences,
+            set_preference,
             window_geometry::window_bounds,
             window_geometry::restore_window_bounds,
             document_headings,
+            check_document,
             diagram_sources,
             store_diagrams,
             render,

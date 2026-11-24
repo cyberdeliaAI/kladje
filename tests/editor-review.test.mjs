@@ -43,6 +43,16 @@ test("registered fenced languages highlight their bodies and unknown aliases sta
   }
   assert.match(tree(setup("```constructor\nliteral\n```")), /FencedCode/);
 });
+test("common technical writing fences load their tokenizers", () => {
+  for (const [name, code] of [["py", "def walk():"], ["rs","fn main() {}"], ["bash","if true; then echo yes; fi"], ["yml","title: Field Notes"]]) {
+    const state = setup("```"+name+"\n"+code+"\n```");
+    const syntax=ensureSyntaxTree(state,state.doc.length,300);
+    const inside=syntax.resolveInner(state.doc.line(2).from+1,1);
+    assert.notEqual(inside.name,"CodeText",name);
+    assert.notEqual(inside.name,"FencedCode",name);
+  }
+});
+
 test("URI paste escapes a selected label and the edit undoes and redoes as one step", () => {
   const source = "read [this]";
   let state = setup(source, {anchor:5,head:11});
@@ -101,4 +111,18 @@ test("table boundaries never fall through to block indentation", () => {
   const added=last.update(adjacentTableCell(last,1)).state;
   assert.equal(added.doc.toString(),text+"\n|  |  |");
   assert.equal(added.doc.lineAt(added.selection.main.head).number,4);
+});
+
+test("spreadsheet paste preserves cell boundaries, literal markup and one-step undo", async () => {
+  const {spreadsheetPaste} = await import("../editor-src/smart-paste.mjs");
+  let state = setup("");
+  const change = spreadsheetPaste(state, 'Name\tNotes\r\nA|B\t"line\n""two"" & ![x](x)"\r\n');
+  state = state.update(change).state;
+  assert.equal(state.doc.toString(), '| Name | Notes |\n| --- | --- |\n| A\\|B | line "two" \\& \\!\\[x\\](x) |');
+  assert.match(tree(state), /TableHeader/);
+  const target = {get state(){return state;}, dispatch(tr){state=tr.state;}};
+  assert.ok(undo(target)); assert.equal(state.doc.toString(),"");
+  for (const text of ["one\ttwo","a\tb\nc", 'a\tb\n"bad\tc']) assert.equal(spreadsheetPaste(state,text),null);
+  const fence = setup("```\n\n```", {anchor:4});
+  assert.equal(spreadsheetPaste(fence,"a\tb\nx\ty"),null);
 });

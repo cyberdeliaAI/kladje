@@ -137,6 +137,59 @@ fn open_relative(root: &Path, relative: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Inspect a local link without loading its contents or following a symlink.
+/// None covers paths outside the document and targets we lack permission to inspect.
+pub(crate) fn link_exists(root: &Path, url: &str) -> Option<bool> {
+    let path = relative(url)?;
+    let result = link_metadata(root, &path);
+    match result {
+        Ok(ordinary) => ordinary.then_some(true),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Some(false)
+        }
+        Err(_) => None,
+    }
+}
+
+#[cfg(unix)]
+fn link_metadata(root: &Path, path: &Path) -> io::Result<bool> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let parent = open_relative(root, path.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
+    let name = CString::new(
+        path.file_name()
+            .ok_or(io::ErrorKind::InvalidInput)?
+            .as_bytes(),
+    )?;
+    let mut stat = std::mem::MaybeUninit::uninit();
+    // The directory is held open while the leaf's metadata is inspected.
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let kind = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+    Ok(kind == libc::S_IFREG || kind == libc::S_IFDIR)
+}
+
+#[cfg(windows)]
+fn link_metadata(root: &Path, path: &Path) -> io::Result<bool> {
+    let meta = open_relative(root, path)?.metadata()?;
+    Ok(meta.is_file() || meta.is_dir())
+}
+
 /// Cached payloads contain only bytes from a currently accessible, confined
 /// raster file. Export always performs its own fresh read.
 pub(crate) struct PreviewRaster {

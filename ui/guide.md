@@ -15,7 +15,9 @@ always keeps its line break, in Kladje and in other Markdown readers.
 
 Use **Format → Insert Local Image** or drop a PNG, JPEG, GIF or WebP. Save an untitled document first so Kladje can use a relative path. When a picture is outside the document folder, you can copy it beside the Markdown file. Replace the selected description with meaningful alt text. The result looks like `![A map of the route](map.png)`.
 
-HTTPS images require permission in **View → Remote Images for This Document**. An unavailable image shows its description. Standalone HTML embeds supported local images so the exported file can move. PDF uses the current rendered document, including when only the editor is visible.
+HTTPS images require permission in **View → Remote Images for This Document**. An unavailable image shows its description. Standalone HTML embeds supported local images so the exported file can move. PDF uses the current rendered document, including when only the editor is visible. In **Settings → Preview**, choose dark colors for HTML and PDF independently of the editor. On macOS you can also include page numbers, the document title and the print date.
+
+**View → Check Document** lists missing local files and images without a description by line number. Save the document to check relative paths. The check stays inside its folder and skips web addresses.
 
 Relative Markdown links can include a section, as in `[Notes](meeting%20notes.md#decisions)`. A second heading with the same name gets the suffix `-1`. External links open with the system handler.
 
@@ -56,6 +58,8 @@ Term
 
 ## Code
 
+Fenced code in JavaScript, TypeScript, HTML, CSS, Python, Rust, shell and YAML has syntax coloring in the editor.
+
 ```rust
 fn main() {
     let name = "Kladje";
@@ -68,6 +72,8 @@ fn main() {
 ```
 
 ## Tables
+
+To turn copied spreadsheet rows into a table, enable **Paste spreadsheet cells as a Markdown table** in Settings and paste on an empty line. The first row supplies the column headings. Use Paste as Plain Text to keep the tabs.
 
 | Shortcut | Action | Notes |
 | :-- | :-- | --: |

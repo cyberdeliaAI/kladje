@@ -26,6 +26,8 @@ use serde_json::{json, Value};
 const SHIM: &str = r#"
 (() => {
   const handlers = {};
+  const settings = new BroadcastChannel("kladje-dev-preferences");
+  settings.onmessage = event => handlers["preferences-changed"]?.({payload:event.data});
   const call = async (cmd, args) => {
     const res = await fetch("/invoke/" + cmd, { method: "POST", body: JSON.stringify(args || {}) });
     const data = await res.json();
@@ -45,6 +47,7 @@ const SHIM: &str = r#"
   window.__TAURI__ = {
     core: {
       invoke: async (cmd, args) => {
+        if (cmd === "set_preference") { const result = await call(cmd,args); settings.postMessage(result); return result; }
         if (cmd === "open_document_window") {
           // Browser preview uses fixture files. Exercise native ownership and Quit in the desktop build.
           const url = new URL(location.href);
@@ -93,6 +96,7 @@ fn main() {
     let renderer = Renderer::new();
     let profile = tempfile::tempdir().expect("create private development profile");
     let mut recovery = Recovery::new(profile.path().join("recovery-v1"));
+    let mut preferences = kladje::preferences::Store::new(profile.path().join("preferences.json"));
     let fixtures = profile.path().join("documents");
     std::fs::create_dir(&fixtures).expect("create fixture folder");
     println!("Development documents: {}", fixtures.display());
@@ -100,7 +104,14 @@ fn main() {
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).expect("port in use");
     println!("Kladje dev server on http://127.0.0.1:{port}");
     for stream in listener.incoming().flatten() {
-        if let Err(e) = handle(stream, &ui, &renderer, &mut recovery, &fixtures) {
+        if let Err(e) = handle(
+            stream,
+            &ui,
+            &renderer,
+            &mut recovery,
+            &mut preferences,
+            &fixtures,
+        ) {
             eprintln!("request failed: {e}");
         }
     }
@@ -121,6 +132,7 @@ fn handle(
     ui: &Path,
     renderer: &Renderer,
     recovery: &mut Recovery,
+    preferences: &mut kladje::preferences::Store,
     fixtures: &Path,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -176,6 +188,7 @@ fn handle(
             &args,
             renderer,
             recovery,
+            preferences,
             fixtures,
         ) {
             Ok(value) => json!({ "ok": value }),
@@ -230,6 +243,7 @@ fn invoke(
     args: &Value,
     renderer: &Renderer,
     recovery: &mut Recovery,
+    preferences: &mut kladje::preferences::Store,
     fixtures: &Path,
 ) -> Result<Value, String> {
     let text = |key: &str| {
@@ -250,6 +264,13 @@ fn invoke(
             "idPrefix": PREVIEW_ID_PREFIX,
             "pendingOpen": null,
         }),
+        "read_preferences" => json!(preferences
+            .read(serde_json::from_value(args["seed"].clone()).map_err(|e| e.to_string())?)?),
+        "set_preference" => json!(preferences.set(text("key"), args["value"].clone())?),
+        "check_document" => json!(kladje::markdown::check_document(
+            &text("markdown"),
+            source.as_deref()
+        )?),
         "update_history" => {
             let mut store = history::Store::new(fixtures.with_file_name("recent-documents.json"));
             json!(store.update(
@@ -348,10 +369,13 @@ fn invoke(
                 &text("title"),
                 source.as_deref(),
                 expected.as_ref(),
-                args["lineBreaks"].as_bool().unwrap_or(false)
+                export::ExportOptions {
+                    line_breaks: args["lineBreaks"].as_bool().unwrap_or(false),
+                    dark: args["dark"].as_bool().unwrap_or(false)
+                }
             )?)
         }
-        "take_pending_open" => Value::Null,
+        "take_pending_open" | "sync_document_icon" => Value::Null,
         other => return Err(format!("unknown command {other}")),
     })
 }

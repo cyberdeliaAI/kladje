@@ -1,0 +1,17 @@
+.markdown-body {
+  --md-text: #d9dce1;
+  --md-muted: #9aa0aa;
+  --md-faint: #929aa6;
+  --md-border: #343a44;
+  --md-border-soft: #2a2f38;
+  --md-surface: #20242b;
+  --md-accent: #e9a23b;
+  --md-link: #6cb0ff;
+  --md-mark: #6b5a16;
+  --md-code-text: #dfe2e7;
+  --md-note: #6cb0ff;
+  --md-tip: #5fca7c;
+  --md-important: #b39bf0;
+  --md-warning: #e0b341;
+  --md-caution: #ff7b72;
+}
