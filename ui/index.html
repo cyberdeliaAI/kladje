@@ -12,20 +12,34 @@
   <style id="syntax-print" media="print"></style>
 </head>
 <body>
-  <div id="app" data-view="split">
+  <div id="app" data-view="split" data-pointer-focus="true" data-empty="true">
     <main id="panes">
       <section id="editor-pane" aria-label="Markdown source"></section>
       <div id="divider" role="separator" tabindex="0" aria-label="Source pane width" aria-controls="editor-pane" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" aria-valuetext="50% source, 50% preview" aria-orientation="vertical" title="Drag to resize, double-click to reset"></div>
       <section id="preview-pane" tabindex="-1" aria-label="Preview">
         <div id="preview-status" hidden><div><span id="preview-status-text"></span><button type="button" id="preview-refresh">Refresh Preview</button></div></div>
         <article id="preview" class="markdown-body"></article>
-        <img class="empty-wordmark" src="brand/kladje-wordmark.svg" alt="" aria-hidden="true">
+        <div id="start" hidden>
+          <img class="start-wordmark wordmark-light" src="brand/kladje-wordmark.svg" alt="Kladje">
+          <img class="start-wordmark wordmark-dark" src="brand/kladje-wordmark-dark.svg" alt="Kladje">
+          <nav class="start-group" aria-labelledby="start-actions-title">
+            <h2 id="start-actions-title">Start</h2>
+            <ul id="start-actions"></ul>
+          </nav>
+          <nav class="start-group" id="start-recent-group" aria-labelledby="start-recent-title" hidden>
+            <h2 id="start-recent-title">Recent</h2>
+            <ul id="start-recent"></ul>
+          </nav>
+        </div>
       </section>
     </main>
     <footer id="statusbar">
       <div id="doc-name" role="status" aria-atomic="true"><span></span><span class="sr-only" id="doc-state"></span></div>
       <div id="notice" role="status" aria-live="polite"></div>
       <div id="stats"></div>
+      <button type="button" id="outline-toggle" class="chrome-button" title="Document outline" aria-label="Document outline" aria-pressed="false">
+        <svg viewBox="0 0 14 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M1.5 2.5h7M4 6h7.5M4 9.5h5.5"/></svg>
+      </button>
       <div id="view-switch" role="group" aria-label="Layout">
         <button type="button" data-view="editor" title="Editor only" aria-label="Editor only">
           <svg viewBox="0 0 14 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 2.5h10M2 6h10M2 9.5h6"/></svg>
@@ -40,9 +54,14 @@
     </footer>
   <dialog id="outline" aria-labelledby="outline-title">
     <form id="heading-form">
-      <h2 id="outline-title">Jump to Heading</h2>
+      <div class="outline-head">
+        <h2 id="outline-title">Jump to Heading</h2>
+        <button type="button" id="outline-close" class="chrome-button" title="Hide outline" aria-label="Hide outline">
+          <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg>
+        </button>
+      </div>
       <input id="heading-filter" type="search" aria-label="Filter headings" placeholder="Filter headings" autofocus>
-      <select id="heading-list" size="8" aria-label="Document headings"></select>
+      <div id="heading-list" role="tree" tabindex="0" aria-label="Document headings"></div>
       <p id="heading-count" role="status"></p>
       <div id="heading-pages" hidden><button type="button" id="heading-prev">Previous 100</button> <button type="button" id="heading-next">Next 100</button></div>
       <div class="dialog-actions"><button type="button" id="heading-cancel">Cancel</button><button id="heading-go" type="submit">Go to Heading</button></div>
