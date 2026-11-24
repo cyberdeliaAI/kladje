@@ -19,7 +19,8 @@ password=$(openssl rand -hex 32)
 security create-keychain -p "$password" "$keychain"
 security set-keychain-settings -lut 3600 "$keychain"
 security unlock-keychain -p "$password" "$keychain"
-security import "$p12" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
+# The temporary filename has no .p12 extension for security(1) to infer.
+security import "$p12" -f pkcs12 -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
 unset CSC_KEY_PASSWORD
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
 unset password
