@@ -15,3 +15,5 @@ hdiutil attach -nobrowse -mountpoint "$mountpoint" "$fixture/exfat.dmg"
 attached=true
 diskutil info -plist "$mountpoint" | plutil -extract FilesystemType raw - | grep -ix exfat
 KLADJE_EXFAT_FIXTURE="$mountpoint" cargo test --manifest-path src-tauri/Cargo.toml --locked --test portable_storage -- --ignored
+# Another program saves inside the interval where the name is claimed.
+KLADJE_EXFAT_FIXTURE="$mountpoint" cargo test --manifest-path src-tauri/Cargo.toml --locked --lib on_exfat -- --ignored

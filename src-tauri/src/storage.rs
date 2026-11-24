@@ -105,35 +105,78 @@ pub(crate) fn stage_folder(
     Ok((dir, file, folder))
 }
 
-/// Publish a new name on a filesystem lacking an exclusive rename. An empty
-/// file claims the name and refuses an existing entry. The complete staged
-/// file then replaces that claim.
+/// Publish a new name on a filesystem lacking an exclusive rename, such as
+/// exFAT and FAT on macOS. The name is created exclusively and filled through
+/// an append-only descriptor, and nothing is ever renamed onto it. Bytes that
+/// another program writes to that name in the meantime are therefore never
+/// overwritten or removed; they stay in place before or instead of Kladje's,
+/// and the caller's read-back reports the difference. If filling the file
+/// fails, the name is left as it is.
 pub(crate) fn claim(
-    mut staged: tempfile::TempPath,
+    staged: tempfile::TempPath,
     target: &Path,
 ) -> Result<(), (io::Error, tempfile::TempPath)> {
-    if let Err(e) = File::create_new(target) {
-        return Err((e, staged));
+    let bytes = match fs::read(&staged) {
+        Ok(bytes) => bytes,
+        Err(e) => return Err((e, staged)),
+    };
+    let mut file = match File::options().append(true).create_new(true).open(target) {
+        Ok(file) => file,
+        Err(e) => return Err((e, staged)),
+    };
+    #[cfg(test)]
+    conflicts::after_claim(target);
+    let filled = file
+        .write_all(&bytes)
+        .and_then(|()| copy_attributes(&staged, &file))
+        .and_then(|()| file.sync_all());
+    match filled {
+        // The staged file is no longer needed and is removed on drop.
+        Ok(()) => Ok(()),
+        Err(e) => Err((
+            io::Error::other(format!("{e}. {} may be incomplete", target.display())),
+            staged,
+        )),
     }
-    if let Err(e) = fs::rename(&staged, target) {
-        if fs::metadata(target).is_ok_and(|m| m.len() == 0) {
-            let _ = fs::remove_file(target);
+}
+
+/// Give `to` the permissions, ACL and extended attributes of `from`, never its data.
+fn copy_attributes(from: &Path, to: &File) -> io::Result<()> {
+    let source = File::open(from)?;
+    let permissions = source.metadata()?.permissions();
+    // FAT volumes report fixed permissions and may refuse to change them.
+    if to.metadata()?.permissions() != permissions {
+        to.set_permissions(permissions)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        // Both descriptors are live for this call.
+        let rc = unsafe {
+            libc::fcopyfile(
+                source.as_raw_fd(),
+                to.as_raw_fd(),
+                std::ptr::null_mut(),
+                libc::COPYFILE_ACL | libc::COPYFILE_XATTR,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
         }
-        return Err((e, staged));
     }
-    // The staged name now belongs to the published file.
-    staged.disable_cleanup(true);
     Ok(())
 }
 
 /// Replace an existing file on a filesystem lacking an atomic exchange. Whatever
 /// is at the target is moved aside first, so a competing writer's file is
-/// captured and returned for validation, never overwritten. The target name is
-/// absent for a moment. The previous and the staged file both stay on disk if
-/// the process stops in between.
+/// captured and returned for validation, never overwritten. The new file is then
+/// published with `claim`. The target name is absent for a moment, and the
+/// previous and the staged file both stay on disk if the process stops in
+/// between. When publishing fails, the previous file goes back the same way, so
+/// a file another program put there meanwhile is never replaced either.
 fn displace(staged: tempfile::TempPath, target: &Path) -> Swapped {
     let parent = target.parent().unwrap_or(Path::new("."));
-    let mut previous = match tempfile::Builder::new()
+    let previous = match tempfile::Builder::new()
         .prefix(".kladje-previous-")
         .tempfile_in(parent)
     {
@@ -145,22 +188,21 @@ fn displace(staged: tempfile::TempPath, target: &Path) -> Swapped {
     }
     match claim(staged, target) {
         Ok(()) => Ok(previous),
-        Err((error, staged)) => {
-            // From here `previous` is the user's file. Never let it be cleaned up.
-            previous.disable_cleanup(true);
-            // Another writer may own the name by now. Otherwise put the file back.
-            if error.kind() != io::ErrorKind::AlreadyExists && fs::rename(&previous, target).is_ok()
-            {
-                return Err((error, staged));
+        Err((error, staged)) => match claim(previous, target) {
+            // The previous version is back under its name and its copy is removed.
+            Ok(()) => Err((error, staged)),
+            Err((_, mut previous)) => {
+                // `previous` is the user's file. Never let it be cleaned up.
+                previous.disable_cleanup(true);
+                Err((
+                    io::Error::other(format!(
+                        "{error}. The previous version was kept at {}",
+                        previous.display()
+                    )),
+                    staged,
+                ))
             }
-            Err((
-                io::Error::other(format!(
-                    "{error}. The previous version was kept at {}",
-                    previous.display()
-                )),
-                staged,
-            ))
-        }
+        },
     }
 }
 
@@ -403,10 +445,12 @@ fn replace_using(
             ));
         }
         if version(path).ok().flatten().as_ref() != Some(&installed) {
-            warnings.push(
+            warnings.push(if basic {
+                "Another program wrote to this file during the save. Its text was left in place, and the file may also contain your edits. Use Save As to keep them."
+            } else {
                 "The destination changed during the save. Use Save As to keep these edits."
-                    .to_owned(),
-            );
+            }
+            .to_owned());
         }
         if let Some(mut old) = displaced {
             if !warnings.is_empty() {
@@ -839,6 +883,104 @@ mod conflicts {
         assert!(result.is_err());
         assert_eq!(fs::read(&path).unwrap(), b"old");
         assert_eq!(dir.path().read_dir().unwrap().count(), 1);
+    }
+
+    /// Another program acting on the claimed name.
+    type Writer = Box<dyn FnOnce(&Path)>;
+
+    thread_local! {
+        static CLAIMED: std::cell::RefCell<Option<Writer>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Run `writer` once, right after the next name claim on this thread.
+    fn on_claim(writer: impl FnOnce(&Path) + 'static) {
+        CLAIMED.with(|hook| *hook.borrow_mut() = Some(Box::new(writer)));
+    }
+
+    pub(super) fn after_claim(target: &Path) {
+        if let Some(writer) = CLAIMED.with(|hook| hook.borrow_mut().take()) {
+            writer(target);
+        }
+    }
+
+    /// A writer's name, its text and how it saves that text under a name.
+    type Case = (&'static str, &'static [u8], fn(&Path, &[u8]));
+
+    /// Let another program save the document right after Kladje claims the name
+    /// and before its own bytes are in. Returns what went wrong: the other
+    /// program's text must stay intact on disk and the save must not be
+    /// reported as confirmed.
+    fn race_in_the_claim_interval(
+        folder: &Path,
+        swap: fn(tempfile::TempPath, &Path) -> Swapped,
+    ) -> Vec<String> {
+        let writers: [Case; 3] = [
+            ("writes in place, shorter", b"theirs", |target, text| {
+                fs::write(target, text).unwrap()
+            }),
+            (
+                "writes in place, longer",
+                b"their much longer text",
+                |target, text| fs::write(target, text).unwrap(),
+            ),
+            ("replaces by rename", b"theirs", |target, text| {
+                let other = target.with_file_name("other-app.tmp");
+                fs::write(&other, text).unwrap();
+                fs::rename(&other, target).unwrap();
+            }),
+        ];
+        let mut failures = Vec::new();
+        for (name, theirs, writer) in writers {
+            let dir = tempfile::tempdir_in(folder).unwrap();
+            let path = dir.path().join("doc.md");
+            fs::write(&path, b"old").unwrap();
+            let baseline = version(&path).unwrap();
+            on_claim(move |target| writer(target, theirs));
+            let result = replace_using(
+                &path,
+                b"local edits",
+                baseline.as_ref(),
+                |file, bytes| file.write_all(bytes),
+                swap,
+                sync_directory,
+            );
+            let intact = dir.path().read_dir().unwrap().any(|entry| {
+                let bytes = fs::read(entry.unwrap().path()).unwrap();
+                bytes.windows(theirs.len()).any(|w| w == theirs)
+            });
+            if !intact {
+                failures.push(format!("{name}: the other program's text was erased"));
+            }
+            match &result {
+                Ok(written) if written.confirmed => {
+                    failures.push(format!("{name}: the save was confirmed"))
+                }
+                Ok(written) if !written.basic => {
+                    failures.push(format!("{name}: the volume offered an exchange"))
+                }
+                _ => {}
+            }
+            if fs::read(&path).unwrap() == b"local edits" && result.is_ok() {
+                failures.push(format!("{name}: the document holds only Kladje's text"));
+            }
+        }
+        failures
+    }
+
+    #[test]
+    fn a_writer_inside_the_claim_interval_is_never_erased() {
+        let dir = tempfile::tempdir().unwrap();
+        let failures = race_in_the_claim_interval(dir.path(), no_exchange);
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// The same race on a real exFAT volume. Run through scripts/test-exfat.sh.
+    #[test]
+    #[ignore = "requires the disposable mounted exFAT fixture"]
+    fn a_writer_inside_the_claim_interval_on_exfat() {
+        let mount = std::env::var_os("KLADJE_EXFAT_FIXTURE").unwrap();
+        let failures = race_in_the_claim_interval(Path::new(&mount), exchange);
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     fn no_exchange(staged: tempfile::TempPath, _: &Path) -> Swapped {
