@@ -387,5 +387,9 @@ dialog button { font: inherit; padding: .3rem .65rem; }
   #app[data-outline="true"] #panes { grid-area: 1 / 2; min-width: 0; }
   #app[data-outline="true"] #statusbar { grid-area: 2 / 1 / 3 / 3; }
   #app[data-outline="true"] #outline[open] { grid-area: 1 / 1; position: static; width: auto; margin: 0; max-height: none; border: 0; border-inline-end: 1px solid var(--border); border-radius: 0; box-shadow: none; background: var(--bg-chrome); }
-  #app[data-outline="true"] #heading-list { height: 46vh; max-height: none; }
+  #app[data-outline="true"] #outline[open] { display: flex; flex-direction: column; height: auto; overflow: hidden; }
+  #app[data-outline="true"] #heading-form { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  #app[data-outline="true"] #heading-list { flex: 1; min-height: 6rem; height: auto; max-height: none; }
+  #app[data-outline="true"] #heading-count { margin: .4rem 0; }
+  #app[data-outline="true"] #heading-go { display: none; }
 }

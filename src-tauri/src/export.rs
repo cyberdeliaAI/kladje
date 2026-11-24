@@ -95,8 +95,10 @@ pub fn standalone_html(
     markdown: &str,
     fallback_title: &str,
     source: Option<&std::path::Path>,
+    line_breaks: bool,
 ) -> Result<(String, usize), String> {
-    let rendered = renderer.render_document(markdown, Target::Export, source, false)?;
+    let rendered =
+        renderer.render_with_breaks(markdown, Target::Export, source, false, line_breaks)?;
     let title = rendered.title.as_deref().unwrap_or(fallback_title);
     let lang = rendered.language.as_deref().unwrap_or("en");
     let body = rendered.html;
@@ -124,8 +126,9 @@ pub fn export_document(
     title: &str,
     source: Option<&std::path::Path>,
     expected: Option<&crate::storage::Version>,
+    line_breaks: bool,
 ) -> Result<crate::storage::Written, String> {
-    let (html, omitted) = standalone_html(renderer, markdown, title, source)?;
+    let (html, omitted) = standalone_html(renderer, markdown, title, source, line_breaks)?;
     let mut result = write_html(path, &html, source, expected)?;
     if omitted > 0 {
         let message = format!("{omitted} image reference(s) omitted from the offline export. Check for remote, missing or oversized images.");
@@ -195,8 +198,16 @@ mod tests {
         let md = "![Here](a%20b.png) ![Remote](https://example.org/x) ![Missing](absent.jpg) <img alt='Empty'>";
         fs::write(&source, md).unwrap();
         let out = assets.path().join("page.html");
-        let result =
-            export_document(&Renderer::new(), &out, md, "Note", Some(&source), None).unwrap();
+        let result = export_document(
+            &Renderer::new(),
+            &out,
+            md,
+            "Note",
+            Some(&source),
+            None,
+            false,
+        )
+        .unwrap();
         assert!(result.confirmed);
         assert!(result.warning.unwrap().starts_with("3 image reference"));
         let dest = moved.path().join("moved.html");
@@ -231,6 +242,7 @@ mod tests {
             "# My Doc & Co\n\n```rust\nlet a = 1;\n```\n",
             "untitled",
             None,
+            false,
         )
         .unwrap()
         .0;
@@ -241,7 +253,9 @@ mod tests {
         assert!(!html.contains("data-sourcepos"));
         assert!(html.trim_end().ends_with("</html>"));
 
-        let html = standalone_html(&r, "no heading", "notes", None).unwrap().0;
+        let html = standalone_html(&r, "no heading", "notes", None, false)
+            .unwrap()
+            .0;
         assert!(html.contains("<title>notes</title>"));
     }
 }

@@ -4,10 +4,10 @@ Write on the left, read on the right. This page shows everything Kladje understa
 
 ## Text
 
-Press Enter once for a new line in the live preview, or twice for a new paragraph. Inside a paragraph you can use *italic*, **bold**, ***both***, ~~strikethrough~~, ==highlight==, `inline code`, H~2~O and x^2^.
+Press Enter twice for a new paragraph. A single Return inside a paragraph is ordinary Markdown: most readers, including GitHub, join the two lines with a space. To see single Returns as line breaks, turn on **Show a single Return as a line break** in **Settings**. The preview, PDF and HTML export then all show them. Inside a paragraph you can use *italic*, **bold**, ***both***, ~~strikethrough~~, ==highlight==, `inline code`, H~2~O and x^2^.
 
 A line ending in a backslash\
-keeps its line break in exported HTML and other Markdown readers too.
+always keeps its line break, in Kladje and in other Markdown readers.
 
 ## Links and images
 
@@ -98,7 +98,7 @@ Hidden until opened.
 
 ## Returning to your writing
 
-**File → New** and **File → Open** each open a separate document window. Opening a file that is already open brings its window forward. On macOS, **File → New Tab** (⌘T) opens a document in the current native tab group. **Window → Move Tab to New Window** detaches it.
+**File → New** and **File → Open** each open a separate document window, placed a little below and to the right of the others. Opening a file that is already open brings its window forward. On macOS, **File → New Tab** (⌘T) opens a document in the current native tab group. **Window → Move Tab to New Window** detaches it.
 
 **Close Window** (⌘W on macOS) asks about changes in that window. **Quit** asks about each unsaved document. Cancel keeps all windows and their edits available. A Save you already approved stays on disk. After an unexpected exit, choose **Restore** for each draft you want to reopen.
 
@@ -125,7 +125,7 @@ Use Tab and Shift-Tab to select adjacent GFM table cells. Choose **View → Fold
 
 Click a standard list checkbox in the preview or focus it and press Space to change its Markdown marker. Undo restores it. Checkboxes stay read-only in exports, tables and documents containing raw HTML. The status bar shows the encoding and line endings of the current document. Optional reading time uses 200 words per minute.
 
-Choose **View → Document Outline** to keep headings beside your document. Filter or select a heading and press Enter to jump. Hide or Escape returns the space to the document. Windows 800 pixels wide or smaller use the compact heading picker. Tab in the final table cell adds a blank row.
+Choose **View → Document Outline** to keep headings beside your document. They are indented by level, and the section that holds the cursor is marked. Click a heading to go there, or filter and press Enter. Hide or Escape returns the space to the document. Windows 800 pixels wide or smaller use the compact heading picker. Tab in the final table cell adds a blank row.
 
 Writing Settings can emphasize the current paragraph or keep the caret centered while you type. Both options start off. You can still scroll through the document and use Find.
 
