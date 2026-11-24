@@ -4,10 +4,10 @@ Write on the left, read on the right. This page shows everything Kladje understa
 
 ## Text
 
-Plain paragraphs are separated by a blank line. Inside a paragraph you can use *italic*, **bold**, ***both***, ~~strikethrough~~, ==highlight==, `inline code`, H~2~O and x^2^.
+Press Enter once for a new line in the live preview, or twice for a new paragraph. Inside a paragraph you can use *italic*, **bold**, ***both***, ~~strikethrough~~, ==highlight==, `inline code`, H~2~O and x^2^.
 
 A line ending in a backslash\
-breaks without starting a new paragraph.
+keeps its line break in exported HTML and other Markdown readers too.
 
 ## Links and images
 

@@ -369,6 +369,7 @@ fn comrak_options(target: Target) -> Options<'static> {
     o.render.r#unsafe = true;
     o.render.tasklist_classes = true;
     o.render.sourcepos = target == Target::Preview;
+    o.render.hardbreaks = target == Target::Preview;
     o
 }
 
@@ -645,6 +646,28 @@ mod tests {
     }
     fn export(md: &str) -> String {
         Renderer::new().render(md, Target::Export)
+    }
+
+    #[test]
+    fn single_returns_are_visible_in_preview_and_keep_markdown_export_semantics() {
+        let source = "Dit\nis\neen\ntest\n\nVolgende alinea";
+        let html = preview(source);
+        assert_eq!(html.matches("<p ").count(), 2, "{html}");
+        assert_eq!(html.matches("<br").count(), 3, "{html}");
+        assert_eq!(
+            export(source).trim(),
+            "<p>Dit\nis\neen\ntest</p>\n<p>Volgende alinea</p>"
+        );
+    }
+
+    #[test]
+    fn preview_line_breaks_respect_lists_code_and_explicit_markdown_breaks() {
+        let source = "- first\n- second\n\n```\none\ntwo\n```\n\na  \nb\\\nc";
+        for html in [preview(source), export(source)] {
+            assert_eq!(html.matches("<li").count(), 2, "{html}");
+            assert!(html.contains("one\ntwo\n"), "{html}");
+            assert_eq!(html.matches("<br").count(), 2, "{html}");
+        }
     }
 
     #[test]

@@ -180,3 +180,9 @@ The outline sidebar shares the heading picker’s parser, filter and pagination.
 Standalone HTML takes a simple, bounded frontmatter title and language; ambiguous or compound metadata falls back to the first H1 or document name and the default language. An explicit page-break comment in its own block is available for print. A native WebKit PDF proof checks the actual page containing each heading. Large-document printing above the live-preview limit and export themes remain open.
 
 The full-volume exFAT regression exhausts the disposable 64 MiB image during staging, checks the original bytes, and compares directory entries before and after failure. A separate UI regression checks recovery and vetoes Close after the failed copy. Physical-media interruption and network filesystems still require separate qualification.
+
+## First Apple silicon preview
+
+The final review of independent document windows found a startup recovery bug. When a later draft could not be claimed, startup could discard a draft that had already been restored. The fix keeps that document open and routes a pending Finder file to its own window. The corrected PR passed all six hosted checks and merged as `e68c6ae`. [PR #8](https://github.com/cyberdeliaAI/kladje/pull/8)
+
+The preview branch identifies documents during Close and Quit, improves keyboard use of the pinned outline, reports both splitter widths to assistive technology, and avoids reading the full source or retaining image data when live preview pauses. The release checklist covers the signed app and disk image, Apple notarization, quarantine, first installation, Finder and human accessibility checks. Windows and Linux remain compile-qualified only. [Preview instructions](../MACOS_PREVIEW.md) · [Current acceptance evidence](P1_ACCEPTANCE.md#macos-preview-qualification)
