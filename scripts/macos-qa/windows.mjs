@@ -39,34 +39,30 @@ export async function verifyWindows({app, executable, tmp, id, fixture}) {
     assert.ifError(result.error);
     return result;
   };
-  const ui = (script, ...args) => execFileSync("osascript",["-e",`on run argv
-    tell application "System Events"
-      set proc to first application process whose unix id is (item 1 of argv as integer)
-      tell proc
-        ${script}
-      end tell
-    end tell
-  end run`,String(processId),...args],{encoding:"utf8",timeout:5000}).trim();
-  const menu = (parent,item) => ui("set frontmost to true\nclick menu item (item 3 of argv) of menu 1 of menu bar item (item 2 of argv) of menu bar 1",parent,item);
-  const quit = () => ui('set frontmost to true\nclick menu item "Quit Kladje" of menu 1 of menu bar item 2 of menu bar 1');
+  const controls = path.join(tmp,"window-controls");
+  execFileSync("swiftc",[fileURLToPath(new URL("./window-controls.swift",import.meta.url)), "-o", controls]);
+  const ui = (...args) => execFileSync(controls,[String(processId),id,...args],{encoding:"utf8",timeout:5000}).trim();
+  const menu = (parent,item) => ui("menu",parent,item);
+  const quit = () => menu("App","Quit Kladje");
   const answer = async (title, expectedFile) => {
-    const result = await wait(()=>ui(`repeat with w in windows
-    if exists button (item 2 of argv) of w then
-      set detail to value of static texts of w as text
-      click button (item 2 of argv) of w
-      return "clicked " & detail
-    end if
-    repeat with s in sheets of w
-      if exists button (item 2 of argv) of s then
-        set detail to value of static texts of s as text
-        click button (item 2 of argv) of s
-        return "clicked " & detail
-      end if
-    end repeat
-  end repeat
-  return ""`,title),"native "+title+" button");
+    const result = await wait(()=>ui("answer",title),"native "+title+" button");
     if (expectedFile) assert.ok(result.includes("/" + path.basename(tmp) + "/" + path.basename(expectedFile)),
       "The native prompt must identify the document folder and filename");
+  };
+  // Refocusing after an external write would also trigger a disk check. Require
+  // continuous foreground time so this case measures the polling path alone.
+  const requireFocus = status => {
+    if (!status.focused) throw Error("Desktop focus changed during the polling test.");
+    return status;
+  };
+  const keepFront = async (label, file) => {
+    openFiles(file);
+    await wait(async () => (await command(label)).focused, "file to gain focus");
+    const deadline = Date.now() + 2200;
+    while (Date.now() < deadline) {
+      requireFocus(await command(label));
+      await delay(100);
+    }
   };
   const openFiles = (...files) => execFileSync("/usr/bin/open",["-a",app,...files]);
   const ended = () => wait(()=>child.exitCode!==null,"isolated app to exit");
@@ -103,7 +99,7 @@ export async function verifyWindows({app, executable, tmp, id, fixture}) {
     menu("File","New Tab");
     const tab = (await command("document-3")).windows;
     assert.equal(tab.length,4);
-    const nativeTabs = () => ui('return count of radio buttons of tab groups of window 1');
+    const nativeTabs = () => ui("tabs");
     await wait(()=>Number(nativeTabs()) >= 2, "AppKit tab group");
     menu("Window","Move Tab to New Window");
     await wait(()=>Number(nativeTabs()) < 2, "detached AppKit tab");
@@ -111,11 +107,10 @@ export async function verifyWindows({app, executable, tmp, id, fixture}) {
     await wait(async()=> (await command("main")).windows.length===3,"detached tab to close");
     checks.push("New Tab creates an AppKit tab and the Window menu detaches it");
     checks.push("Native windows share editor preferences and recent documents");
-    openFiles(third);
-    await wait(async()=> (await command(c)).focused,"third document focus");
+    await keepFront(c,third);
     // Keep this document in front throughout both external writes.
     fs.writeFileSync(third,"updated by another editor");
-    await wait(async()=> (await command(c)).text==="updated by another editor","foreground external reload");
+    await wait(async()=> requireFocus(await command(c)).text==="updated by another editor","foreground external reload");
     checks.push("An external edit reloads the clean, focused window without switching applications");
     openFiles(third);
     await wait(async()=> (await command(c)).focused,"foreground before autosave conflict");

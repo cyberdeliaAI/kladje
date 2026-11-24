@@ -49,3 +49,8 @@ test("ordered list markers and footer notices remain readable in light and dark 
     assert.ok((Math.max(fg,bg)+0.05)/(Math.min(fg,bg)+0.05) >= 4.5);
   }
 });
+
+test("the editor is inert from first paint until the requested document has loaded", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../ui/index.html"), "utf8");
+  assert.match(html, /<section\b(?=[^>]*\bid="editor-pane")(?=[^>]*\binert\b)[^>]*>/);
+});
