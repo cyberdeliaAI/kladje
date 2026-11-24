@@ -41,6 +41,7 @@ async function app(initial = {}, configure = () => {}) {
   const children = [];
   const api = {
     take_fragment() {}, document_ready() {}, accept_reload() {}, begin_close:()=>true, cancel_close() {},
+    diagram_sources: () => [], store_diagrams() {},
     update_history({change,seed}) {
       history ||= structuredClone(seed);
       if (change.kind === "touch" && change.resume) history.lastPath = change.path;
@@ -111,6 +112,7 @@ async function app(initial = {}, configure = () => {}) {
     setTimeout(fn, delay) { pendingTimers.set(++nextTimer, {fn, delay}); return nextTimer; },
     localStorage: { getItem: k => values.get(k), setItem: (k,v) => values.set(k,v), removeItem: k => values.delete(k) } });
   vm.runInContext(source("document-session.js"),context);
+  vm.runInContext(source("diagrams.js"),context);
   vm.runInContext(source("app.js"),context);
   await ready.promise;
   async function fire(delay) {
@@ -470,11 +472,25 @@ test("print annotations use external destinations and leave local document paths
     setAttribute(_, value) { this.href = value; },
     removeAttribute() { this.href = null; },
   }));
-  a.get("preview").querySelectorAll = () => links;
+  a.get("preview").querySelectorAll = selector => selector.startsWith("a[") ? links : [];
   a.events.beforeprint();
   assert.deepEqual(links.map(link => link.href), ["https://example.com", "mailto:editor@example.org", "#part", null]);
   a.events.afterprint();
   assert.ok(links.every(link => link.href === "#"));
+});
+
+test("HTML export hands over the diagrams it could draw and exports the rest as source", async () => {
+  const a = await app();
+  a.edit("```mermaid\ngraph TD\n```");
+  a.dialog.save = () => "/notes/a.html";
+  a.api.file_version = () => null;
+  a.api.diagram_sources = ({markdown}) => { assert.match(markdown, /graph TD/); return ["graph TD\n", "broken\n"]; };
+  a.api.export_html = () => ({confirmed: true});
+  // No engine is installed in this harness, so nothing can be drawn.
+  await a.menu("export_html");
+  assert.ok(!a.calls.some(([cmd]) => cmd === "store_diagrams"));
+  assert.ok(a.calls.some(([cmd]) => cmd === "export_html"));
+  assert.match(a.get("notice").textContent, /Exported a\.html/);
 });
 
 test("recent documents deduplicate, cap at ten, and clear paths and saved positions", async () => {
@@ -1284,6 +1300,38 @@ test("print renders a document that is too large for the live preview and shows 
   await a.menu("export_pdf");
   assert.equal(a.rendered.at(-1), String(16 * MIB + 1));
   assert.equal(a.calls.filter(([name]) => name === "print_document").length, 2);
+});
+
+test("diagrams follow an on-request render, print on white and return to the screen theme", async () => {
+  const a = await app();
+  a.api.render = ({markdown}) => String(markdown.length);
+  const block = {dataset: {}, isConnected: true, getAttribute: () => "1:1-3:3", querySelector: () => null, append() {}, classList: {add() {}, remove() {}}};
+  const code = {parentElement: block, textContent: "graph TD"};
+  let missing = null;
+  a.get("preview").querySelectorAll = selector => selector.includes("language-mermaid") ? [code] : [];
+  a.get("preview").querySelector = selector => selector === ".asset-missing" ? missing : null;
+  await a.menu("theme_dark");
+  a.edit("a".repeat(16 * MIB));
+  delete block.dataset.diagram;
+  await settle();
+  assert.equal(block.dataset.diagram, undefined, "an unrendered preview draws nothing");
+  await a.menu("refresh_preview");
+  assert.equal(block.dataset.diagram, "dark");
+
+  let printedAs;
+  a.api.print_document = () => { printedAs = block.dataset.diagram; };
+  await a.menu("export_pdf");
+  assert.equal(printedAs, "light", "paper is white");
+  assert.equal(block.dataset.diagram, "light", "the page stays as printed until the print ends");
+  a.events.afterprint();
+  assert.equal(block.dataset.diagram, "dark");
+
+  // A print that stops before the dialog puts the screen theme back itself.
+  missing = {};
+  printedAs = undefined;
+  await a.menu("export_pdf");
+  assert.equal(printedAs, undefined);
+  assert.equal(block.dataset.diagram, "dark");
 });
 
 test("print stops when the text changes while it prepares or when rendering fails", async () => {

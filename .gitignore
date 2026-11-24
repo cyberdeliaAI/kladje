@@ -1,5 +1,8 @@
 # Build output and downloaded dependencies
 /src-tauri/target/
+# Copied from node_modules by scripts/build-diagrams.mjs
+/ui/vendor/mermaid.min.js
+/ui/vendor/THIRD-PARTY-NOTICES-DIAGRAMS.txt
 /src-tauri/gen/
 /node_modules/
 /coverage/
