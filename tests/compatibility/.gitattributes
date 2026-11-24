@@ -1,0 +1,8 @@
+# Keep the sample Markdown identical across checkouts, including its hard breaks.
+*.md text eol=lf
+make-fixtures.py text eol=lf
+kladje-markdown-test.md whitespace=-blank-at-eol
+
+# The file contents, including unusual line endings and encodings, are test inputs.
+fixtures/*.md -text !eol -whitespace
+media/** -text
