@@ -360,7 +360,7 @@ mod tests {
         let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 80\"></svg>";
         r.store_diagrams(vec![drawn(flow, svg), drawn(tildes, svg)])
             .unwrap();
-        let (html, omitted) = standalone_html(&r, &md, "t", None).unwrap();
+        let (html, omitted) = standalone_html(&r, &md, "t", None, false).unwrap();
         assert_eq!(omitted, 0);
         assert_eq!(
             html.matches("<figure class=\"diagram\">").count(),
@@ -378,6 +378,7 @@ mod tests {
             "![x](data:image/svg+xml;base64,PHN2Zy8+)\n\n<figure class=\"diagram\"><img src=\"data:image/svg+xml;base64,PHN2Zy8+\"></figure>\n",
             "t",
             None,
+            false,
         )
         .unwrap();
         assert!(!own.0.contains("image/svg+xml"), "{}", own.0);
