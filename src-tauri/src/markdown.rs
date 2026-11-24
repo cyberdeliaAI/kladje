@@ -29,6 +29,7 @@ pub const PREVIEW_ID_PREFIX: &str = "uc-";
 pub struct Renderer {
     syntaxes: SyntaxSet,
     image_cache: Arc<Mutex<crate::images::RasterCache>>,
+    pub(crate) diagrams: Arc<Mutex<crate::export::DiagramStore>>,
     pub syntax_css_light: String,
     pub syntax_css_dark: String,
 }
@@ -106,6 +107,7 @@ impl Renderer {
         let themes = two_face::theme::extra();
         Renderer {
             image_cache: Default::default(),
+            diagrams: Default::default(),
             syntaxes: two_face::syntax::extra_newlines(),
             syntax_css_light: syntax_styles(
                 themes.get(EmbeddedThemeName::Github),
@@ -333,6 +335,33 @@ pub struct Heading {
     pub level: u8,
     pub line: usize,
     pub text: String,
+}
+
+/// The source text of every fenced Mermaid block, in document order and without
+/// repeats. The webview draws these and hands the images back for export.
+pub fn diagram_sources(markdown: &str) -> Result<Vec<String>, String> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let arena = Arena::new();
+        let root = parse_document(&arena, markdown, &comrak_options(Target::Export));
+        let mut sources: Vec<String> = Vec::new();
+        for node in root.descendants() {
+            if let NodeValue::CodeBlock(block) = &node.data().value {
+                if block.fenced
+                    && is_diagram_fence(&block.info)
+                    && !block.literal.trim().is_empty()
+                    && !sources.contains(&block.literal)
+                {
+                    sources.push(block.literal.clone());
+                }
+            }
+        }
+        sources
+    }))
+    .map_err(|_| "Could not read the diagrams in this document.".into())
+}
+
+fn is_diagram_fence(info: &str) -> bool {
+    info.split_whitespace().next() == Some("mermaid")
 }
 
 /// Navigation uses the preview parser without rendering HTML or reading images.

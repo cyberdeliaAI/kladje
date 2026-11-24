@@ -83,6 +83,19 @@ $$
 \int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}
 $$
 
+## Diagrams
+
+A fenced code block tagged `mermaid` is drawn as a diagram in the preview, in PDF and in exported HTML:
+
+```mermaid
+flowchart LR
+  Idea --> Draft --> Review{Ready?}
+  Review -->|yes| Publish
+  Review -->|not yet| Draft
+```
+
+Flowcharts, sequence, class, state and entity diagrams, Gantt charts, pie charts and the other [Mermaid](https://mermaid.js.org) diagram types work. If a diagram cannot be drawn, its text stays visible with a short reason below it. Double-click a diagram to go to its source. Other Markdown readers that do not know Mermaid show the same block as code.
+
 ## Footnotes and more
 
 Footnotes keep the text clean.[^1] Emoji shortcodes work too :sparkles:, and so does a little HTML such as <kbd>Ctrl</kbd> + <kbd>S</kbd>.

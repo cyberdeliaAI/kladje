@@ -669,6 +669,19 @@ fn document_headings(markdown: String) -> Result<Vec<kladje::markdown::Heading>,
     kladje::markdown::headings(&markdown)
 }
 
+#[tauri::command(async)]
+fn diagram_sources(markdown: String) -> Result<Vec<String>, String> {
+    kladje::markdown::diagram_sources(&markdown)
+}
+
+#[tauri::command(async)]
+fn store_diagrams(
+    state: State<'_, AppState>,
+    diagrams: Vec<export::Diagram>,
+) -> Result<(), String> {
+    state.renderer.store_diagrams(diagrams)
+}
+
 fn build_menu(app: &AppHandle) -> tauri::Result<()> {
     let item = |id: &str, text: &str, accelerator: Option<&str>| {
         let mut builder = MenuItemBuilder::with_id(id, text);
@@ -974,6 +987,8 @@ fn main() {
             window_geometry::window_bounds,
             window_geometry::restore_window_bounds,
             document_headings,
+            diagram_sources,
+            store_diagrams,
             render,
             read_file,
             comparison_text,
