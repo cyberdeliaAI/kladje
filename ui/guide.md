@@ -120,7 +120,7 @@ Autosave never asks a question. If the file changed on disk, or a save would nee
 
 Paste a clipboard image into the source editor and confirm **Save Image**. For an untitled draft, first choose where to save the document. Kladje stores a new PNG, JPEG, GIF or WebP of up to 4 MiB in the adjacent `assets/` folder and selects the image description. Undo removes the link. The image remains in the folder, so other documents can still use it. Move that folder with the document.
 
-Choose **File → Compare with Disk** to see both text snapshots and the first differing line. You can select and copy from either pane. Closing the comparison returns to your edits. Save As keeps a separate copy if you want to keep both versions. Comparison ignores line-ending and encoding differences and supports up to 512 KiB on disk and 524,288 UTF-16 code units in the editor.
+Choose **File → Compare with Disk** to see your text and the saved file side by side. Changed lines are tinted, the changed words inside them are marked, and long unchanged stretches fold away. **Next Change** and **Previous Change** step through the differences. You can select and copy from either side, and neither side can be edited. Closing the comparison returns to your edits. Save As keeps a separate copy if you want to keep both versions. Comparison ignores line-ending and encoding differences and supports up to 512 KiB on disk and 524,288 UTF-16 code units in the editor.
 
 
 ## Writing shortcuts

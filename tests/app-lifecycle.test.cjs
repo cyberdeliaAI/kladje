@@ -26,7 +26,7 @@ async function app(initial = {}, configure = () => {}) {
     attrs: {}, handlers: {}, setSelectionRange(from, to) { this.selection = [from, to]; }, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {},
     addEventListener(k,f) { this.handlers[k]=f; }, querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
   });
-  const rendered = [];
+  const rendered = [], comparisons = [];
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
@@ -73,7 +73,22 @@ async function app(initial = {}, configure = () => {}) {
   let nextTimer = 0;
   const nativeWindow = { setTitle: async () => {}, onCloseRequested: cb => { events.close = cb; }, destroy: async () => { calls.push(["destroy"]); } };
   const win = {
-    KladjeEditor: { create(_, options) { change = options.onChange; return view; } },
+    KladjeEditor: { create(_, options) { change = options.onChange; return view; },
+      // Stands in for the bundled comparison. Line-based, which is enough for these flows.
+      changedSections(mine, disk) {
+        const a = mine.split("\n"), b = disk.split("\n");
+        let count = 0, inside = false;
+        for (let i = 0; i < Math.max(a.length, b.length); i++) {
+          if (a[i] !== b[i]) { if (!inside) count++; inside = true; } else inside = false;
+        }
+        return count;
+      },
+      compare(parent, mine, disk) {
+        const shown = {parent, mine, disk, moves: [], destroyed: false,
+          next() { this.moves.push("next"); }, previous() { this.moves.push("previous"); }, destroy() { this.destroyed = true; }};
+        comparisons.push(shown);
+        return shown;
+      } },
     addEventListener: (name, cb) => { events[name] = cb; }, matchMedia: () => ({ addEventListener() {} }),
     __TAURI__: { core: { invoke: async (name, args = {}) => { calls.push([name, args]); return api[name](args); } },
       dialog, window: { getCurrentWindow: () => nativeWindow }, event: { listen: (name, cb) => { events[name] = cb; } },
@@ -97,7 +112,7 @@ async function app(initial = {}, configure = () => {}) {
     pendingTimers.delete(entry[0]);
     return entry[1].fn();
   }
-  return { children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
+  return { comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
 }
 
 test("actual Save and Quit wait for outstanding I/O and retain later edits", async () => {
@@ -631,12 +646,24 @@ test("comparison displays two read-only text snapshots and retains the original 
   a.api.comparison_text = () => "shared\r\n<svg>disk</svg>\r\nend";
   await a.menu("compare_disk");
   assert.equal(a.get("comparison").open, true);
-  assert.match(a.get("comparison-summary").textContent, /line 2/);
-  assert.deepEqual(a.get("comparison-editor").selection, [7,15]);
-  assert.equal(a.get("comparison-disk").value, "shared\n<svg>disk</svg>\nend");
+  assert.match(a.get("comparison-summary").textContent, /^1 changed section\. Both versions are read-only/);
+  const [shown] = a.comparisons;
+  assert.equal(shown.parent, a.get("comparison-view"));
+  assert.equal(shown.mine, "shared\nlocal 😀\nend");
+  assert.equal(shown.disk, "shared\n<svg>disk</svg>\nend");
+  assert.equal(a.get("comparison-next").disabled, false);
+  a.get("comparison-next").handlers.click();
+  a.get("comparison-previous").handlers.click();
+  assert.deepEqual(shown.moves, ["next", "previous"]);
   a.get("comparison").close();
   a.get("comparison").handlers.close();
-  assert.equal(a.get("comparison-disk").value, "");
+  assert.equal(shown.destroyed, true);
+  // Reopening builds a fresh view and never leaves the old one behind.
+  await a.menu("compare_disk");
+  assert.equal(a.comparisons.length, 2);
+  a.get("comparison").close();
+  a.get("comparison").handlers.close();
+  assert.equal(a.comparisons[1].destroyed, true);
   assert.equal(a.disk.content, "original");
   await a.menu("save");
   assert.deepEqual(a.calls.find(([cmd]) => cmd === "write_file")[1].expected, diskVersion);
@@ -692,6 +719,8 @@ test("comparison treats CRLF as the same text and a missing disk version leaves 
   a.api.comparison_text = () => "one\r\ntwo";
   await a.menu("compare_disk");
   assert.match(a.get("comparison-summary").textContent, /same text/);
+  assert.equal(a.get("comparison-next").disabled, true);
+  assert.equal(a.get("comparison-previous").disabled, true);
   a.get("comparison").close();
   a.api.comparison_text = () => { throw Error("File missing"); };
   await a.menu("compare_disk");

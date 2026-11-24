@@ -81,9 +81,11 @@ window.addEventListener("load", async () => {
       await menu("compare_disk");
       const dialog = document.getElementById("comparison");
       await wait(() => dialog.open, "read-only disk comparison");
-      check(document.getElementById("comparison-editor").value === text() &&
-        document.getElementById("comparison-disk").value === before, "compare current edits with intact disk source");
-      dialog.querySelector("button").click();
+      await wait(() => dialog.querySelectorAll("#comparison-view .cm-content").length === 2, "side-by-side comparison");
+      check(/changed section/.test(document.getElementById("comparison-summary").textContent) &&
+        dialog.querySelector("#comparison-view .cm-merge-a .cm-changedLine") &&
+        !dialog.querySelector('#comparison-view [contenteditable="true"]'), "compare current edits with intact disk source");
+      dialog.querySelector("button[autofocus]").click();
       await wait(() => !dialog.open, "close comparison");
       await menu("undo");
       await wait(() => text() === before, "undo pasted link");

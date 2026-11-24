@@ -5,6 +5,7 @@
 
 import { paragraphFocus, typewriter } from "./writing-modes.mjs";
 import { inlineCodeChange } from "./inline-code.mjs";
+import { changedSections, compareView } from "./compare.mjs";
 import { documentLanguage } from "./markdown-language.mjs";
 import { urlOverSelection } from "./smart-paste.mjs";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
@@ -452,4 +453,4 @@ function create(parent, options = {}) {
   return api;
 }
 
-window.KladjeEditor = { create };
+window.KladjeEditor = { create, compare: compareView, changedSections };

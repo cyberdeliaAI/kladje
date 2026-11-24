@@ -21,7 +21,7 @@ Kladje is being qualified for a first Apple silicon macOS preview. Windows and L
 - Use **Format → Insert Local Image** or drop a PNG, JPEG, GIF or WebP into the document. Edit the selected description to supply alt text.
 - Save explicitly with **⌘S**, or turn on **Save automatically** in **Settings**. Autosave is off by default. It writes a document that already has a file after a two-second pause in typing, when you switch away, and when you close the window. It never asks a question: a new or recovered draft, a pending encoding or line-ending choice, or a file that changed on disk is left for an explicit Save, and the status bar says when autosave has paused. If you keep typing during a save, newer edits stay marked as unsaved. When another program changes the file, you can keep your edits, reload from disk, or save a separate copy.
 - Paste a clipboard PNG, JPEG, GIF or WebP into the source editor. On confirmation, Kladje saves a new numbered file in `assets/` beside the document. Undo removes the link and keeps the image file.
-- Use **File → Compare with Disk** to inspect the current text alongside the saved version. **File → New from Template** opens a local Markdown or text file as a fresh, unsaved draft.
+- Use **File → Compare with Disk** for a read-only, side-by-side diff of the current text and the saved version, with changed lines and words marked. **File → New from Template** opens a local Markdown or text file as a fresh, unsaved draft.
 - Restore private drafts after an unexpected exit. Kladje keeps up to three recovery generations per document. On macOS, saving through a symlink preserves the link.
 
 ## Build the macOS app
