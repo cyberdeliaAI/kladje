@@ -157,3 +157,8 @@ Choose **View → Document Outline**, or the outline button at the bottom right,
 Settings can emphasize the current paragraph or keep the caret centered while you type. Both options start off. You can still scroll through the document and use Find.
 
 Standalone HTML exports recognize a simple, single-line `title` and `lang` at the top level of initial frontmatter. For example, `lang: nl-BE` sets the document language. An omitted or unsupported title uses the first level-one heading, then the filename. Put `<!-- pagebreak -->` on a line between paragraphs to start a new printed page.
+
+
+### Changes from another application
+
+A clean document reloads when its active window notices an external edit. If you have unsaved changes, **Keep Edits** preserves your draft and pauses automatic saving. Use **File → Compare with Disk** to review the differences or **Save As** to keep a separate copy. A missing file stays open for recovery.

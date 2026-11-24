@@ -1483,6 +1483,9 @@
     if (comparison.open) comparison.close();
     clearRecovery();
     previewAssets.clear();
+    observed = null;
+    lastDiskError = null;
+    retryDiskAfter = 0;
     autosavePaused = false;
     doc.id = id;
     doc.remote = false;
@@ -2069,23 +2072,39 @@
     return a && b && a.target === b.target && a.digest === b.digest && a.identity === b.identity;
   }
 
-  async function checkDisk() {
-    if (!doc.path || !doc.version || closing) return;
-    const before = session.snapshot();
-    const version = await invoke("file_version", { path: doc.path });
-    if (sameVersion(version, doc.version) || (session.isDirty() && sameVersion(version, doc.ignoredVersion))) return;
+  // Probe only the foreground document. An unchanged stamp avoids reading any
+  // document bytes. Focus and Save still compare the authoritative disk revision.
+  const DISK_INTERVAL = 1500;
+  let observed = null, checkingDisk = false, lastDiskError = null, retryDiskAfter = 0, forceDiskCheck = false;
+
+  async function checkDisk(force) {
+    const path = doc.path;
+    if (!path || !doc.version || closing || quitEpoch !== null) return;
+    const before = {document: session.document, revision: session.document.revision};
+    const stamp = await invoke("file_stamp", {path});
+    const previous = observed?.document === before.document && observed.path === path ? observed : null;
+    if (!force && previous && stamp?.target === previous.stamp?.target && stamp?.change === previous.stamp?.change) return;
+    const record = () => { observed = {document:before.document, path, stamp}; };
+    const version = await invoke("file_version", {path});
+    if (sameVersion(version, doc.version) || (session.isDirty() && sameVersion(version, doc.ignoredVersion))) {
+      record();
+      return;
+    }
+    autosavePaused = true;
     if (!version) {
+      if (previous && !previous.stamp && !stamp) return;
       session.requireSave();
-      autosavePaused = true;
       saveRecovery();
       refreshChrome();
       notify("File was moved or deleted · use Save As to keep a copy", 30000);
+      record();
       return;
     }
-    const file = await invoke("read_file", { path: doc.path });
+    observed = null; // A forced digest check can detect changes even with identical metadata.
+    const file = await invoke("read_file", {path});
     if (!session.isCurrent(before)) {
       notify("File changed on disk while you were editing · your edits are still open", 15000);
-      return;
+      return; // Retry after typing settles, even when the metadata stays the same.
     }
     if (session.isDirty()) {
       const reload = await T.dialog.ask(`“${doc.name}” changed on disk. Reload the disk version and discard the edits in this window? Choose Keep Edits to use File → Compare with Disk or Save As.`, {
@@ -2094,13 +2113,15 @@
       if (!session.isCurrent(before)) return;
       if (!reload) {
         doc.ignoredVersion = file.version;
+        record();
+        notify("Kept your edits · use Compare with Disk or Save As", 15000);
         return;
       }
     }
-    await invoke("accept_reload", {path:doc.path, version:file.version});
+    await invoke("accept_reload", {path, version:file.version});
     if (!session.isCurrent(before)) return;
     const top = editor.scroller.scrollTop;
-    editor.replaceText(file.content.replace(/\r\n?/g, "\n"));
+    editor.replaceText(file.content.replace(/\r\n?/g, "\n"), true);
     doc.version = file.version;
     doc.ignoredVersion = null;
     autosavePaused = false;
@@ -2109,15 +2130,37 @@
     clearRecovery();
     editor.scroller.scrollTop = top;
     refreshChrome();
+    record();
     notify(`${doc.name} was reloaded from disk.`);
   }
 
-  let checkingDisk = false;
+  function requestDiskCheck(force = false) {
+    forceDiskCheck ||= force;
+    if (checkingDisk || initializing || busy || closing || quitEpoch !== null || !doc.path || !doc.version) return;
+    checkingDisk = true;
+    return runFileAction(async () => {
+      if (busy || quitEpoch !== null || comparison.open || document.querySelector?.("dialog[open]")) return;
+      if (!force && (document.hidden || document.hasFocus?.() === false || Date.now() < retryDiskAfter)) return;
+      const full = forceDiskCheck;
+      forceDiskCheck = false;
+      await checkDisk(full);
+      lastDiskError = null;
+      retryDiskAfter = 0;
+    }).catch(error => {
+      retryDiskAfter = Date.now() + 30000;
+      if (lastDiskError !== String(error)) notify(String(error), 15000);
+      lastDiskError = String(error);
+    }).finally(() => { checkingDisk = false; });
+  }
+
+  async function pollDisk() {
+    try { await requestDiskCheck(); }
+    finally { if (!closing) setTimeout(pollDisk, DISK_INTERVAL); }
+  }
+
   window.addEventListener("focus", () => {
     syncChecks();
-    if (initializing || checkingDisk || busy || closing) return;
-    checkingDisk = true;
-    return runFileAction(checkDisk).catch(e => notify(String(e), 15000)).finally(() => { checkingDisk = false; });
+    return requestDiskCheck(true);
   });
 
   async function rememberBounds() {
@@ -2481,6 +2524,7 @@
     els.editorPane.inert = closing;
     if (viewMode !== "preview") editor.focus();
     await fragment();
+    setTimeout(pollDisk, DISK_INTERVAL);
     await invoke("document_ready");
     invoke("log_message", { message: "ready" }).catch(() => {});
   }

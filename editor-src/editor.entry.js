@@ -240,8 +240,11 @@ function create(parent, options = {}) {
     },
 
     /** Replace the content as an ordinary (undoable) edit. */
-    replaceText(text) {
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+    replaceText(text, keepSelection = false) {
+      const current = view.state.selection;
+      const selection = keepSelection ? EditorSelection.create(current.ranges.map(r =>
+        EditorSelection.range(Math.min(r.anchor, text.length), Math.min(r.head, text.length))), current.mainIndex) : undefined;
+      view.dispatch({changes: {from:0, to:view.state.doc.length, insert:text}, selection});
     },
 
     isClean: () => cleanDoc !== null && view.state.doc.eq(cleanDoc),

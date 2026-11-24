@@ -43,6 +43,7 @@ async function app(initial = {}, configure = () => {}) {
   let history;
   const children = [];
   const api = {
+    file_stamp: () => disk.version && {target:disk.path, change:disk.version.digest},
     take_fragment() {}, document_ready() {}, accept_reload() {}, begin_close:()=>true, cancel_close() {},
     diagram_sources: () => [], store_diagrams() {},
     update_history({change,seed}) {
@@ -118,14 +119,18 @@ async function app(initial = {}, configure = () => {}) {
   vm.runInContext(source("diagrams.js"),context);
   vm.runInContext(source("app.js"),context);
   await ready.promise;
-  async function fire(delay) {
-    const entry = [...pendingTimers].find(([, timer]) => typeof delay === "function" ? delay(timer.delay) : timer.delay === delay);
+  async function fire(delay, callback = null) {
+    const entry = [...pendingTimers].find(([, timer]) => {
+      if (callback) return timer.fn.name === callback;
+      if (timer.fn.name === "pollDisk") return false;
+      return typeof delay === "function" ? delay(timer.delay) : timer.delay === delay;
+    });
     assert.ok(entry, `no pending timer at ${delay} ms`);
     pendingTimers.delete(entry[0]);
     return entry[1].fn();
   }
-  const pending = delay => [...pendingTimers.values()].some(timer => timer.delay === delay);
-  return { comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, pending, hooks, clock, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
+  const pending = delay => [...pendingTimers.values()].some(timer => timer.fn.name !== "pollDisk" && timer.delay === delay);
+  return { comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, pending, hooks, clock, rendered, view, pollDisk: () => fire(null,"pollDisk"), menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
 }
 
 test("actual Save and Quit wait for outstanding I/O and retain later edits", async () => {
@@ -340,6 +345,105 @@ test("clean external reload adopts the new baseline and Keep Edits remembers onl
   await a.events.focus();
   assert.equal(prompts, 2);
   assert.equal(a.text(), "local");
+});
+
+test("the active window reloads without refocusing and idle probes do not read file contents", async () => {
+  const a = await app();
+  await a.pollDisk();
+  const count = cmd => a.calls.filter(([name]) => name === cmd).length;
+  const reads = count("file_version");
+  await a.pollDisk();
+  assert.equal(count("file_version"), reads);
+  a.disk.content = "external"; a.disk.version = {target:a.disk.path, digest:"external"};
+  await a.pollDisk();
+  assert.equal(a.text(), "external");
+  assert.doesNotMatch(a.get("doc-name").title, /edited/);
+  await a.pollDisk();
+  assert.equal(count("file_version"), reads + 1);
+  await a.events.focus();
+  assert.equal(count("file_version"), reads + 2);
+});
+
+test("automatic conflict detection pauses autosave and keeps each disk version and local draft", async () => {
+  const a = await app({"kladje.autosave":"true"});
+  await a.pollDisk();
+  a.edit("local");
+  a.disk.content = "external"; a.disk.version = {target:a.disk.path, digest:"external"};
+  let prompts = 0;
+  a.dialog.ask = () => { prompts++; return false; };
+  await a.pollDisk();
+  await a.fire(2000);
+  await a.pollDisk();
+  await a.events.blur();
+  assert.equal(prompts, 1);
+  assert.equal(writes(a), 0);
+  assert.equal(a.disk.content, "external");
+  assert.equal(a.text(), "local");
+  await a.fire(900);
+  assert.ok(a.calls.some(([cmd,args]) => cmd === "recovery_write" && args.draft.content === "local"));
+});
+
+test("a late edit during automatic reload is retained and the same change is retried", async () => {
+  const a = await app(), started = gate(), done = gate();
+  await a.pollDisk();
+  a.disk.version = {target:a.disk.path, digest:"external"};
+  a.api.read_file = async () => { started.resolve(); await done.promise; return {...a.disk,content:"external"}; };
+  const poll = a.pollDisk();
+  await started.promise;
+  a.edit("late keystroke");
+  done.resolve(); await poll;
+  assert.equal(a.text(), "late keystroke");
+  let asked = 0;
+  a.dialog.ask = () => { asked++; return false; };
+  await a.pollDisk();
+  assert.equal(asked, 1);
+  assert.equal(a.text(), "late keystroke");
+});
+
+test("a disappearing file keeps its recoverable text and reappearance is detected", async () => {
+  const a = await app();
+  await a.pollDisk();
+  a.disk.version = null;
+  await a.pollDisk();
+  assert.match(a.get("notice").textContent,/moved or deleted/);
+  assert.equal(a.text(), "original");
+  await a.pollDisk();
+  assert.equal(a.calls.filter(([name]) => name === "file_version").length, 2);
+  a.disk.content = "returned"; a.disk.version = {target:a.disk.path, digest:"returned"};
+  a.dialog.ask = () => true;
+  await a.pollDisk();
+  assert.equal(a.text(), "returned");
+  assert.doesNotMatch(a.get("doc-name").title, /edited/);
+});
+
+test("focus detects a digest change hidden by coarse file timestamps and retries on late typing", async () => {
+  const a = await app();
+  a.api.file_stamp = () => ({target:a.disk.path, change:"constant"});
+  await a.pollDisk();
+  a.disk.version = {target:a.disk.path, digest:"changed"};
+  const started = gate(), done = gate();
+  a.api.read_file = async () => { started.resolve(); await done.promise; return {...a.disk,content:"external"}; };
+  const focus = a.events.focus();
+  await started.promise;
+  a.edit("working"); done.resolve(); await focus;
+  let prompts = 0;
+  a.dialog.ask = () => { prompts++; return false; };
+  await a.pollDisk();
+  assert.equal(prompts, 1);
+  assert.equal(a.text(),"working");
+});
+
+test("a failed disk probe backs off on idle ticks and can be retried on focus", async () => {
+  const a = await app();
+  let probes = 0;
+  a.api.file_stamp = () => { probes++; throw Error("volume offline"); };
+  await a.pollDisk(); await a.pollDisk();
+  assert.equal(probes, 1);
+  assert.match(a.get("notice").textContent,/volume offline/);
+  a.api.file_stamp = () => ({target:a.disk.path, change:"back"});
+  a.disk.version = {target:a.disk.path, digest:"back"}; a.disk.content = "back online";
+  await a.events.focus();
+  assert.equal(a.text(),"back online");
 });
 
 test("image drops preserve the document binding and require consent before copying", async () => {
