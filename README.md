@@ -16,7 +16,7 @@ Kladje is being qualified for a first Apple silicon macOS preview. Windows and L
 - Edit Markdown with native menu shortcuts, heading and list commands, undo and redo, and Find and Replace. Open **Help → Markdown Guide** for an editable guide.
 - Reopen any of the last ten files from **File → Open Recent**. Search headings with **⌘⇧J** on macOS or keep **View → Document Outline** open beside the source.
 - Toggle line numbers, wrapping and writing width in **View**. Writing Settings also offers paragraph focus and typewriter scrolling. Use **Format → Insert Table Row Below** to extend an existing Markdown table.
-- Preview tables, task lists, footnotes, strikethrough, fenced code with syntax highlighting, and math. Switch between editor, preview and split views in light or dark mode.
+- Preview tables, task lists, footnotes, strikethrough, fenced code with syntax highlighting, math and [Mermaid](https://mermaid.js.org) diagrams. Diagrams also appear in PDF and exported HTML. Switch between editor, preview and split views in light or dark mode.
 - Open Markdown and plain text, import HTML or Word documents as editable Markdown, export HTML, and print or save a PDF through the system print dialog.
 - Use **Format → Insert Local Image** or drop a PNG, JPEG, GIF or WebP into the document. Edit the selected description to supply alt text.
 - Save explicitly with **⌘S**. If you keep typing during a save, newer edits stay marked as unsaved. When another program changes the file, you can keep your edits, reload from disk, or save a separate copy.
@@ -61,6 +61,7 @@ The Rust suite exercises rendering, import, export, file formats, atomic saves a
 - Recovery is periodic. Edits made since the last completed snapshot can be lost on a crash. A mounted exFAT disk image has been tested. On an incompatible filesystem Kladje can offer a protected copy at a new path. Network shares, physical removal and power loss remain unqualified.
 - Standalone HTML embeds permitted local raster images and reports omissions. Word import preserves supported text, headings, lists and tables. Embedded media, page layout and review annotations are omitted.
 - Native PDF printing on macOS requires macOS 11 or later.
+- Diagrams are drawn by the bundled Mermaid engine, which `scripts/build-diagrams.mjs` copies from `node_modules` before each Tauri build together with its third-party notices. It loads only when a document contains a diagram. Each diagram is shown as an image, so its text cannot be selected, and one diagram source is limited to 50,000 UTF-16 code units. HTML export embeds up to 64 diagrams of at most 2 MiB each. A diagram that cannot be drawn is exported as its source text.
 - Live preview and printing pause above 262,144 UTF-16 code units. Editing, explicit saving and recovery remain available. Heading search supports source files up to 4 MiB. Live word totals use the same size limit as preview.
 
 ## Planning documents

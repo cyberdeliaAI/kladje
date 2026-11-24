@@ -9,6 +9,7 @@
     "build": "tauri build",
     "build:brand": "node scripts/build-brand.mjs",
     "build:editor": "esbuild editor-src/editor.entry.js --bundle --minify --format=iife --target=es2020 --outfile=ui/vendor/editor.js",
+    "build:diagrams": "node scripts/build-diagrams.mjs",
     "tauri": "tauri"
   },
   "devDependencies": {
@@ -24,6 +25,7 @@
     "@codemirror/view": "^6",
     "@lezer/highlight": "^1",
     "@tauri-apps/cli": "^2",
-    "esbuild": "^0.28"
+    "esbuild": "^0.28",
+    "mermaid": "^12"
   }
 }

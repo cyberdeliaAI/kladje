@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "identifier": "app.kladje.editor",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../ui",
+    "beforeBuildCommand": "node scripts/build-diagrams.mjs",
+    "beforeDevCommand": "node scripts/build-diagrams.mjs"
   },
   "app": {
     "withGlobalTauri": true,

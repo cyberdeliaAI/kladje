@@ -89,6 +89,104 @@ pub(crate) fn document_metadata(root: comrak::nodes::Node<'_>) -> (Option<String
     (field("title").or_else(heading), language)
 }
 
+/// One Mermaid diagram as the webview drew it: an SVG image for a source text.
+#[derive(serde::Deserialize)]
+pub struct Diagram {
+    source: String,
+    src: String,
+    width: u32,
+    height: u32,
+}
+
+const DIAGRAM_BYTES: usize = 2 * 1024 * 1024;
+const DIAGRAM_ENTRIES: usize = 64;
+const DIAGRAM_MARKUP: &str = "<pre><code class=\"language-mermaid\">";
+
+/// Images of Mermaid diagrams, keyed by their source text. The diagram engine
+/// is JavaScript, so the webview draws them and export looks them up here. The
+/// same source always yields the same image, so windows can share the store.
+/// An SVG shown through `img` cannot run script or load other resources.
+#[derive(Default)]
+pub struct DiagramStore {
+    figures: std::collections::VecDeque<(String, String)>,
+}
+
+impl DiagramStore {
+    fn insert(&mut self, diagram: Diagram) -> Result<(), String> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let encoded = diagram
+            .src
+            .strip_prefix("data:image/svg+xml;base64,")
+            .ok_or("A diagram must be an SVG image.")?;
+        if encoded.len() > DIAGRAM_BYTES.div_ceil(3) * 4 {
+            return Err("A diagram exceeds the 2 MiB export limit.".into());
+        }
+        let bytes = STANDARD
+            .decode(encoded)
+            .map_err(|_| "Invalid diagram image.")?;
+        let svg = std::str::from_utf8(&bytes).map_err(|_| "Invalid diagram image.")?;
+        let sized = |n: u32| (1..=20_000).contains(&n);
+        if !svg.trim_start().starts_with("<svg") || !sized(diagram.width) || !sized(diagram.height)
+        {
+            return Err("Invalid diagram image.".into());
+        }
+        // Only validated base64 and two numbers reach this markup.
+        let figure = format!(
+            "<figure class=\"diagram\"><img class=\"diagram-image\" alt=\"Diagram\" \
+             src=\"data:image/svg+xml;base64,{encoded}\" width=\"{}\" height=\"{}\"></figure>",
+            diagram.width, diagram.height
+        );
+        self.figures.retain(|(source, _)| *source != diagram.source);
+        while self.figures.len() >= DIAGRAM_ENTRIES {
+            self.figures.pop_front();
+        }
+        self.figures.push_back((diagram.source, figure));
+        Ok(())
+    }
+}
+
+impl Renderer {
+    /// Remember drawn diagrams for the exports that follow.
+    pub fn store_diagrams(&self, diagrams: Vec<Diagram>) -> Result<(), String> {
+        let mut store = self.diagrams.lock().map_err(|e| e.to_string())?;
+        for diagram in diagrams.into_iter().take(DIAGRAM_ENTRIES) {
+            store.insert(diagram)?;
+        }
+        Ok(())
+    }
+}
+
+/// Replace each Mermaid code block whose diagram is known with its image. A
+/// block without one stays as readable source.
+fn embed_diagrams(renderer: &Renderer, mut body: String) -> String {
+    if !body.contains(DIAGRAM_MARKUP) {
+        return body;
+    }
+    let Ok(store) = renderer.diagrams.lock() else {
+        return body;
+    };
+    for (source, figure) in &store.figures {
+        // Render the block on its own to get exactly the markup it has in the
+        // document. The fence is longer than any run of tildes inside it.
+        let mut run = 0;
+        let longest = source.chars().fold(0, |longest, c| {
+            run = if c == '~' { run + 1 } else { 0 };
+            longest.max(run)
+        });
+        let fence = "~".repeat(longest.max(2) + 1);
+        let end = if source.ends_with('\n') { "" } else { "\n" };
+        let block = renderer.render(
+            &format!("{fence}mermaid\n{source}{end}{fence}\n"),
+            Target::Export,
+        );
+        let block = block.trim_end();
+        if block.starts_with(DIAGRAM_MARKUP) && block.ends_with("</code></pre>") {
+            body = body.replace(block, figure);
+        }
+    }
+    body
+}
+
 /// Build an offline HTML file with its checked raster assets embedded.
 pub fn standalone_html(
     renderer: &Renderer,
@@ -99,7 +197,7 @@ pub fn standalone_html(
     let rendered = renderer.render_document(markdown, Target::Export, source, false)?;
     let title = rendered.title.as_deref().unwrap_or(fallback_title);
     let lang = rendered.language.as_deref().unwrap_or("en");
-    let body = rendered.html;
+    let body = embed_diagrams(renderer, rendered.html);
 
     let html = format!(
         "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n\
@@ -221,6 +319,90 @@ mod tests {
         assert!(write_html(&destination, "output", Some(&source), baseline.as_ref()).is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"source");
         assert!(destination.is_symlink());
+    }
+
+    fn drawn(source: &str, svg: &str) -> Diagram {
+        use base64::Engine;
+        Diagram {
+            source: source.into(),
+            src: format!(
+                "data:image/svg+xml;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(svg)
+            ),
+            width: 120,
+            height: 80,
+        }
+    }
+
+    #[test]
+    fn known_diagrams_replace_their_code_blocks_and_others_stay_readable() {
+        let r = Renderer::new();
+        let flow = "graph TD\n  A[\"x < y & z\"] --> B\n";
+        let tildes = "pie\n~~~~\n  \"a\" : 1\n";
+        let md = format!(
+            "Intro\n\n```mermaid\n{flow}```\n\n- item\n\n  ~~~~~~mermaid\n  pie\n  ~~~~\n    \"a\" : 1\n  ~~~~~~\n\n```mermaid\nsequenceDiagram\n```\n\n```text\n{flow}```\n"
+        );
+        assert_eq!(
+            crate::markdown::diagram_sources(&md).unwrap(),
+            [flow, tildes, "sequenceDiagram\n"]
+        );
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 80\"></svg>";
+        r.store_diagrams(vec![drawn(flow, svg), drawn(tildes, svg)])
+            .unwrap();
+        let (html, omitted) = standalone_html(&r, &md, "t", None).unwrap();
+        assert_eq!(omitted, 0);
+        assert_eq!(
+            html.matches("<figure class=\"diagram\">").count(),
+            2,
+            "{html}"
+        );
+        assert_eq!(html.matches("src=\"data:image/svg+xml;base64,").count(), 2);
+        assert!(html.contains("width=\"120\" height=\"80\""));
+        // An undrawn diagram and an ordinary code block keep their text.
+        assert!(html.contains("<code class=\"language-mermaid\">sequenceDiagram"));
+        assert!(html.contains("<code class=\"language-text\">graph TD"));
+        // A document cannot smuggle in an SVG image of its own.
+        let own = standalone_html(
+            &Renderer::new(),
+            "![x](data:image/svg+xml;base64,PHN2Zy8+)\n\n<figure class=\"diagram\"><img src=\"data:image/svg+xml;base64,PHN2Zy8+\"></figure>\n",
+            "t",
+            None,
+        )
+        .unwrap();
+        assert!(!own.0.contains("image/svg+xml"), "{}", own.0);
+        assert_eq!(own.1, 2);
+    }
+
+    #[test]
+    fn the_diagram_store_accepts_only_bounded_svg_images() {
+        let r = Renderer::new();
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+        let mut png = drawn("a", svg);
+        png.src = "data:image/png;base64,iVBORw0KGgo=".into();
+        let html = drawn("a", "<html><script>1</script></html>");
+        let mut sized = drawn("a", svg);
+        sized.width = 0;
+        let mut broken = drawn("a", svg);
+        broken.src.push('"');
+        let large = drawn("a", &format!("<svg>{}</svg>", "x".repeat(DIAGRAM_BYTES)));
+        for bad in [png, html, sized, broken, large] {
+            assert!(r.store_diagrams(vec![bad]).is_err());
+        }
+        assert!(r.diagrams.lock().unwrap().figures.is_empty());
+        // The newest sixty-four sources are kept and a source is stored once.
+        for n in 0..70 {
+            r.store_diagrams(vec![drawn(&format!("pie\n\"{n}\" : 1\n"), svg)])
+                .unwrap();
+        }
+        r.store_diagrams(vec![drawn("pie\n\"69\" : 1\n", svg)])
+            .unwrap();
+        let store = r.diagrams.lock().unwrap();
+        assert_eq!(store.figures.len(), DIAGRAM_ENTRIES);
+        assert_eq!(store.figures.back().unwrap().0, "pie\n\"69\" : 1\n");
+        assert!(store
+            .figures
+            .iter()
+            .all(|(source, _)| source != "pie\n\"5\" : 1\n"));
     }
 
     #[test]

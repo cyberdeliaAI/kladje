@@ -321,6 +321,7 @@
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     $("syntax-screen").textContent = dark ? config.syntaxCssDark : config.syntaxCssLight;
     $("syntax-print").textContent = config.syntaxCssLight;
+    drawDiagrams();
   }
   systemDark.addEventListener("change", applyTheme);
 
@@ -447,6 +448,7 @@
           if (html === undefined) throw failure || new Error("Missing preview");
           patchPreview(typeof html === "string" ? html : html.html, html.assets || {});
           bindPreviewTasks(html.tasks || {}, snapshot);
+          drawDiagrams();
           ready = true;
           renderCost = performance.now() - started;
         } while (renderAgain);
@@ -554,6 +556,71 @@
     }
   });
 
+  // ---------------------------------------------------------------- diagrams
+
+  const diagrams = KladjeDiagrams.create(() => new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "vendor/mermaid.min.js";
+    script.onload = () => window.mermaid ? resolve(window.mermaid) : reject(Error("Diagram support did not start."));
+    script.onerror = () => reject(Error("Diagram support is not part of this build."));
+    document.head.append(script);
+  }));
+  // The last image of each diagram, by its first source line. It stays visible,
+  // dimmed, while an edited diagram is drawn again.
+  const drawnDiagrams = new Map();
+
+  /** Draw every Mermaid block in the preview for the screen theme, or light for paper. */
+  function drawDiagrams(dark = document.documentElement.dataset.theme === "dark") {
+    const blocks = Array.from(els.preview.querySelectorAll("pre > code.language-mermaid"));
+    return Promise.all(blocks.map(code => drawDiagram(code.parentElement, code, dark)));
+  }
+
+  async function drawDiagram(block, code, dark) {
+    const theme = dark ? "dark" : "light";
+    if (block.dataset.diagram === theme) return;
+    block.dataset.diagram = theme;
+    const source = code.textContent;
+    const line = parseInt(block.getAttribute("data-sourcepos"), 10) || 0;
+    let image = block.querySelector("img.diagram-image");
+    const earlier = drawnDiagrams.get(line);
+    if (!image && earlier) {
+      image = showDiagram(block, null, earlier);
+      image.classList.add("stale");
+    }
+    const result = await diagrams.image(source, dark);
+    if (!block.isConnected || block.dataset.diagram !== theme || code.textContent !== source) return;
+    block.querySelector(".diagram-error")?.remove();
+    if (result.error) {
+      image?.remove();
+      block.classList.remove("diagram-drawn");
+      drawnDiagrams.delete(line);
+      const note = document.createElement("span");
+      note.className = "diagram-error";
+      note.textContent = "Diagram: " + result.error;
+      block.append(note);
+    } else {
+      showDiagram(block, image, result).classList.remove("stale");
+      if (drawnDiagrams.size > 256) drawnDiagrams.clear();
+      drawnDiagrams.set(line, result);
+    }
+    anchors = null;
+  }
+
+  function showDiagram(block, image, drawn) {
+    if (!image) {
+      image = document.createElement("img");
+      image.className = "diagram-image";
+      block.append(image);
+    }
+    const kind = block.firstElementChild.textContent.trim().split(/\s/)[0];
+    image.alt = kind ? `Diagram: ${kind}` : "Diagram";
+    image.width = drawn.width;
+    image.height = drawn.height;
+    image.src = drawn.src;
+    block.classList.add("diagram-drawn");
+    return image;
+  }
+
   // The live preview routes links through the native opener. Supply the real
   // destinations to the print engine so PDF annotations work outside Kladje.
   window.addEventListener("beforeprint", () => {
@@ -565,6 +632,7 @@
   });
   window.addEventListener("afterprint", () => {
     for (const link of els.preview.querySelectorAll("a[data-destination]")) link.setAttribute("href", "#");
+    drawDiagrams();
   });
 
   /** Lines shift as you type; kept nodes take over the fresh source positions. */
@@ -882,6 +950,7 @@
     session.reset(editor.getText(), dirty, revision);
     if (sidebarOpen) { headingRows = []; outlineSnapshot = null; filterHeadings(); refreshSidebar(); }
     els.preview.replaceChildren();
+    drawnDiagrams.clear();
     els.previewPane.scrollTop = 0;
     anchors = null;
     activePane = "editor";
@@ -1143,6 +1212,14 @@
         filters: [{ name: "HTML", extensions: ["html"] }],
       });
       if (!path) return;
+      // The exported page shows diagrams as images. A diagram that cannot be
+      // drawn stays in the page as its source text.
+      const drawn = [];
+      for (const source of (await invoke("diagram_sources", { markdown: editor.getText() })).slice(0, 64)) {
+        const diagram = await diagrams.image(source, false);
+        if (!diagram.error) drawn.push({ source, ...diagram });
+      }
+      if (drawn.length) await invoke("store_diagrams", { diagrams: drawn });
       const expected = await invoke("file_version", { path });
       if (expected && !await T.dialog.ask(`Replace “${basename(path)}” with this HTML export?`, {
         title: "Export HTML", okLabel: "Replace File", cancelLabel: "Cancel",
@@ -1160,6 +1237,8 @@
   async function printDocument() {
     const snapshot = session.snapshot();
     if (!await renderNow()) return showError("Print needs a current preview.");
+    // Paper is white. Draw the diagrams in the light theme before printing.
+    await drawDiagrams(false);
     const images = Array.from(els.preview.querySelectorAll("img[src]"));
     let timeout;
     try {

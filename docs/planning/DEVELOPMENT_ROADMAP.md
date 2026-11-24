@@ -171,7 +171,7 @@ Outstanding qualification includes VoiceOver through multiple Quit sheets, IME c
 - A read-only changed-line view and validation of document-local relative links are the next small candidates. Use bounded inputs, preserve both versions, and reuse the confined resolver.
 - Opt-in autosave merits a separate trial on already-saved, conflict-free documents. Pause on a changed version, an incompatible volume or any ambiguous write. Qualify typing during Save and focus loss during Quit first.
 - Previous-save history needs an explicit location, retention limit and deletion control. Keep crash recovery independent of that decision.
-- Mermaid requires offline rendering and a second safe export path. Link and image completion would also introduce directory enumeration. Both remain deferred pending a bounded implementation and evidence of demand.
+- Mermaid required offline rendering and a second safe export path. It has since been implemented within those bounds: the engine is bundled and loaded on first use, each diagram becomes an SVG image that cannot run script, and export embeds only images the application drew itself. Link and image completion would introduce directory enumeration and remains deferred pending a bounded implementation and evidence of demand.
 
 ### Writing polish and export
 

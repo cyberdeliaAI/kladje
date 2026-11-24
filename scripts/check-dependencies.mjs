@@ -28,7 +28,9 @@ for (const pkg of crates) {
   if (!pkg.license && !pkg.license_file) throw Error("Missing Rust dependency license for " + pkg.name);
 }
 for (const [name, pkg] of npm) {
-  if (!pkg.license) throw Error("Missing npm dependency license for " + name);
+  // Like a crate's license_file: a package may state its terms only in a file.
+  const stated = pkg.license || (fs.existsSync(name) && fs.readdirSync(name).some((file) => /^licen[sc]e/i.test(file)));
+  if (!stated) throw Error("Missing npm dependency license for " + name);
 }
 console.log(
   "License metadata present for",

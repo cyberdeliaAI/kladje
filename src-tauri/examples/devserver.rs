@@ -265,6 +265,13 @@ fn invoke(
         | "window_bounds"
         | "restore_window_bounds" => Value::Null,
         "document_headings" => json!(kladje::markdown::headings(&text("markdown"))?),
+        "diagram_sources" => json!(kladje::markdown::diagram_sources(&text("markdown"))?),
+        "store_diagrams" => {
+            renderer.store_diagrams(
+                serde_json::from_value(args["diagrams"].clone()).map_err(|e| e.to_string())?,
+            )?;
+            Value::Null
+        }
         "render" => json!(renderer.preview_update(
             &text("markdown"),
             source.as_deref(),
