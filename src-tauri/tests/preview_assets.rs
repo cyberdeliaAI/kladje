@@ -9,11 +9,13 @@ fn preview_reuses_only_currently_authorized_image_bytes_and_export_is_standalone
     fs::write(&img, b"GIF89a123").unwrap();
     let r = Renderer::new();
     let md = "![diagram](a.gif)";
-    let first = r.preview_update(md, Some(&source), false, vec![]).unwrap();
+    let first = r
+        .preview_update(md, Some(&source), false, vec![], false)
+        .unwrap();
     let key = first.assets.keys().next().unwrap().clone();
     assert!(first.html.contains(&key));
     let next = r
-        .preview_update(md, Some(&source), false, vec![key.clone()])
+        .preview_update(md, Some(&source), false, vec![key.clone()], false)
         .unwrap();
     assert!(next.assets.is_empty());
     assert!(next.html.contains(&key));
@@ -23,7 +25,7 @@ fn preview_reuses_only_currently_authorized_image_bytes_and_export_is_standalone
     assert!(exported.html.contains(&first.assets[&key]));
     fs::write(&img, b"GIF89a456").unwrap();
     assert_eq!(
-        r.preview_update(md, Some(&source), false, vec![key.clone()])
+        r.preview_update(md, Some(&source), false, vec![key.clone()], false)
             .unwrap()
             .assets
             .len(),
@@ -36,7 +38,7 @@ fn preview_reuses_only_currently_authorized_image_bytes_and_export_is_standalone
         std::os::unix::fs::symlink(outside.path(), &img).unwrap();
     }
     let denied = r
-        .preview_update(md, Some(&source), false, vec![key.clone()])
+        .preview_update(md, Some(&source), false, vec![key.clone()], false)
         .unwrap();
     assert!(!denied.html.contains(&key));
     assert_eq!(denied.omitted, 1);
@@ -54,13 +56,16 @@ fn warm_illustrated_edits_have_bounded_ipc_payloads() {
     let full = r
         .render_document(md, Target::Preview, Some(&source), false)
         .unwrap();
-    let first = r.preview_update(md, Some(&source), false, vec![]).unwrap();
+    let first = r
+        .preview_update(md, Some(&source), false, vec![], false)
+        .unwrap();
     let warm = r
         .preview_update(
             &format!("{md}\n\nEdited."),
             Some(&source),
             false,
             first.assets.into_keys().collect(),
+            false,
         )
         .unwrap();
     let payload = serde_json::to_vec(&warm).unwrap().len();
@@ -76,7 +81,7 @@ fn warm_illustrated_edits_have_bounded_ipc_payloads() {
 fn only_renderer_owned_list_markers_receive_edit_coordinates() {
     let r = Renderer::new();
     let md = "🌱 notes\n\n> - [X] first\n> - [ ] second\n\n```\n- [x] code\n```";
-    let preview = r.preview_update(md, None, false, vec![]).unwrap();
+    let preview = r.preview_update(md, None, false, vec![], false).unwrap();
     let source: Vec<_> = md.encode_utf16().collect();
     assert_eq!(preview.tasks.len(), 2);
     for (pos, task) in preview.tasks {
@@ -87,7 +92,7 @@ fn only_renderer_owned_list_markers_receive_edit_coordinates() {
         );
     }
     assert!(r
-        .preview_update(&format!("{md}\n\n<input>"), None, false, vec![])
+        .preview_update(&format!("{md}\n\n<input>"), None, false, vec![], false)
         .unwrap()
         .tasks
         .is_empty());
@@ -104,7 +109,7 @@ fn export_uses_bounded_frontmatter_fields_and_prints_explicit_page_breaks() {
     let doc =
         "---\ntitle: 'Café & More'\nlang: nl-BE\n---\n# fallback\n\n<!-- pagebreak -->\n\nLast";
     let export = |text: &str| {
-        kladje::export::standalone_html(&renderer, text, "untitled", None)
+        kladje::export::standalone_html(&renderer, text, "untitled", None, false)
             .unwrap()
             .0
     };

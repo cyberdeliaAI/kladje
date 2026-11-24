@@ -343,6 +343,29 @@ test("remote image consent expires when another document opens", async () => {
   assert.equal(latest.source,"/notes/next.md");
 });
 
+test("one line-break preference reaches the preview, HTML export and formatted copy", async () => {
+  const a = await app();
+  const last = name => a.calls.filter(([cmd]) => cmd === name).at(-1)[1];
+  assert.equal(last("render").lineBreaks, false);
+  const renders = a.calls.filter(([cmd]) => cmd === "render").length;
+  await a.menu("settings");
+  a.get("lineBreaks").checked = true;
+  await a.get("lineBreaks").handlers.change();
+  a.get("settings").close();
+  assert.equal(a.values.get("kladje.lineBreaks"), "true");
+  assert.equal(a.calls.filter(([cmd]) => cmd === "render").length, renders + 1);
+  assert.equal(last("render").lineBreaks, true);
+  a.dialog.save = () => "/notes/a.html";
+  a.api.file_version = () => null;
+  a.api.export_html = () => ({confirmed: true});
+  await a.menu("export_html");
+  assert.equal(last("export_html").lineBreaks, true);
+  a.view.selectedText = () => "one\ntwo";
+  a.api.formatted_selection = () => "";
+  await a.menu("copy_formatted");
+  assert.equal(last("formatted_selection").lineBreaks, true);
+});
+
 test("a preview failure leaves edited text available for Save", async () => {
   const a = await app();
   a.api.render = () => { throw Error("Renderer unavailable"); };
@@ -517,6 +540,42 @@ test("heading search pages through repeated titles and filtering resets the page
   a.get("heading-filter").handlers.input();
   assert.equal(a.get("heading-list").children[0].value, 120);
   assert.equal(a.get("heading-pages").hidden, true);
+});
+
+test("the outline indents by level, numbers only repeated titles, follows the cursor and jumps on one click", async () => {
+  const a = await app();
+  let line = 1, went;
+  a.view.cursor = () => ({line, column: 1, lines: 9});
+  a.view.goToLine = value => { went = value; };
+  a.api.document_headings = () => [
+    {level: 2, line: 2, text: "Intro"}, {level: 3, line: 4, text: "Detail"},
+    {level: 2, line: 6, text: "Notes"}, {level: 3, line: 8, text: "Detail"},
+  ];
+  await a.menu("document_outline");
+  const list = a.get("heading-list");
+  assert.deepEqual(list.children.map(o => o.textContent), ["Intro", "\u00a0\u00a0\u00a0Detail · line 4", "Notes", "\u00a0\u00a0\u00a0Detail · line 8"]);
+  assert.equal(list.children[1].title, "Heading level 3 · line 4");
+  // Above the first heading nothing is marked. Further down the enclosing section is.
+  assert.equal(list.selectedIndex, -1);
+  line = 7;
+  a.view.cursor = () => ({line, column: 1, lines: 9});
+  a.get("heading-filter").value = "";
+  a.get("heading-filter").handlers.input();
+  assert.equal(list.selectedIndex, 2);
+  // A filter keeps its first match selected for Enter.
+  a.get("heading-filter").value = "detail";
+  a.get("heading-filter").handlers.input();
+  assert.equal(list.selectedIndex, 0);
+  list.value = "8";
+  await list.handlers.click();
+  assert.equal(went, 8);
+  // The modal picker still needs a double click or Enter.
+  await a.menu("document_outline");
+  await a.menu("jump_heading");
+  went = undefined;
+  list.value = "2";
+  await list.handlers.click();
+  assert.equal(went, undefined);
 });
 
 function imagePaste(a, file = {type:"image/png", size:8, encoded:"iVBORw0KGgo="}, text = "", inSource = true) {

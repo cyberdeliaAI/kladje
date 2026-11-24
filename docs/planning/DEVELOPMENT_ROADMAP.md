@@ -175,7 +175,7 @@ Outstanding qualification includes VoiceOver through multiple Quit sheets, IME c
 
 ### Writing polish and export
 
-The outline sidebar shares the heading picker’s parser, filter and pagination. It updates after an idle edit and discards results for obsolete documents or revisions. A narrow window uses the existing picker. Paragraph focus and typewriter scrolling are independent, off-by-default preferences. Tab from the last table cell adds a row; Backtab at the beginning preserves indentation. Metadata is excluded from selected prose counts as well as document totals.
+The outline sidebar shares the heading picker’s parser, filter and pagination. It indents by heading level, jumps on a single click and marks the section that holds the cursor. A further document window takes the size of the window it was opened from and steps 26 points down and right until its corner is clear of every open window, wrapping inside the display. It updates after an idle edit and discards results for obsolete documents or revisions. A narrow window uses the existing picker. Paragraph focus and typewriter scrolling are independent, off-by-default preferences. Tab from the last table cell adds a row; Backtab at the beginning preserves indentation. Metadata is excluded from selected prose counts as well as document totals.
 
 Standalone HTML takes a simple, bounded frontmatter title and language; ambiguous or compound metadata falls back to the first H1 or document name and the default language. An explicit page-break comment in its own block is available for print. A native WebKit PDF proof checks the actual page containing each heading. Large-document printing above the live-preview limit and export themes remain open.
 

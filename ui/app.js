@@ -73,7 +73,7 @@
   let syncEnabled = storedFlag("sync", true);
   let gutter = storedFlag("gutter", false), wrap = storedFlag("wrap", true), measure = storedFlag("measure", true);
   const settings = $("settings");
-  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false};
+  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:false};
   for (const [key, fallback] of Object.entries(writing)) {
     writing[key] = storedFlag(key, fallback);
     const control = $(key);
@@ -84,6 +84,7 @@
       if (key === "focusParagraph" || key === "typewriter") applyWritingModes();
       if (key === "pairing") editor.setPairing(control.checked);
       if (key === "readingTime") updateStats();
+      if (key === "lineBreaks" && viewMode !== "editor") renderNow();
     });
   }
   function applyWritingModes() {
@@ -173,6 +174,7 @@
         $(key).checked = writing[key];
         if (key === "pairing") editor.setPairing(writing.pairing);
         if (key === "readingTime") updateStats();
+        if (key === "lineBreaks" && viewMode !== "editor") renderNow();
         if (key === "focusParagraph" || key === "typewriter") applyWritingModes();
       } else if (key === "theme") setTheme(store.get(key, "auto"));
       else if (key === "view") setView(store.get(key, "split"));
@@ -241,7 +243,10 @@
   const editor = window.KladjeEditor.create(els.editorPane, {
     placeholderText: "Start writing…",
     onChange: onDocumentChanged,
-    onSelection: () => schedule("stats", updateStats, 60),
+    onSelection: () => {
+      schedule("stats", updateStats, 60);
+      if (sidebarOpen) schedule("outlineFollow", followOutline, 120);
+    },
   });
 
   const session = new DocumentSession(() => editor.getText());
@@ -433,14 +438,14 @@
             return false;
           }
           const snapshot = session.snapshot();
-          const source = doc.path, remote = doc.remote;
+          const source = doc.path, remote = doc.remote, lineBreaks = writing.lineBreaks;
           let html, failure;
           try {
-            html = await invoke("render", { markdown: snapshot.content, source, remote, knownImages: [...previewAssets.keys()] });
+            html = await invoke("render", { markdown: snapshot.content, source, remote, knownImages: [...previewAssets.keys()], lineBreaks });
           } catch (error) {
             failure = error;
           }
-          if (!session.isCurrent(snapshot) || source !== doc.path || remote !== doc.remote) {
+          if (!session.isCurrent(snapshot) || source !== doc.path || remote !== doc.remote || lineBreaks !== writing.lineBreaks) {
             renderAgain = true;
             continue;
           }
@@ -600,20 +605,38 @@
     const needle = headingFilter.value.normalize().toLocaleLowerCase().trim();
     const matches = headingRows.filter(h => h.text.normalize().toLocaleLowerCase().includes(needle));
     const start = headingPage * 100;
+    // Indent by level from the shallowest heading. A line number is only
+    // needed to tell headings with the same text apart.
+    const top = headingRows.reduce((least, h) => Math.min(least, h.level), 6);
+    const repeated = new Map();
+    for (const h of headingRows) repeated.set(h.text, (repeated.get(h.text) || 0) + 1);
     const options = matches.slice(start, start + 100).map(h => {
       const option = document.createElement("option");
       option.value = h.line;
-      option.textContent = `H${h.level}  ${h.text || "(untitled heading)"} · line ${h.line}`;
+      option.textContent = "\u00a0\u00a0\u00a0".repeat(h.level - top) + (h.text || "(untitled heading)") +
+        (repeated.get(h.text) > 1 ? ` · line ${h.line}` : "");
+      option.title = `Heading level ${h.level} · line ${h.line}`;
       return option;
     });
     headingList.replaceChildren(...options);
     headingList.selectedIndex = options.length ? 0 : -1;
+    if (!needle) followOutline();
     $("heading-go").disabled = !options.length;
     $("heading-pages").hidden = matches.length <= 100;
     $("heading-prev").disabled = headingPage === 0;
     $("heading-next").disabled = start + 100 >= matches.length;
     $("heading-count").textContent = matches.length > 100 ? `Headings ${start + 1}–${start + options.length} of ${matches.length}` :
       matches.length ? `${matches.length} heading${matches.length === 1 ? "" : "s"}` : "No matching headings";
+  }
+  // The side panel marks the section that holds the cursor, unless its list
+  // is being browsed or shows filtered or outdated headings.
+  function followOutline() {
+    if (!sidebarOpen || headingFilter.value.trim() || !outlineSnapshot || !session.isCurrent(outlineSnapshot)) return;
+    if (document.activeElement === headingList) return;
+    const line = editor.cursor().line;
+    let current = -1;
+    Array.from(headingList.children).forEach((option, index) => { if (Number(option.value) <= line) current = index; });
+    if (headingList.selectedIndex !== current) headingList.selectedIndex = current;
   }
   async function jumpToHeading() {
     if (sidebarOpen) { headingFilter.focus(); headingFilter.select(); return; }
@@ -724,6 +747,8 @@
     }
   });
   headingList.addEventListener("dblclick", () => chooseHeading().catch(showError));
+  // In the side panel one click on a heading goes there.
+  headingList.addEventListener("click", () => { if (sidebarOpen) chooseHeading().catch(showError); });
   $("heading-form").addEventListener("submit", event => { event.preventDefault(); chooseHeading().catch(showError); });
   $("heading-cancel").addEventListener("click", () => {
     const pinned = sidebarOpen;
@@ -1152,7 +1177,7 @@
       if (expected && !await T.dialog.ask(`Replace “${basename(path)}” with this HTML export?`, {
         title: "Export HTML", okLabel: "Replace File", cancelLabel: "Cancel",
       })) return;
-      const result = await invoke("export_html", { path, markdown: editor.getText(), title: stem(doc.name), source: doc.path, expected });
+      const result = await invoke("export_html", { path, markdown: editor.getText(), title: stem(doc.name), source: doc.path, expected, lineBreaks: writing.lineBreaks });
       if (result.warning) await showError(result.warning);
       if (result.confirmed) notify(`Exported ${basename(path)}`);
     } catch (error) {
@@ -1446,7 +1471,7 @@
     copy_formatted: async () => {
       const markdown = editor.selectedText();
       if (!markdown) return notify("Select Markdown to copy as formatted text.");
-      const html = await invoke("formatted_selection", {markdown});
+      const html = await invoke("formatted_selection", {markdown, lineBreaks: writing.lineBreaks});
       if (html) {
         const copy = event => {
           event.clipboardData.setData("text/plain", markdown);
