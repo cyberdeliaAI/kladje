@@ -1166,6 +1166,104 @@ test("unsupported volume copy needs consent and acknowledges only its saved revi
   assert.match(a.get("doc-name").title, /edited/);
 });
 
+function contestedWrite(path) {
+  return {basic:true, confirmed:false, conflict:true, version:{target:path,digest:"unconfirmed"},
+    warning:"Another program changed the file. The previous file was kept at /notes/.kladje-previous-id."};
+}
+
+test("a contested Save As keeps the current path, disk baseline and recovery when declined", async () => {
+  const a = await app(), original = a.disk.version;
+  const other = "/notes/destination.md";
+  a.edit("my revision");
+  a.dialog.save = () => other;
+  a.api.file_version = () => null;
+  a.api.write_file = () => contestedWrite(other);
+  a.dialog.ask = (message, options) => {
+    assert.equal(options.okLabel, "Save My Version Separately…");
+    assert.match(message,/\.kladje-previous-id/);
+    return false;
+  };
+  await a.menu("save_as");
+  assert.match(a.get("doc-name").title,/^\/notes\/a\.md.*edited/);
+  assert.equal(a.history().lastPath, a.disk.path);
+  assert.ok(!a.calls.some(([cmd]) => cmd==="save_protected_copy"));
+  assert.ok(a.calls.some(([cmd,{draft}]) => cmd==="recovery_write" && draft.path===a.disk.path && draft.content==="my revision"));
+  a.api.write_file = args => {
+    assert.equal(args.path,a.disk.path); assert.deepEqual(args.expected,original);
+    return {version:original,confirmed:true};
+  };
+  await a.menu("save");
+});
+
+test("an autosave conflict pauses silently and manual Save copies the latest revision without retrying the original", async () => {
+  const a = await app({"kladje.autosave":"true"});
+  a.api.write_file = ({path}) => contestedWrite(path);
+  noDialogs(a);
+  a.edit("first");
+  await a.fire(2000);
+  assert.match(a.get("notice").textContent,/Autosave paused/);
+  a.edit("second");
+  await a.fire(2000); await a.events.blur(); await a.pollDisk();
+  assert.equal(writes(a),1);
+  assert.ok(!a.calls.some(([cmd]) => cmd==="save_protected_copy"));
+  const warning = gate(), accept = gate(), copying = gate(), finish = gate();
+  a.dialog.ask = async (message, options) => {
+    assert.match(message,/new folder/); assert.equal(options.title,"Conflicting save");
+    warning.resolve(); await accept.promise; return true;
+  };
+  const target = "/notes/Kladje Copy test/a.md";
+  a.api.save_protected_copy = async ({path,content,format}) => {
+    assert.equal(path,a.disk.path); assert.equal(content,"third"); assert.equal(format.encoding,"utf8");
+    copying.resolve(); await finish.promise; return {confirmed:true,version:{target,digest:"third"}};
+  };
+  const saving = a.menu("save");
+  await warning.promise; a.edit("third"); accept.resolve();
+  await copying.promise; a.edit("fourth"); finish.resolve(); await saving;
+  assert.equal(writes(a),1);
+  assert.equal(a.text(),"fourth");
+  assert.match(a.get("doc-name").title,/Kladje Copy test.*edited/);
+  assert.equal(a.history().lastPath,target);
+  assert.ok(a.calls.some(([cmd,{draft}]) => cmd==="recovery_write" && draft.path===target && draft.content==="fourth"));
+});
+
+test("dismissing a native save conflict handles its disk revision once and still detects later changes", async () => {
+  const a = await app();
+  a.edit("my version");
+  a.api.write_file = ({path}) => {
+    a.disk.version = {target:path, digest:"other editor"};
+    return contestedWrite(path);
+  };
+  const prompts = [];
+  a.dialog.ask = (_, options) => { prompts.push(options.title); return false; };
+  await a.menu("save");
+  await a.events.focus();
+  await a.pollDisk();
+  assert.deepEqual(prompts, ["Conflicting save"]);
+  assert.equal(a.text(), "my version");
+  a.disk.version = {target:a.disk.path, digest:"another change"};
+  await a.pollDisk();
+  await a.events.focus();
+  assert.deepEqual(prompts, ["Conflicting save", "Conflicting changes"]);
+  await a.menu("save");
+  assert.equal(prompts.at(-1), "Conflicting save");
+  assert.equal(writes(a), 1);
+  assert.match(a.get("doc-name").title, /edited/);
+});
+
+test("failure of a separate conflict copy keeps the original open and vetoes Close", async () => {
+  const a = await app();
+  a.edit("keep me");
+  a.api.write_file = ({path}) => contestedWrite(path);
+  a.dialog.ask = () => true;
+  a.api.save_protected_copy = () => { throw Error("disk full"); };
+  a.dialog.message = (_, options) => options.title==="Unsaved changes" ? "Save" : "OK";
+  await a.menu("close_window");
+  assert.equal(writes(a),1);
+  assert.ok(!a.calls.some(([cmd]) => cmd==="destroy"));
+  assert.match(a.get("doc-name").title,/^\/notes\/a\.md.*edited/);
+  assert.ok(a.calls.some(([cmd,{draft}]) => cmd==="recovery_write" && draft.content==="keep me"));
+});
+
 test("a volume without atomic replacement saves in place and is mentioned once", async () => {
   const a = await app();
   a.api.write_file = ({content}) => { a.disk.content = content; return {version: a.disk.version, confirmed: true, basic: true}; };

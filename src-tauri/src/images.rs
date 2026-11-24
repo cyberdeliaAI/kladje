@@ -324,7 +324,7 @@ fn publish(
             Err(e) if crate::storage::unsupported(&e.error) => {
                 // No exclusive rename here. Claim the numbered name, then install.
                 let dest = folder.join(&name);
-                match crate::storage::claim(e.file.into_temp_path(), &dest) {
+                match crate::storage::claim(e.file.path(), &dest) {
                     Ok(()) => {
                         crate::storage::sync_directory(folder).map_err(|e| e.to_string())?;
                         if std::fs::read(&dest).ok().as_deref() != Some(bytes) {
@@ -332,11 +332,8 @@ fn publish(
                         }
                         return Ok(name);
                     }
-                    Err((e, _)) if e.kind() != io::ErrorKind::AlreadyExists => {
-                        return Err(e.to_string())
-                    }
-                    // The name was taken meanwhile. Stage again for the next one.
-                    Err(_) => tmp = stage(folder, bytes)?,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => tmp = e.file,
+                    Err(error) => return Err(error.to_string()),
                 }
             }
             Err(e) => return Err(e.to_string()),
