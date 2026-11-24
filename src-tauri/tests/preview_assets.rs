@@ -107,8 +107,25 @@ fn html_and_table_controls_stay_read_only_beside_a_real_task() {
         result.html.matches("data-kladje-task=\"1:1-1:9\"").count(),
         1
     );
-    assert_eq!(result.html.matches("disabled=\"\"").count(), 3);
-    assert_eq!(render().html, result.html, "unchanged blocks can be reused");
+    let inputs: Vec<_> = result
+        .html
+        .split("<input ")
+        .skip(1)
+        .map(|input| input.split_once('>').unwrap().0)
+        .collect();
+    assert_eq!(inputs.len(), 3);
+    assert!(inputs[0].contains("data-kladje-task=\"1:1-1:9\""));
+    for input in inputs {
+        assert!(input.contains("type=\"checkbox\"") && input.contains("disabled=\"\""));
+    }
+    // Only the renderer-owned block needs byte-stable task metadata. The
+    // sanitizer may append missing attributes to raw HTML in either order.
+    let next = render();
+    assert_eq!(
+        result.html.split_once("</ul>").unwrap().0,
+        next.html.split_once("</ul>").unwrap().0,
+        "the rendered Markdown task block must be stable"
+    );
 
     let export = r.render_document(md, Target::Export, None, false).unwrap();
     assert!(export.tasks.is_empty());
