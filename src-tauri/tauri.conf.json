@@ -40,6 +40,14 @@
     "active": true,
     "targets": "all",
     "category": "Productivity",
+    "license": "MIT",
+    "licenseFile": "../LICENSE",
+    "copyright": "Copyright © 2026 Cyberdelia",
+    "resources": {
+      "../LICENSE": "licenses/LICENSE.txt",
+      "THIRD-PARTY-NOTICES.txt": "licenses/THIRD-PARTY-NOTICES-RUST.txt",
+      "../ui/vendor/THIRD-PARTY-NOTICES.txt": "licenses/THIRD-PARTY-NOTICES-FRONTEND.txt"
+    },
     "macOS": { "signingIdentity": "-" },
     "shortDescription": "A light, fast Markdown editor",
     "icon": [

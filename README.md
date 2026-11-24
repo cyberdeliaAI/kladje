@@ -74,4 +74,6 @@ The [development roadmap](docs/planning/DEVELOPMENT_ROADMAP.md) records the veri
 
 ## Licensing
 
-The project license for Kladje's own code is pending. The bundled editor and MathML stylesheet carry their upstream licenses. [Third-party frontend notices](ui/vendor/THIRD-PARTY-NOTICES.txt)
+Kladje's own code is available under the [MIT License](LICENSE). The licence covers the source code. The name Kladje, the application icon and the wordmark are not licensed for use by other products.
+
+The application includes third-party software under its own licences. Their notices ship inside the app under `Resources/licenses`: the [Rust packages, syntax definitions and themes](src-tauri/THIRD-PARTY-NOTICES.txt) and the [bundled editor and MathML stylesheet](ui/vendor/THIRD-PARTY-NOTICES.txt). After changing `src-tauri/Cargo.lock`, regenerate the first file with `npm run build:notices`. `node scripts/check-dependencies.mjs` fails when it is out of date.
