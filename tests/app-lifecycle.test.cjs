@@ -1639,9 +1639,8 @@ test("a very large document renders on request only and never shows an obsolete 
 
 test("ticking a task in the preview of a very large document refreshes it for the next tick", async () => {
   const a = await app();
-  const item = {getAttribute: () => "1:1-1:9", textContent: "Buy milk"};
-  const box = {parentElement: item, setAttribute() {}, removeAttribute() {}};
-  a.get("preview").querySelectorAll = selector => selector.includes("task-list-item") ? [box] : [];
+  const box = {getAttribute: () => "1:1-1:9", closest: () => ({textContent: "Buy milk"}), setAttribute() {}, removeAttribute() {}};
+  a.get("preview").querySelectorAll = selector => selector === "input[data-kladje-task]" ? [box] : [];
   let checked = false;
   a.api.render = ({markdown}) => ({html: String(markdown.length), assets: {}, tasks: {"1:1-1:9": {offset: 3, checked}}});
   a.view.toggleTask = () => { checked = !checked; a.edit((checked ? "- [x] " : "- [ ] ") + "a".repeat(16 * MIB)); return true; };
@@ -1658,6 +1657,22 @@ test("ticking a task in the preview of a very large document refreshes it for th
     assert.equal(a.text().startsWith(expected ? "- [x]" : "- [ ]"), true);
     assert.equal(status(a), "");
   }
+});
+
+test("a checkbox from an older preview cannot edit the new revision", async () => {
+  const a = await app();
+  const box = {getAttribute: () => "1:1-1:9", closest: () => ({textContent: "One"}), setAttribute() {}, removeAttribute() {}};
+  a.get("preview").querySelectorAll = selector => selector === "input[data-kladje-task]" ? [box] : [];
+  a.api.render = () => ({html: "list", tasks: {"1:1-1:9": {offset: 3, checked: false}}});
+  a.edit("- [ ] One");
+  await a.menu("refresh_preview");
+  assert.equal(box.disabled, false);
+  a.edit("- [ ] Two");
+  a.view.toggleTask = () => assert.fail("stale preview changed the source");
+  box.checked = true;
+  a.get("preview").handlers.change({target: box});
+  assert.equal(box.checked, false);
+  assert.equal(a.text(), "- [ ] Two");
 });
 
 test("an edit during a pause-tier render waits for the next pause instead of rendering again at once", async () => {
