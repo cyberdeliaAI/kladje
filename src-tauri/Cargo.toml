@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A light, fast Markdown editor with live preview"
 edition = "2021"
 rust-version = "1.90"
+license = "MIT"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

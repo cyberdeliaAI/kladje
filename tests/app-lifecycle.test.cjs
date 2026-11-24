@@ -26,7 +26,7 @@ async function app(initial = {}, configure = () => {}) {
     attrs: {}, handlers: {}, setSelectionRange(from, to) { this.selection = [from, to]; }, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {},
     addEventListener(k,f) { this.handlers[k]=f; }, querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
   });
-  const rendered = [];
+  const rendered = [], comparisons = [];
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
@@ -74,7 +74,22 @@ async function app(initial = {}, configure = () => {}) {
   let nextTimer = 0;
   const nativeWindow = { setTitle: async () => {}, onCloseRequested: cb => { events.close = cb; }, destroy: async () => { calls.push(["destroy"]); } };
   const win = {
-    KladjeEditor: { create(_, options) { change = options.onChange; return view; } },
+    KladjeEditor: { create(_, options) { change = options.onChange; return view; },
+      // Stands in for the bundled comparison. Line-based, which is enough for these flows.
+      changedSections(mine, disk) {
+        const a = mine.split("\n"), b = disk.split("\n");
+        let count = 0, inside = false;
+        for (let i = 0; i < Math.max(a.length, b.length); i++) {
+          if (a[i] !== b[i]) { if (!inside) count++; inside = true; } else inside = false;
+        }
+        return count;
+      },
+      compare(parent, mine, disk) {
+        const shown = {parent, mine, disk, moves: [], destroyed: false,
+          next() { this.moves.push("next"); }, previous() { this.moves.push("previous"); }, destroy() { this.destroyed = true; }};
+        comparisons.push(shown);
+        return shown;
+      } },
     addEventListener: (name, cb) => { events[name] = cb; }, matchMedia: () => ({ addEventListener() {} }),
     __TAURI__: { core: { invoke: async (name, args = {}) => { calls.push([name, args]); return api[name](args); } },
       dialog, window: { getCurrentWindow: () => nativeWindow }, event: { listen: (name, cb) => { events[name] = cb; } },
@@ -99,7 +114,7 @@ async function app(initial = {}, configure = () => {}) {
     pendingTimers.delete(entry[0]);
     return entry[1].fn();
   }
-  return { children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
+  return { comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
 }
 
 test("actual Save and Quit wait for outstanding I/O and retain later edits", async () => {
@@ -345,6 +360,29 @@ test("remote image consent expires when another document opens", async () => {
   assert.equal(latest.source,"/notes/next.md");
 });
 
+test("one line-break preference reaches the preview, HTML export and formatted copy", async () => {
+  const a = await app();
+  const last = name => a.calls.filter(([cmd]) => cmd === name).at(-1)[1];
+  assert.equal(last("render").lineBreaks, false);
+  const renders = a.calls.filter(([cmd]) => cmd === "render").length;
+  await a.menu("settings");
+  a.get("lineBreaks").checked = true;
+  await a.get("lineBreaks").handlers.change();
+  a.get("settings").close();
+  assert.equal(a.values.get("kladje.lineBreaks"), "true");
+  assert.equal(a.calls.filter(([cmd]) => cmd === "render").length, renders + 1);
+  assert.equal(last("render").lineBreaks, true);
+  a.dialog.save = () => "/notes/a.html";
+  a.api.file_version = () => null;
+  a.api.export_html = () => ({confirmed: true});
+  await a.menu("export_html");
+  assert.equal(last("export_html").lineBreaks, true);
+  a.view.selectedText = () => "one\ntwo";
+  a.api.formatted_selection = () => "";
+  await a.menu("copy_formatted");
+  assert.equal(last("formatted_selection").lineBreaks, true);
+});
+
 test("a preview failure leaves edited text available for Save", async () => {
   const a = await app();
   a.api.render = () => { throw Error("Renderer unavailable"); };
@@ -535,6 +573,42 @@ test("heading search pages through repeated titles and filtering resets the page
   assert.equal(a.get("heading-pages").hidden, true);
 });
 
+test("the outline indents by level, numbers only repeated titles, follows the cursor and jumps on one click", async () => {
+  const a = await app();
+  let line = 1, went;
+  a.view.cursor = () => ({line, column: 1, lines: 9});
+  a.view.goToLine = value => { went = value; };
+  a.api.document_headings = () => [
+    {level: 2, line: 2, text: "Intro"}, {level: 3, line: 4, text: "Detail"},
+    {level: 2, line: 6, text: "Notes"}, {level: 3, line: 8, text: "Detail"},
+  ];
+  await a.menu("document_outline");
+  const list = a.get("heading-list");
+  assert.deepEqual(list.children.map(o => o.textContent), ["Intro", "\u00a0\u00a0\u00a0Detail · line 4", "Notes", "\u00a0\u00a0\u00a0Detail · line 8"]);
+  assert.equal(list.children[1].title, "Heading level 3 · line 4");
+  // Above the first heading nothing is marked. Further down the enclosing section is.
+  assert.equal(list.selectedIndex, -1);
+  line = 7;
+  a.view.cursor = () => ({line, column: 1, lines: 9});
+  a.get("heading-filter").value = "";
+  a.get("heading-filter").handlers.input();
+  assert.equal(list.selectedIndex, 2);
+  // A filter keeps its first match selected for Enter.
+  a.get("heading-filter").value = "detail";
+  a.get("heading-filter").handlers.input();
+  assert.equal(list.selectedIndex, 0);
+  list.value = "8";
+  await list.handlers.click();
+  assert.equal(went, 8);
+  // The modal picker still needs a double click or Enter.
+  await a.menu("document_outline");
+  await a.menu("jump_heading");
+  went = undefined;
+  list.value = "2";
+  await list.handlers.click();
+  assert.equal(went, undefined);
+});
+
 function imagePaste(a, file = {type:"image/png", size:8, encoded:"iVBORw0KGgo="}, text = "", inSource = true) {
   const event = { target: {closest: () => inSource}, clipboardData: {files:[file], getData: () => text}, preventDefault() { this.prevented = true; }, stopPropagation() {} };
   return {event, done: a.get("editor-pane").handlers.paste(event)};
@@ -588,12 +662,24 @@ test("comparison displays two read-only text snapshots and retains the original 
   a.api.comparison_text = () => "shared\r\n<svg>disk</svg>\r\nend";
   await a.menu("compare_disk");
   assert.equal(a.get("comparison").open, true);
-  assert.match(a.get("comparison-summary").textContent, /line 2/);
-  assert.deepEqual(a.get("comparison-editor").selection, [7,15]);
-  assert.equal(a.get("comparison-disk").value, "shared\n<svg>disk</svg>\nend");
+  assert.match(a.get("comparison-summary").textContent, /^1 changed section\. Both versions are read-only/);
+  const [shown] = a.comparisons;
+  assert.equal(shown.parent, a.get("comparison-view"));
+  assert.equal(shown.mine, "shared\nlocal 😀\nend");
+  assert.equal(shown.disk, "shared\n<svg>disk</svg>\nend");
+  assert.equal(a.get("comparison-next").disabled, false);
+  a.get("comparison-next").handlers.click();
+  a.get("comparison-previous").handlers.click();
+  assert.deepEqual(shown.moves, ["next", "previous"]);
   a.get("comparison").close();
   a.get("comparison").handlers.close();
-  assert.equal(a.get("comparison-disk").value, "");
+  assert.equal(shown.destroyed, true);
+  // Reopening builds a fresh view and never leaves the old one behind.
+  await a.menu("compare_disk");
+  assert.equal(a.comparisons.length, 2);
+  a.get("comparison").close();
+  a.get("comparison").handlers.close();
+  assert.equal(a.comparisons[1].destroyed, true);
   assert.equal(a.disk.content, "original");
   await a.menu("save");
   assert.deepEqual(a.calls.find(([cmd]) => cmd === "write_file")[1].expected, diskVersion);
@@ -649,6 +735,8 @@ test("comparison treats CRLF as the same text and a missing disk version leaves 
   a.api.comparison_text = () => "one\r\ntwo";
   await a.menu("compare_disk");
   assert.match(a.get("comparison-summary").textContent, /same text/);
+  assert.equal(a.get("comparison-next").disabled, true);
+  assert.equal(a.get("comparison-previous").disabled, true);
   a.get("comparison").close();
   a.api.comparison_text = () => { throw Error("File missing"); };
   await a.menu("compare_disk");
@@ -714,6 +802,22 @@ test("unsupported volume copy needs consent and acknowledges only its saved revi
   assert.match(a.get("doc-name").title, /edited/);
 });
 
+test("a volume without atomic replacement saves in place and is mentioned once", async () => {
+  const a = await app();
+  a.api.write_file = ({content}) => { a.disk.content = content; return {version: a.disk.version, confirmed: true, basic: true}; };
+  a.dialog.ask = () => { throw Error("an in-place save must not ask for a copy"); };
+  a.edit("first");
+  await a.menu("save");
+  assert.equal(a.disk.content, "first");
+  assert.match(a.get("notice").textContent, /^Saved · this volume does not support protected replacement$/);
+  assert.match(a.get("doc-name").title, /a\.md$/);
+  a.edit("second");
+  await a.menu("save");
+  assert.equal(a.disk.content, "second");
+  assert.equal(a.get("notice").textContent, "Saved");
+  assert.ok(!a.calls.some(([cmd]) => cmd === "save_protected_copy"));
+});
+
 test("rich paste is opt-in and an async conversion cannot overwrite a newer selection or edit", async () => {
   const a = await app(), started = gate(), finish = gate();
   const paste = () => {
@@ -741,6 +845,109 @@ test("rich paste is opt-in and an async conversion cannot overwrite a newer sele
   await a.menu("save");
   assert.equal(a.disk.content,"**one**");
 });
+const noDialogs = a => {
+  a.dialog.ask = () => { throw Error("autosave must not ask"); };
+  a.dialog.message = () => { throw Error("autosave must not open a dialog"); };
+  a.dialog.save = () => { throw Error("autosave must not choose a path"); };
+};
+const writes = a => a.calls.filter(([cmd]) => cmd === "write_file").length;
+
+test("autosave is off by default and, once on, saves after a typing pause and on blur without a dialog", async () => {
+  const a = await app();
+  noDialogs(a);
+  a.edit("not saved unasked");
+  await assert.rejects(a.fire(2000), /no pending timer/);
+  await a.events.blur();
+  assert.equal(writes(a), 0);
+  assert.equal(a.disk.content, "original");
+
+  await a.menu("settings");
+  a.get("autosave").checked = true;
+  await a.get("autosave").handlers.change();
+  a.get("settings").close();
+  assert.equal(a.values.get("kladje.autosave"), "true");
+  // Turning it on saves the pending edit. Later edits wait for a pause.
+  assert.equal(a.disk.content, "not saved unasked");
+  a.edit("after a pause");
+  assert.equal(a.disk.content, "not saved unasked");
+  await a.fire(2000);
+  assert.equal(a.disk.content, "after a pause");
+  assert.doesNotMatch(a.get("doc-name").title, /edited/);
+  a.edit("on switching away");
+  await a.events.blur();
+  assert.equal(a.disk.content, "on switching away");
+  const expected = a.calls.filter(([cmd]) => cmd === "write_file").at(-1)[1].expected;
+  assert.deepEqual(expected, a.disk.version);
+});
+
+test("autosave leaves untitled, recovered and undecided documents to an explicit Save", async () => {
+  const untitled = await app({"kladje.autosave": "true"}, ({api}) => { api.setup = () => ({}); });
+  noDialogs(untitled);
+  untitled.edit("draft without a file");
+  await untitled.fire(2000);
+  assert.equal(writes(untitled), 0);
+
+  const latin = await app({"kladje.autosave": "true"}, ({disk}) => { disk.format = {encoding: "latin1", eol: "lf"}; });
+  noDialogs(latin);
+  latin.edit("needs UTF-8 \u{1f600}");
+  await latin.fire(2000);
+  await latin.events.blur();
+  assert.equal(writes(latin), 0);
+  await latin.fire(50);
+  assert.match(latin.get("doc-name").title, /edited/);
+  latin.edit("plain again");
+  await latin.fire(2000);
+  assert.equal(latin.disk.content, "plain again");
+});
+
+test("a refused autosave pauses quietly until an explicit Save or reload settles the file", async () => {
+  const a = await app({"kladje.autosave": "true"});
+  noDialogs(a);
+  let attempts = 0;
+  a.api.write_file = () => { attempts++; throw "/notes/a.md: The file changed on disk. Your edits are still open. Use Save As to keep a separate copy."; };
+  a.edit("mine");
+  await a.fire(2000);
+  assert.equal(attempts, 1);
+  assert.match(a.get("notice").textContent, /^Autosave paused · the file changed on disk/);
+  assert.match(a.get("doc-name").title, /edited/);
+  assert.ok(a.calls.some(([cmd, args]) => cmd === "recovery_write" && args.draft.content === "mine"));
+  a.edit("mine, still typing");
+  await a.fire(2000);
+  await a.events.blur();
+  assert.equal(attempts, 1);
+  // An explicit Save reports the failure in the usual dialog and keeps autosave paused.
+  let shown = 0;
+  a.dialog.message = () => { shown++; };
+  await a.menu("save");
+  assert.equal(attempts, 2);
+  assert.equal(shown, 1);
+  // A successful explicit Save resumes it.
+  a.api.write_file = ({content}) => { attempts++; a.disk.content = content; return {version: a.disk.version, confirmed: true}; };
+  await a.menu("save");
+  a.edit("resumed");
+  await a.fire(2000);
+  assert.equal(a.disk.content, "resumed");
+});
+
+test("with autosave on, Close saves a titled document instead of asking, and still asks when that fails", async () => {
+  const a = await app({"kladje.autosave": "true"});
+  noDialogs(a);
+  a.edit("saved on the way out");
+  await a.menu("close_window");
+  assert.equal(a.disk.content, "saved on the way out");
+  assert.ok(a.calls.some(([cmd]) => cmd === "destroy"));
+
+  const b = await app({"kladje.autosave": "true"});
+  b.api.write_file = () => { throw "disk full"; };
+  let asked = 0;
+  b.dialog.message = () => { asked++; return "Cancel"; };
+  b.edit("cannot be written");
+  await b.menu("close_window");
+  assert.equal(asked, 1);
+  assert.ok(!b.calls.some(([cmd]) => cmd === "destroy"));
+  assert.equal(b.text(), "cannot be written");
+});
+
 test("Close Window uses the same dirty-document veto as Quit", async () => {
   const a = await app();
   a.edit("retain unsaved source");

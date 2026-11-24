@@ -322,16 +322,22 @@ fn publish(
             }
             Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => tmp = e.file,
             Err(e) if crate::storage::unsupported(&e.error) => {
-                let result = crate::storage::protected_copy(&folder.join(&name), bytes)?;
-                if let Some(warning) = result.warning {
-                    return Err(warning);
+                // No exclusive rename here. Claim the numbered name, then install.
+                let dest = folder.join(&name);
+                match crate::storage::claim(e.file.into_temp_path(), &dest) {
+                    Ok(()) => {
+                        crate::storage::sync_directory(folder).map_err(|e| e.to_string())?;
+                        if std::fs::read(&dest).ok().as_deref() != Some(bytes) {
+                            return Err("Could not confirm the copied image.".into());
+                        }
+                        return Ok(name);
+                    }
+                    Err((e, _)) if e.kind() != io::ErrorKind::AlreadyExists => {
+                        return Err(e.to_string())
+                    }
+                    // The name was taken meanwhile. Stage again for the next one.
+                    Err(_) => tmp = stage(folder, bytes)?,
                 }
-                return result
-                    .version
-                    .target()
-                    .strip_prefix(folder)
-                    .map(|p| p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"))
-                    .map_err(|e| e.to_string());
             }
             Err(e) => return Err(e.to_string()),
         }
@@ -419,30 +425,58 @@ fn paste_in_assets(root: &Path, bytes: &[u8], ext: &str) -> Result<String, Strin
         }
         let error = io::Error::last_os_error();
         if crate::storage::unsupported(&error) {
-            // Publish the complete directory relative to the pinned assets handle.
-            let (prepared, _file, folder) =
-                crate::storage::stage_folder(root, name.as_ref(), bytes)
-                    .map_err(|e| e.to_string())?;
-            let from = CString::new(prepared.path().file_name().unwrap().as_bytes()).unwrap();
-            let to = CString::new(folder.as_bytes()).unwrap();
-            if unsafe { libc::renameat(root_fd, from.as_ptr(), assets.as_raw_fd(), to.as_ptr()) }
-                != 0
-            {
-                return Err(io::Error::last_os_error().to_string());
+            // No hard links here. Claim the numbered name inside the pinned assets
+            // handle, which refuses an existing entry, then move the staged file over it.
+            let claim = unsafe {
+                libc::openat(
+                    assets.as_raw_fd(),
+                    target.as_ptr(),
+                    libc::O_WRONLY
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_NOFOLLOW
+                        | libc::O_CLOEXEC,
+                    0o644,
+                )
+            };
+            if claim < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    continue;
+                }
+                return Err(format!(
+                    "Could not publish the screenshot in assets: {error}"
+                ));
             }
-            let _ = prepared.keep();
+            drop(unsafe { File::from_raw_fd(claim) });
+            if unsafe {
+                libc::renameat(
+                    root_fd,
+                    staged.as_ptr(),
+                    assets.as_raw_fd(),
+                    target.as_ptr(),
+                )
+            } != 0
+            {
+                let error = io::Error::last_os_error();
+                unsafe { libc::unlinkat(assets.as_raw_fd(), target.as_ptr(), 0) };
+                return Err(format!(
+                    "Could not publish the screenshot in assets: {error}"
+                ));
+            }
+            // The staged name now belongs to the published image.
+            tmp.into_temp_path().disable_cleanup(true);
             assets
                 .sync_all()
                 .and_then(|_| dir.sync_all())
                 .map_err(|e| e.to_string())?;
-            let relative = format!("{folder}/{name}");
-            let installed = open_relative(root, &Path::new("assets").join(&relative))
+            let installed = open_relative(root, &Path::new("assets").join(&name))
                 .and_then(|f| read_raster(f, IMAGE_LIMIT))
                 .map_err(|e| e.to_string())?;
             if installed != bytes {
                 return Err("Could not confirm the pasted image.".into());
             }
-            return Ok(relative);
+            return Ok(name);
         }
         if error.kind() != io::ErrorKind::AlreadyExists {
             return Err(format!(

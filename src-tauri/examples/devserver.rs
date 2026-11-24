@@ -276,14 +276,21 @@ fn invoke(
             &text("markdown"),
             source.as_deref(),
             args["remote"].as_bool().unwrap_or(false),
-            serde_json::from_value(args["knownImages"].clone()).unwrap_or_default()
+            serde_json::from_value(args["knownImages"].clone()).unwrap_or_default(),
+            args["lineBreaks"].as_bool().unwrap_or(false)
         )?),
         "clipboard_markdown" if text("html").len() <= 1024 * 1024 => {
             json!(kladje::import::html_to_markdown(&text("html"))?)
         }
         "formatted_selection" if text("markdown").len() <= 256 * 1024 => json!(
             renderer
-                .render_document(&text("markdown"), Target::Export, None, false)?
+                .render_with_breaks(
+                    &text("markdown"),
+                    Target::Export,
+                    None,
+                    false,
+                    args["lineBreaks"].as_bool().unwrap_or(false)
+                )?
                 .html
         ),
         "paste_image" => json!(kladje::images::paste(&path("source")?, &text("encoded"))?),
@@ -325,7 +332,8 @@ fn invoke(
                 &text("markdown"),
                 &text("title"),
                 source.as_deref(),
-                expected.as_ref()
+                expected.as_ref(),
+                args["lineBreaks"].as_bool().unwrap_or(false)
             )?)
         }
         "take_pending_open" => Value::Null,

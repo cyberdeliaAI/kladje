@@ -2,12 +2,14 @@
   "name": "kladje",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "description": "Kladje - a light, fast Markdown editor (Rust + Tauri)",
   "scripts": {
     "test": "node --test",
     "dev": "tauri dev",
     "build": "tauri build",
     "build:brand": "node scripts/build-brand.mjs",
+    "build:notices": "node scripts/build-notices.mjs",
     "build:editor": "esbuild editor-src/editor.entry.js --bundle --minify --format=iife --target=es2020 --outfile=ui/vendor/editor.js",
     "build:diagrams": "node scripts/build-diagrams.mjs",
     "tauri": "tauri"
@@ -20,6 +22,7 @@
     "@codemirror/lang-javascript": "^6",
     "@codemirror/lang-markdown": "^6",
     "@codemirror/language": "^6",
+    "@codemirror/merge": "^6",
     "@codemirror/search": "^6",
     "@codemirror/state": "^6",
     "@codemirror/view": "^6",

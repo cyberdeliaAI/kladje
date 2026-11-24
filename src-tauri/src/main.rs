@@ -91,12 +91,14 @@ fn render(
     source: Option<String>,
     remote: Option<bool>,
     known_images: Option<Vec<String>>,
+    line_breaks: Option<bool>,
 ) -> Result<kladje::markdown::Rendered, String> {
     state.renderer.preview_update(
         &markdown,
         source.as_deref().map(Path::new),
         remote.unwrap_or(false),
         known_images.unwrap_or_default(),
+        line_breaks.unwrap_or(false),
     )
 }
 
@@ -109,13 +111,23 @@ fn clipboard_markdown(html: String) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-fn formatted_selection(state: State<'_, AppState>, markdown: String) -> Result<String, String> {
+fn formatted_selection(
+    state: State<'_, AppState>,
+    markdown: String,
+    line_breaks: Option<bool>,
+) -> Result<String, String> {
     if markdown.len() > 256 * 1024 {
         return Err("Select up to 256 KiB to copy formatted text.".into());
     }
     let html = state
         .renderer
-        .render_document(&markdown, Target::Export, None, false)?
+        .render_with_breaks(
+            &markdown,
+            Target::Export,
+            None,
+            false,
+            line_breaks.unwrap_or(false),
+        )?
         .html;
     #[cfg(target_os = "macos")]
     {
@@ -213,6 +225,7 @@ fn export_html(
     title: String,
     source: Option<String>,
     expected: Option<storage::Version>,
+    line_breaks: Option<bool>,
 ) -> Result<storage::Written, String> {
     export::export_document(
         &state.renderer,
@@ -221,6 +234,7 @@ fn export_html(
         &title,
         source.as_deref().map(Path::new),
         expected.as_ref(),
+        line_breaks.unwrap_or(false),
     )
 }
 
@@ -296,6 +310,9 @@ fn open_document_window(
         Route::Create(label) => {
             let mut config = app.config().app.windows[0].clone();
             config.label.clone_from(&label);
+            if !_group {
+                window_geometry::place_beside(&window, &mut config);
+            }
             let result = tauri::WebviewWindowBuilder::from_config(app, &config)
                 .and_then(|builder| builder.build());
             match result {

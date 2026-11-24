@@ -73,7 +73,7 @@
   let syncEnabled = storedFlag("sync", true);
   let gutter = storedFlag("gutter", false), wrap = storedFlag("wrap", true), measure = storedFlag("measure", true);
   const settings = $("settings");
-  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false};
+  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:false};
   for (const [key, fallback] of Object.entries(writing)) {
     writing[key] = storedFlag(key, fallback);
     const control = $(key);
@@ -84,6 +84,7 @@
       if (key === "focusParagraph" || key === "typewriter") applyWritingModes();
       if (key === "pairing") editor.setPairing(control.checked);
       if (key === "readingTime") updateStats();
+      if (key === "lineBreaks" && viewMode !== "editor") renderNow();
     });
   }
   function applyWritingModes() {
@@ -92,6 +93,17 @@
     els.editorPane.dataset.typewriter = String(writing.typewriter);
   }
   let sidebarOpen = false;
+  // Writing to the original file without being asked is opt-in. A save that
+  // fails or needs a decision pauses it until an explicit Save settles things.
+  const AUTOSAVE_IDLE = 2000;
+  let autosave = storedFlag("autosave", false), autosavePaused = false;
+  $("autosave").checked = autosave;
+  $("autosave").addEventListener("change", () => {
+    autosave = $("autosave").checked;
+    store.set("autosave", autosave);
+    autosavePaused = false;
+    return requestAutosave();
+  });
   let checkUpdate = Promise.resolve();
   function syncChecks() {
     const checked = ["view_" + viewMode, "theme_" + themeSetting];
@@ -173,6 +185,7 @@
         $(key).checked = writing[key];
         if (key === "pairing") editor.setPairing(writing.pairing);
         if (key === "readingTime") updateStats();
+        if (key === "lineBreaks" && viewMode !== "editor") renderNow();
         if (key === "focusParagraph" || key === "typewriter") applyWritingModes();
       } else if (key === "theme") setTheme(store.get(key, "auto"));
       else if (key === "view") setView(store.get(key, "split"));
@@ -184,6 +197,9 @@
         wrap = storedFlag("wrap", true);
         measure = storedFlag("measure", true);
         applyEditorLayout();
+      } else if (key === "autosave") {
+        autosave = storedFlag(key, false);
+        $(key).checked = autosave;
       }
     } finally { applyingPreference = false; }
   }
@@ -241,7 +257,10 @@
   const editor = window.KladjeEditor.create(els.editorPane, {
     placeholderText: "Start writing…",
     onChange: onDocumentChanged,
-    onSelection: () => schedule("stats", updateStats, 60),
+    onSelection: () => {
+      schedule("stats", updateStats, 60);
+      if (sidebarOpen) schedule("outlineFollow", followOutline, 120);
+    },
   });
 
   const session = new DocumentSession(() => editor.getText());
@@ -262,6 +281,7 @@
     schedule("chrome", refreshChrome, 50);
     schedule("recovery", saveRecovery, 900);
     if (!timers.recoveryDeadline) timers.recoveryDeadline = setTimeout(saveRecovery, 5000);
+    if (autosave) schedule("autosave", requestAutosave, AUTOSAVE_IDLE);
   }
 
   // ---------------------------------------------------------------- chrome
@@ -434,14 +454,14 @@
             return false;
           }
           const snapshot = session.snapshot();
-          const source = doc.path, remote = doc.remote;
+          const source = doc.path, remote = doc.remote, lineBreaks = writing.lineBreaks;
           let html, failure;
           try {
-            html = await invoke("render", { markdown: snapshot.content, source, remote, knownImages: [...previewAssets.keys()] });
+            html = await invoke("render", { markdown: snapshot.content, source, remote, knownImages: [...previewAssets.keys()], lineBreaks });
           } catch (error) {
             failure = error;
           }
-          if (!session.isCurrent(snapshot) || source !== doc.path || remote !== doc.remote) {
+          if (!session.isCurrent(snapshot) || source !== doc.path || remote !== doc.remote || lineBreaks !== writing.lineBreaks) {
             renderAgain = true;
             continue;
           }
@@ -668,20 +688,38 @@
     const needle = headingFilter.value.normalize().toLocaleLowerCase().trim();
     const matches = headingRows.filter(h => h.text.normalize().toLocaleLowerCase().includes(needle));
     const start = headingPage * 100;
+    // Indent by level from the shallowest heading. A line number is only
+    // needed to tell headings with the same text apart.
+    const top = headingRows.reduce((least, h) => Math.min(least, h.level), 6);
+    const repeated = new Map();
+    for (const h of headingRows) repeated.set(h.text, (repeated.get(h.text) || 0) + 1);
     const options = matches.slice(start, start + 100).map(h => {
       const option = document.createElement("option");
       option.value = h.line;
-      option.textContent = `H${h.level}  ${h.text || "(untitled heading)"} · line ${h.line}`;
+      option.textContent = "\u00a0\u00a0\u00a0".repeat(h.level - top) + (h.text || "(untitled heading)") +
+        (repeated.get(h.text) > 1 ? ` · line ${h.line}` : "");
+      option.title = `Heading level ${h.level} · line ${h.line}`;
       return option;
     });
     headingList.replaceChildren(...options);
     headingList.selectedIndex = options.length ? 0 : -1;
+    if (!needle) followOutline();
     $("heading-go").disabled = !options.length;
     $("heading-pages").hidden = matches.length <= 100;
     $("heading-prev").disabled = headingPage === 0;
     $("heading-next").disabled = start + 100 >= matches.length;
     $("heading-count").textContent = matches.length > 100 ? `Headings ${start + 1}–${start + options.length} of ${matches.length}` :
       matches.length ? `${matches.length} heading${matches.length === 1 ? "" : "s"}` : "No matching headings";
+  }
+  // The side panel marks the section that holds the cursor, unless its list
+  // is being browsed or shows filtered or outdated headings.
+  function followOutline() {
+    if (!sidebarOpen || headingFilter.value.trim() || !outlineSnapshot || !session.isCurrent(outlineSnapshot)) return;
+    if (document.activeElement === headingList) return;
+    const line = editor.cursor().line;
+    let current = -1;
+    Array.from(headingList.children).forEach((option, index) => { if (Number(option.value) <= line) current = index; });
+    if (headingList.selectedIndex !== current) headingList.selectedIndex = current;
   }
   async function jumpToHeading() {
     if (sidebarOpen) { headingFilter.focus(); headingFilter.select(); return; }
@@ -792,6 +830,8 @@
     }
   });
   headingList.addEventListener("dblclick", () => chooseHeading().catch(showError));
+  // In the side panel one click on a heading goes there.
+  headingList.addEventListener("click", () => { if (sidebarOpen) chooseHeading().catch(showError); });
   $("heading-form").addEventListener("submit", event => { event.preventDefault(); chooseHeading().catch(showError); });
   $("heading-cancel").addEventListener("click", () => {
     const pinned = sidebarOpen;
@@ -937,6 +977,7 @@
     if (comparison.open) comparison.close();
     clearRecovery();
     previewAssets.clear();
+    autosavePaused = false;
     doc.id = id;
     doc.remote = false;
     doc.recovered = recovered;
@@ -991,6 +1032,8 @@
   /** Ask what to do with unsaved changes. Resolves true when it is fine to continue. */
   async function confirmDiscard() {
     if (!session.isDirty()) return true;
+    // With autosave on, leaving a saved document needs no question.
+    if (autosaveReady() && await saveUnattended()) return true;
     const SAVE = "Save";
     const DISCARD = "Don't Save";
     const CANCEL = "Cancel";
@@ -1012,11 +1055,37 @@
     return session.run(() => !closing && action());
   }
 
+  // Only a document that already has a file, an accepted disk baseline and no
+  // open question is saved unasked. Everything else waits for an explicit Save.
+  function autosaveReady() {
+    if (!autosave || autosavePaused || initializing || busy || comparison.open) return false;
+    if (!doc.path || !doc.version || doc.recovered || doc.ignoredVersion || !session.isDirty()) return false;
+    const { eol, encoding, separators } = doc.format;
+    const content = editor.getText();
+    if (eol === "mixed" && content.split("\n").length - 1 !== separators.length) return false;
+    return !(encoding === "latin1" && /[^\u0000-\u00ff]/u.test(content));
+  }
+  function requestAutosave() {
+    clearTimeout(timers.autosave);
+    if (closing || !autosaveReady()) return;
+    const identity = session.document;
+    return runFileAction(() => identity === session.document && autosaveReady() && saveUnattended()).catch(report);
+  }
+  window.addEventListener("blur", requestAutosave);
+  // An autosave never asks a question or opens a dialog. File actions run one
+  // at a time, so the flag covers exactly the save it wraps.
+  let unattended = false;
+  async function saveUnattended() {
+    unattended = true;
+    try { return await save(); } finally { unattended = false; }
+  }
+
   function queuedSave(saveAs) {
     const identity = session.document;
     return runFileAction(() => identity === session.document && save(saveAs));
   }
 
+  const basicVolumes = new Set();
   async function save(saveAs = false) {
     let path = doc.path;
     if (!path || saveAs) {
@@ -1062,7 +1131,7 @@
       try {
         result = await invoke("write_file", { path, content, format, expected, bind:true });
       } catch (error) {
-        if (String(error) !== "KLADJE_COPY_REQUIRED") throw error;
+        if (String(error) !== "KLADJE_COPY_REQUIRED" || unattended) throw error;
         await saveRecovery();
         if (!await T.dialog.ask("This volume cannot safely publish this file at the chosen name. Save a complete copy inside a new folder beside it and continue editing the copy? Relative links will resolve from the new folder.", {
           title: "Save a Protected Copy", okLabel: "Save Copy", cancelLabel: "Cancel",
@@ -1081,12 +1150,20 @@
       session.requireSave();
       refreshChrome();
       saveRecovery();
-      notify("Save failed · edits remain open", 30000);
       const message = String(error);
+      if (unattended) {
+        autosavePaused = true;
+        const reason = /changed on disk/i.test(message) ? "the file changed on disk" :
+          message === "KLADJE_COPY_REQUIRED" ? "this volume needs an explicit Save" : "the file could not be written";
+        notify(`Autosave paused · ${reason} · use Save or Save As`, 60000);
+        return false;
+      }
+      notify("Save failed · edits remain open", 30000);
       await showError(/save as/i.test(message) ? message : message + "\nUse Save As to save a separate copy.");
       return false;
     }
     session.endWrite();
+    if (result.confirmed) autosavePaused = false;
     const confirmed = result.confirmed;
     const moved = path !== doc.path;
     doc.version = result.version;
@@ -1100,7 +1177,11 @@
     const clean = confirmed && session.acknowledge(snapshot);
     if (clean) clearRecovery();
     else saveRecovery();
-    if (confirmed) notify(clean ? (copied ? `Saved copy to ${path}` : "Saved") : "Earlier edits saved · newer edits are unsaved");
+    // Mention a volume without atomic replacement once per folder, then save quietly.
+    const plain = result.basic && !basicVolumes.has(dirname(path));
+    if (result.basic) basicVolumes.add(dirname(path));
+    const saved = copied ? `Saved copy to ${path}` : plain ? "Saved · this volume does not support protected replacement" : "Saved";
+    if (confirmed) notify(clean ? saved : "Earlier edits saved · newer edits are unsaved", plain ? 12000 : undefined);
     else notify("Save unconfirmed · recovery retained · retry Save or use Save As", 60000);
     refreshChrome();
     if (moved) {
@@ -1121,10 +1202,14 @@
   }
 
   const comparison = $("comparison");
-  const comparisonFields = [$("comparison-editor"), $("comparison-disk")];
-  comparison.addEventListener("close", () => {
-    if (!comparison.open) for (const field of comparisonFields) field.value = "";
-  });
+  let comparisonView = null;
+  function discardComparison() {
+    comparisonView?.destroy();
+    comparisonView = null;
+  }
+  comparison.addEventListener("close", () => { if (!comparison.open) discardComparison(); });
+  $("comparison-previous").addEventListener("click", () => comparisonView?.previous());
+  $("comparison-next").addEventListener("click", () => comparisonView?.next());
   async function compareWithDisk() {
     if (!doc.path) return notify("Save the document before comparing it with disk.");
     if (editor.textLength() > 512 * 1024) return notify("Comparison supports up to 524,288 UTF-16 code units in the editor and 512 KiB on disk.", 12000);
@@ -1132,26 +1217,14 @@
     const disk = (await invoke("comparison_text", {path: doc.path})).replace(/\r\n?/g, "\n");
     if (!session.isCurrent(before)) return notify("The document changed. Open Compare with Disk again.");
     const source = before.content;
-    const equal = disk === source;
-    let line = 1, start = 0;
-    if (!equal) {
-      const length = Math.min(disk.length, source.length);
-      for (let i = 0; i < length && source.charCodeAt(i) === disk.charCodeAt(i); i++) {
-        if (source[i] === "\n") { line++; start = i + 1; }
-      }
-    }
-    $("comparison-summary").textContent = equal ? "Both versions have the same text. Line endings and encoding are ignored." :
-      `First text difference at line ${line}. Both versions are read-only snapshots.`;
-    comparisonFields[0].value = source;
-    comparisonFields[1].value = disk;
+    const sections = window.KladjeEditor.changedSections(source, disk);
+    $("comparison-summary").textContent = sections === 0 ? "Both versions have the same text. Line endings and encoding are ignored." :
+      `${sections} changed section${sections === 1 ? "" : "s"}. Both versions are read-only snapshots.`;
+    for (const id of ["comparison-previous", "comparison-next"]) $(id).disabled = sections === 0;
+    // The view measures its lines, so it is built after the dialog is on screen.
     comparison.showModal();
-    if (!equal) {
-      for (const field of comparisonFields) {
-        const end = field.value.indexOf("\n", start);
-        field.setSelectionRange(start, end === -1 ? field.value.length : end);
-        field.scrollTop = Math.max(0, line - 3) * parseFloat(getComputedStyle(field).lineHeight);
-      }
-    }
+    discardComparison();
+    comparisonView = window.KladjeEditor.compare($("comparison-view"), source, disk);
   }
 
   async function chooseAndOpen() {
@@ -1224,7 +1297,7 @@
       if (expected && !await T.dialog.ask(`Replace “${basename(path)}” with this HTML export?`, {
         title: "Export HTML", okLabel: "Replace File", cancelLabel: "Cancel",
       })) return;
-      const result = await invoke("export_html", { path, markdown: editor.getText(), title: stem(doc.name), source: doc.path, expected });
+      const result = await invoke("export_html", { path, markdown: editor.getText(), title: stem(doc.name), source: doc.path, expected, lineBreaks: writing.lineBreaks });
       if (result.warning) await showError(result.warning);
       if (result.confirmed) notify(`Exported ${basename(path)}`);
     } catch (error) {
@@ -1387,6 +1460,7 @@
     if (sameVersion(version, doc.version) || (session.isDirty() && sameVersion(version, doc.ignoredVersion))) return;
     if (!version) {
       session.requireSave();
+      autosavePaused = true;
       saveRecovery();
       refreshChrome();
       notify("File was moved or deleted · use Save As to keep a copy", 30000);
@@ -1413,6 +1487,7 @@
     editor.replaceText(file.content.replace(/\r\n?/g, "\n"));
     doc.version = file.version;
     doc.ignoredVersion = null;
+    autosavePaused = false;
     doc.format = file.format;
     session.acknowledge(session.snapshot());
     clearRecovery();
@@ -1520,7 +1595,7 @@
     copy_formatted: async () => {
       const markdown = editor.selectedText();
       if (!markdown) return notify("Select Markdown to copy as formatted text.");
-      const html = await invoke("formatted_selection", {markdown});
+      const html = await invoke("formatted_selection", {markdown, lineBreaks: writing.lineBreaks});
       if (html) {
         const copy = event => {
           event.clipboardData.setData("text/plain", markdown);

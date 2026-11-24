@@ -42,4 +42,4 @@ shasum -a 256 "$DMG"
 
 ## Scope of the evidence
 
-The acceptance log records native and measured results. Physical unplug or power loss, network filesystems, extended writing sessions and first launch on other macOS versions remain unqualified. A mounted exFAT image verifies the protected-copy path; it cannot reproduce the loss of a physical device. Populated telephone handoff and the complete recipient round-trip through a user's mail client also remain open. [Acceptance evidence](planning/P1_ACCEPTANCE.md#macos-preview-qualification)
+The acceptance log records native and measured results. Physical unplug or power loss, network filesystems, extended writing sessions and first launch on other macOS versions remain unqualified. A mounted exFAT image verifies in-place saving without atomic exchange; it cannot reproduce the loss of a physical device. Populated telephone handoff and the complete recipient round-trip through a user's mail client also remain open. [Acceptance evidence](planning/P1_ACCEPTANCE.md#macos-preview-qualification)
