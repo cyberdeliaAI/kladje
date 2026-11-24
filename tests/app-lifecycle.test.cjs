@@ -719,6 +719,27 @@ test("rename, move and duplicate keep the window's edits, update recent document
   assert.match(a.get("doc-name").title, /edited/, "the original window keeps its unsaved state");
 });
 
+test("Duplicate preserves mixed endings and requests conversion if the number of lines changes", async () => {
+  const a = await app({}, ({disk}) => {
+    disk.content = "a\r\nb\nc";
+    disk.format = {encoding: "utf8bom", eol: "mixed", separators: "wn"};
+  });
+  a.api.file_version = () => null;
+  const copies = [];
+  a.api.write_file = args => { copies.push(args); return {confirmed:false, warning:"Copy needs checking"}; };
+  await a.menu("duplicate");
+  assert.deepEqual({...copies[0].format}, {encoding:"utf8bom", eol:"mixed", separators:"wn"});
+  assert.ok(!a.calls.some(([name]) => name === "open_document_window"));
+  a.edit("one\ntwo");
+  await a.menu("duplicate");
+  assert.equal(copies.length, 1);
+  a.dialog.ask = (_, options) => options.title === "Line-ending conversion";
+  await a.menu("duplicate");
+  assert.deepEqual({...copies[1].format}, {encoding:"utf8bom", eol:"lf"});
+  await a.fire(50);
+  assert.match(a.get("doc-name").title, /edited/);
+});
+
 test("table, callout, footnote and date commands reach the editor and explain where they do not apply", async () => {
   const a = await app();
   const edits = [], inserted = [];

@@ -1594,6 +1594,24 @@
     return runFileAction(() => identity === session.document && save(saveAs));
   }
 
+  async function formatForWrite(content) {
+    const format = { ...doc.format };
+    if (format.eol === "mixed" && content.split("\n").length - 1 !== format.separators.length) {
+      if (!await T.dialog.ask("The number of lines changed in this mixed-ending document. Save using LF throughout?", {
+        title: "Line-ending conversion", okLabel: "Use LF", cancelLabel: "Cancel",
+      })) return null;
+      format.eol = "lf";
+      delete format.separators;
+    }
+    if (format.encoding === "latin1" && /[^\u0000-\u00ff]/u.test(content)) {
+      if (!await T.dialog.ask("Some characters cannot be stored in Latin-1. Save this document as UTF-8?", {
+        title: "Encoding conversion", okLabel: "Use UTF-8", cancelLabel: "Cancel",
+      })) return null;
+      format.encoding = "utf8";
+    }
+    return format;
+  }
+
   const basicVolumes = new Set();
   async function save(saveAs = false) {
     let path = doc.path;
@@ -1619,20 +1637,8 @@
     }
     const snapshot = session.snapshot();
     const content = snapshot.content;
-    const format = { ...doc.format };
-    if (format.eol === "mixed" && content.split("\n").length - 1 !== format.separators.length) {
-      if (!await T.dialog.ask("The number of lines changed in this mixed-ending document. Save using LF throughout?", {
-        title: "Line-ending conversion", okLabel: "Use LF", cancelLabel: "Cancel",
-      })) return false;
-      format.eol = "lf";
-      delete format.separators;
-    }
-    if (format.encoding === "latin1" && /[^\u0000-\u00ff]/u.test(content)) {
-      if (!await T.dialog.ask("Some characters cannot be stored in Latin-1. Save this document as UTF-8?", {
-        title: "Encoding conversion", okLabel: "Use UTF-8", cancelLabel: "Cancel",
-      })) return false;
-      format.encoding = "utf8";
-    }
+    const format = await formatForWrite(content);
+    if (!format) return false;
     let result, copied = false;
     try {
       session.beginWrite(snapshot);
@@ -1804,15 +1810,18 @@
   async function duplicateDocument() {
     if (!doc.path) return notify("Save this document first to duplicate it.");
     const content = editor.getText();
-    const format = {...doc.format};
-    if (format.eol === "mixed") { format.eol = "lf"; delete format.separators; }
-    if (format.encoding === "latin1" && /[^\u0000-ÿ]/u.test(content)) format.encoding = "utf8";
+    const format = await formatForWrite(content);
+    if (!format) return false;
     const ext = extension(doc.name) || "md", base = stem(doc.name);
     for (let n = 1; n <= 99; n++) {
       const path = resolvePath(dirname(doc.path), `${base} copy${n > 1 ? " " + n : ""}.${ext}`);
       if (await invoke("file_version", {path})) continue;
       // The copy holds the text as it is in this window, including unsaved edits.
-      await invoke("write_file", {path, content, format, expected: null});
+      const copy = await invoke("write_file", {path, content, format, expected: null});
+      if (!copy.confirmed) {
+        await showError(copy.warning || "The copy could not be confirmed. Check the destination before continuing.");
+        return false;
+      }
       return openWindow({kind: "open", path});
     }
     notify("There are already 99 copies of this document here.");

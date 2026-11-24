@@ -217,6 +217,7 @@ fn move_document(
     if !docs.owns(window.label(), from)? {
         return Err("Save this document before moving it.".into());
     }
+    docs.available(window.label(), to)?;
     let moved = storage::move_noclobber(from, to, expected.as_ref())?;
     docs.bind(window.label(), to)?;
     Ok(moved)

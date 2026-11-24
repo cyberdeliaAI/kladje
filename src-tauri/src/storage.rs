@@ -506,27 +506,48 @@ fn exchange(mut staged: tempfile::TempPath, target: &Path) -> Swapped {
     Ok(backup)
 }
 
-/// Whether `to` only changes the capitalisation of `from`'s name, on a volume
-/// that ignores case, so both names already reach the same file.
-fn recased(from: &Path, to: &Path) -> bool {
-    let (Some(a), Some(b)) = (from.file_name(), to.file_name()) else {
-        return false;
+/// Move on one volume only if the destination is available at publication.
+#[cfg(unix)]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    #[cfg(target_os = "macos")]
+    let rc = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(target_os = "linux")]
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
     };
-    if a == b
-        || from.parent() != to.parent()
-        || a.to_string_lossy().to_lowercase() != b.to_string_lossy().to_lowercase()
-    {
-        return false;
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        matches!((fs::symlink_metadata(from), fs::symlink_metadata(to)),
-            (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino())
-    }
-    #[cfg(not(unix))]
-    {
-        matches!((fs::canonicalize(from), fs::canonicalize(to)), (Ok(a), Ok(b)) if a == b)
+}
+
+#[cfg(windows)]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let wide = |p: &Path| {
+        p.as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
+    let (from, to) = (wide(from), wide(to));
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
@@ -557,56 +578,37 @@ pub fn move_noclobber(
     if to.file_name().is_none() || to.parent().is_none_or(|p| !p.is_dir()) {
         return Err("Choose a name in an existing folder.".into());
     }
-    if version(from)?.as_ref() != expected {
+    let expected = expected.ok_or("Reload the document before moving it.")?;
+    if version(from)?.as_ref() != Some(expected) {
         return Err("The file changed on disk. Save it or reload it before moving.".into());
     }
-    let exists = || -> Result<(), String> {
-        match fs::symlink_metadata(to) {
-            Ok(_) => Err(format!(
-                "“{}” already exists. Choose another name.",
-                shown(to)
-            )),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.to_string()),
+    let new_target = to
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .join(to.file_name().unwrap());
+    rename_exclusive(from, to).map_err(|e| {
+        if e.kind() == io::ErrorKind::AlreadyExists {
+            format!("“{}” already exists. Choose another name.", shown(to))
+        } else if e.kind() == io::ErrorKind::CrossesDevices {
+            "Move To works within one volume. Use Save As to put a copy on another volume.".into()
+        } else if unsupported(&e) {
+            "This volume cannot safely rename or move this document. The original remains in place."
+                .into()
+        } else {
+            format!("Could not move “{}”: {e}", shown(from))
         }
-    };
-    if recased(from, to) {
-        // The name is already taken by this same file. A rename changes its case.
-        fs::rename(from, to).map_err(|e| format!("{}: {e}", to.display()))?;
-    } else {
-        exists()?;
-        let elsewhere = || {
-            "Move To works within one volume. Use Save As to put a copy on another volume."
-                .to_owned()
-        };
-        // A new hard link refuses an existing name. Removing the old name completes the move.
-        match fs::hard_link(from, to) {
-            Ok(()) => {
-                if let Err(e) = fs::remove_file(from) {
-                    let _ = fs::remove_file(to);
-                    return Err(format!("{}: {e}", from.display()));
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => exists()?,
-            Err(e) if e.kind() == io::ErrorKind::CrossesDevices => return Err(elsewhere()),
-            // Some volumes have no hard links. Check the name again, then rename.
-            Err(e) if unsupported(&e) || e.kind() == io::ErrorKind::PermissionDenied => {
-                exists()?;
-                fs::rename(from, to).map_err(|e| {
-                    if e.kind() == io::ErrorKind::CrossesDevices {
-                        elsewhere()
-                    } else {
-                        format!("{}: {e}", to.display())
-                    }
-                })?;
-            }
-            Err(e) => return Err(format!("{}: {e}", to.display())),
-        }
-    }
+    })?;
     for dir in [to.parent(), from.parent()].into_iter().flatten() {
         let _ = sync_directory(dir);
     }
-    version(to)?.ok_or_else(|| "The moved document could not be found.".into())
+    // Keep the revision the user saw. An edit racing the rename must still
+    // conflict on the next save, even if the new name now contains other bytes.
+    Ok(Version {
+        target: new_target,
+        ..expected.clone()
+    })
 }
 
 pub fn sync_directory(path: &Path) -> io::Result<()> {
@@ -753,6 +755,22 @@ mod moving {
         assert!(error.contains("already exists"), "{error}");
         assert_eq!(fs::read(&other).unwrap(), b"other");
         assert_eq!(fs::read(&to).unwrap(), b"text");
+    }
+
+    #[test]
+    fn a_destination_created_after_lookup_is_preserved_by_the_rename_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("draft.md");
+        let to = dir.path().join("renamed.md");
+        fs::write(&from, b"editor").unwrap();
+        assert!(!to.exists());
+        fs::write(&to, b"external").unwrap();
+        assert_eq!(
+            rename_exclusive(&from, &to).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&to).unwrap(), b"external");
+        assert_eq!(fs::read(&from).unwrap(), b"editor");
     }
 
     #[test]

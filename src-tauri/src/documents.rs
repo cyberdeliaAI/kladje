@@ -166,7 +166,7 @@ impl Documents {
             .map(|q| q.epoch)
     }
 
-    fn available(&self, label: &str, path: &Path) -> Result<(), String> {
+    pub(crate) fn available(&self, label: &str, path: &Path) -> Result<(), String> {
         if self.owner(path, Some(label))?.is_some() {
             return Err("This file is open in another Kladje window. Save there or choose another filename.".into());
         }
