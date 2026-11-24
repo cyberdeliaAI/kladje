@@ -50,7 +50,7 @@ cargo test --locked --all-targets --manifest-path src-tauri/Cargo.toml
 npm test
 ```
 
-On a logged-in Mac with Accessibility automation enabled, `node scripts/macos-qa/run.mjs --windows` builds an isolated app and tests Finder, native tabs, multi-window Quit and recovery after forced termination.
+On a logged-in Mac with Accessibility automation enabled, `node scripts/macos-qa/run.mjs --windows` builds an isolated app and tests Finder, native tabs, multi-window Quit and recovery after forced termination. `node scripts/macos-qa/run.mjs --large` measures preview updates and typing in that build on mixed Markdown fixtures from 256 KiB to 16 MiB. `cargo run --release --locked --example render_bench --manifest-path src-tauri/Cargo.toml -- <files>` times the Rust renderer alone.
 
 The Rust suite exercises rendering, import, export, file formats, atomic saves and recovery. The JavaScript tests control the timing of disk reads and writes while driving document, menu and window events.
 
@@ -61,7 +61,8 @@ The Rust suite exercises rendering, import, export, file formats, atomic saves a
 - Recovery is periodic. Edits made since the last completed snapshot can be lost on a crash. A mounted exFAT disk image has been tested. On an incompatible filesystem Kladje can offer a protected copy at a new path. Network shares, physical removal and power loss remain unqualified.
 - Standalone HTML embeds permitted local raster images and reports omissions. Word import preserves supported text, headings, lists and tables. Embedded media, page layout and review annotations are omitted.
 - Native PDF printing on macOS requires macOS 11 or later.
-- Live preview and printing pause above 262,144 UTF-16 code units. Editing, explicit saving and recovery remain available. Heading search supports source files up to 4 MiB. Live word totals use the same size limit as preview.
+- The preview follows your typing while one update keeps the window busy for at most 50 ms. On an Apple M4 that is about 2 MiB of mixed Markdown. Larger documents update the preview when you pause typing, and very large ones (above about 10 MiB on that hardware) only when you choose **View → Refresh Preview**. Until Kladje has timed a large update on a machine it assumes twice the M4 cost, which halves both sizes. The first preview of a very large document can hold the window for several seconds. Print and PDF render the whole document on demand at any size that opens. Editing, saving and recovery do not depend on the preview.
+- Word totals for a document above 262,144 UTF-16 code units appear after a background count. A selection above that size is not counted. Heading search supports source files up to 4 MiB, fenced code above 256 KiB is not highlighted, Copy as Formatted Text accepts up to 4 MiB and Compare with Disk up to 512 KiB.
 
 ## Planning documents
 

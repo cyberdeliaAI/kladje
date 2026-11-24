@@ -19,6 +19,7 @@
     editorPane: $("editor-pane"),
     previewPane: $("preview-pane"),
     preview: $("preview"),
+    previewStatus: $("preview-status"),
     divider: $("divider"),
     docName: $("doc-name"),
     notice: $("notice"),
@@ -242,9 +243,10 @@
     placeholderText: "Start writing…",
     onChange: onDocumentChanged,
     onSelection: () => schedule("stats", updateStats, 60),
+    onStatistics: () => schedule("stats", updateStats, 60),
   });
 
-  const session = new DocumentSession(() => editor.getText());
+  const session = new DocumentSession(() => editor.getText(), () => editor.textLength());
   const timers = {};
   function schedule(name, fn, delay) {
     clearTimeout(timers[name]);
@@ -342,6 +344,7 @@
     anchors = null;
     editor.remeasure();
     if (viewMode !== "editor") renderNow().then(() => activePane === "editor" && syncFromEditor());
+    else showPreviewStatus();
     if (!applyingPreference) focusDocument();
   }
 
@@ -404,18 +407,85 @@
   const nodeKeys = new WeakMap();
   let renderPromise = null;
   let renderAgain = false;
+  let renderForced = false;
+  let refreshWanted = false; // typing overtook a requested render: repeat it at the next pause
   let renderCost = 0;
   let previewAssets = new Map();
+  let shown = null; // what the preview displays: { snapshot, source, remote }
+
+  // How live the preview stays depends on how long one update keeps the
+  // webview's main thread busy, because typing waits behind that work. Sending
+  // the text and patching the result took about 22 ms per MiB of mixed Markdown
+  // in a release build on an Apple M4 (`node scripts/macos-qa/run.mjs --large`).
+  // A window assumes twice that until it has timed a large update of its own.
+  const MIB = 1024 * 1024;
+  const LIVE_STALL_MS = 50; // the usual long-task threshold: not felt while typing
+  const PAUSE_STALL_MS = 250; // a hitch this long is acceptable once typing has stopped
+  const PAUSE_MS = 1500;
+  const MIN_RENDER_DELAY = 70;
+  const STALL_SAMPLE = 128 * 1024; // smaller updates are mostly fixed overhead
+  const DEFAULT_STALL_RATE = 45 / MIB; // ms per UTF-16 code unit
+  const clampRate = rate => Math.min(DEFAULT_STALL_RATE * 8, Math.max(DEFAULT_STALL_RATE / 8, rate));
+  // Each document has its own window, so the timing is remembered for the next one.
+  const knownRate = store.get("previewRate", null);
+  // A remembered timing only ever makes a new window less cautious than the default.
+  let stallRate = typeof knownRate === "number" && knownRate > 0 ? Math.min(DEFAULT_STALL_RATE, clampRate(knownRate)) : DEFAULT_STALL_RATE;
+  let stallSamples = [];
+
+  /** "live" while typing, "pause" once typing stops, or "request" from Refresh Preview only. */
+  function previewTier() {
+    const stall = editor.textLength() * stallRate;
+    return stall <= LIVE_STALL_MS ? "live" : stall <= PAUSE_STALL_MS ? "pause" : "request";
+  }
+
+  const previewCurrent = () =>
+    !!shown && session.isCurrent(shown.snapshot) && shown.source === doc.path && shown.remote === doc.remote;
+
+  let statusShown = null;
+  function showPreviewStatus(rendering = false) {
+    const tier = previewTier();
+    let text = "";
+    if (viewMode === "editor") text = "";
+    else if (rendering) text = "Rendering preview…";
+    else if (previewCurrent() || tier === "live") text = "";
+    else if (tier === "pause") text = "Preview updates when you pause typing";
+    else text = shown ? "Preview is out of date" : "Preview is not rendered automatically for a document this large";
+    if (text === statusShown) return;
+    statusShown = text;
+    els.previewStatus.hidden = !text;
+    $("preview-status-text").textContent = text;
+    $("preview-refresh").hidden = rendering;
+  }
+
+  let announcedTier = "live";
+  function announceTier() {
+    const tier = previewTier();
+    if (tier === announcedTier) return;
+    announcedTier = tier;
+    if (viewMode === "editor") return;
+    if (tier === "pause") notify("Large document · the preview updates when you pause typing", 9000);
+    if (tier === "request") notify("Large document · use View → Refresh Preview to update the preview", 12000);
+  }
 
   function scheduleRender() {
     if (viewMode === "editor") return; // rendered on demand when the preview is shown
-    // Stay responsive on big documents: wait longer when rendering is slow.
-    schedule("render", renderNow, Math.min(700, Math.max(70, renderCost * 1.5)));
+    const tier = previewTier();
+    announceTier();
+    clearTimeout(timers.render);
+    // Stay responsive on big documents: wait longer when rendering is slow, and
+    // above the live budget wait until typing has stopped or the user asks.
+    if (tier === "live") schedule("render", renderNow, Math.min(700, Math.max(MIN_RENDER_DELAY, renderCost * 1.5)));
+    else if (tier === "pause" || refreshWanted) schedule("render", () => renderNow({ force: refreshWanted }), PAUSE_MS);
+    if (!renderPromise) showPreviewStatus();
   }
 
-  /** Render the current text; resolves once the preview is up to date. */
-  function renderNow() {
+  /**
+   * Render the current text; resolves true once the preview is up to date.
+   * `force` renders even when the document is too large to follow automatically.
+   */
+  function renderNow({ force = false } = {}) {
     clearTimeout(timers.render);
+    if (force) renderForced = true;
     if (renderPromise) {
       renderAgain = true;
       return renderPromise;
@@ -425,45 +495,78 @@
       try {
         do {
           renderAgain = false;
-          const started = performance.now();
-          if (editor.textLength() > 256 * 1024) {
-            previewAssets.clear();
-            anchors = null;
-            els.preview.textContent = "Live preview is paused for this large document. You can keep editing and saving.";
-            return false;
+          const forced = renderForced;
+          renderForced = false;
+          announceTier();
+          if (!forced && previewTier() === "request") {
+            ready = previewCurrent();
+            continue;
           }
+          const started = performance.now();
           const snapshot = session.snapshot();
           const source = doc.path, remote = doc.remote;
+          if (forced || previewTier() !== "live") showPreviewStatus(true);
           let html, failure;
+          const request = invoke("render", { markdown: snapshot.content, source, remote, knownImages: [...previewAssets.keys()] });
+          const sent = performance.now() - started;
           try {
-            html = await invoke("render", { markdown: snapshot.content, source, remote, knownImages: [...previewAssets.keys()] });
+            html = await request;
           } catch (error) {
             failure = error;
           }
+          const arrived = performance.now();
           if (!session.isCurrent(snapshot) || source !== doc.path || remote !== doc.remote) {
-            renderAgain = true;
+            // Never show an obsolete result. A render quick enough to keep pace
+            // with typing runs again at once. A slower one waits for the delay
+            // the overtaking edit started, and a requested one for the next pause:
+            // repeating a large render back to back would make typing stutter.
+            const tier = previewTier();
+            if (tier === "live" && (arrived - started) * 1.5 <= MIN_RENDER_DELAY) renderAgain = true;
+            else if (forced && tier === "request") {
+              refreshWanted = true;
+              if (!renderAgain) schedule("render", () => renderNow({ force: true }), PAUSE_MS);
+            }
+            ready = false;
             continue;
           }
           if (html === undefined) throw failure || new Error("Missing preview");
           patchPreview(typeof html === "string" ? html : html.html, html.assets || {});
           bindPreviewTasks(html.tasks || {}, snapshot);
+          shown = { snapshot: { document: snapshot.document, revision: snapshot.revision }, source, remote };
+          refreshWanted = false;
           ready = true;
-          renderCost = performance.now() - started;
+          const finished = performance.now();
+          renderCost = finished - started;
+          if (snapshot.content.length >= STALL_SAMPLE) {
+            // The lowest of the last three timings: a collection pause is not the renderer's cost.
+            stallSamples = [...stallSamples.slice(-2), (sent + finished - arrived) / snapshot.content.length];
+            const rate = clampRate(Math.min(...stallSamples));
+            if (Math.abs(rate - stallRate) > stallRate / 10) store.set("previewRate", rate);
+            stallRate = rate;
+          }
         } while (renderAgain);
       } catch (error) {
         report(error);
         previewAssets.clear();
+        shown = null;
         els.preview.textContent = "Preview unavailable. Your source is still open.";
         ready = false;
       } finally {
         renderPromise = null;
       }
+      showPreviewStatus();
       anchors = null;
       if (activePane === "editor") syncFromEditor();
       return ready;
     });
     return renderPromise;
   }
+
+  function refreshPreview() {
+    if (viewMode === "editor") return notify("Show the preview to refresh it.");
+    return renderNow({ force: true });
+  }
+  $("preview-refresh").addEventListener("click", () => { refreshPreview(); });
 
   const keyOf = (node) =>
     node.nodeType === 1 ? node.outerHTML.replace(SOURCEPOS, "") : "#" + node.nodeValue;
@@ -496,27 +599,36 @@
       else markMissing(img);
     }
     const newNodes = Array.from(template.content.childNodes);
-    const newKeys = newNodes.map(keyOf);
+    const newKeys = new Array(newNodes.length);
+    const newKey = (i) => (newKeys[i] ??= keyOf(newNodes[i]));
     previewAssets = nextAssets;
-    const oldKey = (i) => nodeKeys.get(oldNodes[i]);
+    // Most blocks are untouched by an edit and compare equal as they stand,
+    // source positions included. Only the others are serialised: a block whose
+    // lines moved, or one the page changed after it was inserted.
+    const moved = [];
+    const same = (o, n) => {
+      if (oldNodes[o].isEqualNode(newNodes[n])) return true;
+      if (nodeKeys.get(oldNodes[o]) !== newKey(n)) return false;
+      moved.push(o, n);
+      return true;
+    };
 
     let head = 0;
     const limit = Math.min(oldNodes.length, newNodes.length);
-    while (head < limit && oldKey(head) === newKeys[head]) head++;
+    while (head < limit && same(head, head)) head++;
     let oldEnd = oldNodes.length;
     let newEnd = newNodes.length;
-    while (oldEnd > head && newEnd > head && oldKey(oldEnd - 1) === newKeys[newEnd - 1]) {
+    while (oldEnd > head && newEnd > head && same(oldEnd - 1, newEnd - 1)) {
       oldEnd--;
       newEnd--;
     }
 
-    for (let i = 0; i < head; i++) copyPositions(newNodes[i], oldNodes[i]);
-    for (let i = 0; oldEnd + i < oldNodes.length; i++) copyPositions(newNodes[newEnd + i], oldNodes[oldEnd + i]);
+    for (let i = 0; i < moved.length; i += 2) copyPositions(newNodes[moved[i + 1]], oldNodes[moved[i]]);
 
     for (let i = head; i < oldEnd; i++) oldNodes[i].remove();
     const before = oldNodes[oldEnd] || null;
     for (let i = head; i < newEnd; i++) {
-      nodeKeys.set(newNodes[i], newKeys[i]);
+      nodeKeys.set(newNodes[i], newKey(i));
       const node = newNodes[i];
       if (node.nodeType === 1) {
         const images = node.matches('img') ? [node] : node.querySelectorAll('img[src^="data:,kladje-"]');
@@ -530,9 +642,13 @@
   }
 
   let taskBindings = new WeakMap();
+  let tasksBound = false;
   function bindPreviewTasks(tasks, snapshot) {
     taskBindings = new WeakMap();
     const markers = new Map(Object.entries(tasks));
+    // Rendered checkboxes start out disabled, so without markers now or before nothing needs a visit.
+    if (!markers.size && !tasksBound) return;
+    tasksBound = markers.size > 0;
     for (const box of els.preview.querySelectorAll("li.task-list-item > input.task-list-item-checkbox")) {
       const marker = markers.get(box.parentElement.getAttribute("data-sourcepos"));
       box.disabled = !marker;
@@ -552,6 +668,9 @@
       event.target.checked = marker.checked;
       scheduleRender();
     }
+    // Someone ticking boxes is working in the preview: keep it current even
+    // when the document is too large to follow while typing.
+    if (!closing && previewTier() !== "live") renderNow({ force: true });
   });
 
   // The live preview routes links through the native opener. Supply the real
@@ -882,6 +1001,9 @@
     session.reset(editor.getText(), dirty, revision);
     if (sidebarOpen) { headingRows = []; outlineSnapshot = null; filterHeadings(); refreshSidebar(); }
     els.preview.replaceChildren();
+    shown = null;
+    refreshWanted = false;
+    announcedTier = "live";
     els.previewPane.scrollTop = 0;
     anchors = null;
     activePane = "editor";
@@ -1038,6 +1160,7 @@
       doc.remote = false;
       // Relative image paths now resolve against the new folder.
       els.preview.replaceChildren();
+      shown = null;
       renderNow();
     }
     if (result.warning) await showError(result.warning);
@@ -1157,22 +1280,35 @@
     }
   }
 
+  const PREPARING_PRINT = "Preparing the document for printing…";
+  const PRINT_OVERTAKEN = "Document changed while preparing print. Print again to use the latest text.";
+  const donePreparing = () => { if (els.notice.textContent === PREPARING_PRINT) els.notice.classList.remove("visible"); };
   async function printDocument() {
-    const snapshot = session.snapshot();
-    if (!await renderNow()) return showError("Print needs a current preview.");
-    const images = Array.from(els.preview.querySelectorAll("img[src]"));
+    const snapshot = { document: session.document, revision: session.document.revision };
     let timeout;
     try {
+      // Print uses the rendered document, so render it now whatever the live preview is doing.
+      notify(PREPARING_PRINT, 600000);
+      if (!await renderNow({ force: true })) {
+        if (!session.isCurrent(snapshot)) return notify(PRINT_OVERTAKEN, 15000);
+        return showError("The document could not be rendered for printing.");
+      }
+      const images = Array.from(els.preview.querySelectorAll("img[src]"));
       const decoded = Promise.all(images.map(image => image.decode())).then(() => true, () => false);
       const loaded = await Promise.race([decoded, new Promise(resolve => { timeout = setTimeout(() => resolve(false), 10000); })]);
       if ((!loaded || els.preview.querySelector(".asset-missing")) && !await T.dialog.ask("Some images are unavailable. Print the document with these images omitted?", {
         title: "Print", okLabel: "Print Anyway", cancelLabel: "Cancel",
       })) return;
       await document.fonts.ready;
+      // The page stands still while the print dialog is open: take the note down first.
+      donePreparing();
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      if (!session.isCurrent(snapshot)) return notify("Document changed while preparing print. Print again to use the latest text.", 15000);
+      if (!session.isCurrent(snapshot)) return notify(PRINT_OVERTAKEN, 15000);
       await invoke("print_document");
-    } finally { clearTimeout(timeout); }
+    } finally {
+      clearTimeout(timeout);
+      donePreparing();
+    }
   }
 
   async function insertImage(image) {
@@ -1431,6 +1567,7 @@
     clear_recent: () => runFileAction(async () => {
       await updateHistory({kind:"clear"});
     }),
+    refresh_preview: refreshPreview,
     jump_heading: jumpToHeading,
     document_outline: toggleSidebar,
     settings: () => settings.showModal(),

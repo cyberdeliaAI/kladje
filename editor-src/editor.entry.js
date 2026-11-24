@@ -9,7 +9,7 @@ import { documentLanguage } from "./markdown-language.mjs";
 import { urlOverSelection } from "./smart-paste.mjs";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { adjacentTableCell, tableRowChange } from "./table-row.mjs";
-import { counts, codePoints, countLimit, selectedProseWords } from "./statistics.mjs";
+import { counts, counted, counting, codePoints, countLimit, selectedProseWords, totals } from "./statistics.mjs";
 import { EditorState, EditorSelection, Compartment, Text } from "@codemirror/state";
 import {
   EditorView,
@@ -63,7 +63,7 @@ const LIST_PATTERNS = {
 };
 
 function create(parent, options = {}) {
-  const { onChange, onSelection, placeholderText = "" } = options;
+  const { onChange, onSelection, onStatistics, placeholderText = "" } = options;
   let cleanDoc = null;
   const layout = new Compartment();
   const input = new Compartment();
@@ -84,6 +84,7 @@ function create(parent, options = {}) {
     EditorState.tabSize.of(4),
     indentUnit.of("    "),
     counts,
+    counting,
     layout.of(layoutExtensions),
     input.of([]),
     pairs.of(pairKeys),
@@ -108,6 +109,7 @@ function create(parent, options = {}) {
     EditorView.updateListener.of((update) => {
       if (update.docChanged && onChange) onChange();
       if ((update.selectionSet || update.docChanged) && onSelection) onSelection();
+      if (onStatistics && update.transactions.some(tr => tr.effects.some(effect => effect.is(counted)))) onStatistics();
     }),
   ];
 
@@ -201,7 +203,7 @@ function create(parent, options = {}) {
       view.dispatch({effects: layout.reconfigure(layoutExtensions)});
     },
     statistics() {
-      const count = view.state.field(counts);
+      const count = totals(view.state);
       return count && {words: count.words, characters: view.state.doc.length - count.pairs};
     },
 

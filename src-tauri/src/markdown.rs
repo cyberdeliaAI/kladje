@@ -22,6 +22,10 @@ use two_face::theme::EmbeddedThemeName;
 const HL_STYLE: ClassStyle = ClassStyle::SpacedPrefixed { prefix: "hl-" };
 /// Code blocks larger than this are shown without highlighting to stay fast.
 const MAX_HIGHLIGHT_BYTES: usize = 256 * 1024;
+/// Largest selection Copy as Formatted Text renders. A mixed 4 MiB selection
+/// takes about a quarter of a second on an Apple M4 and puts roughly 9 MiB of
+/// HTML on the clipboard (see `examples/render_bench.rs`).
+pub const MAX_FORMATTED_BYTES: usize = 4 * 1024 * 1024;
 /// Prefix ammonia puts on every `id` in the preview so document content cannot
 /// shadow the app's own element ids.
 pub const PREVIEW_ID_PREFIX: &str = "uc-";
@@ -140,6 +144,16 @@ impl Renderer {
             self.render_inner(markdown, target, source, remote, None)
         }))
         .map_err(|_| "Preview unavailable. Your source is still open.".to_owned())?
+    }
+
+    /// Clean standalone HTML for a selection that is put on the clipboard.
+    pub fn formatted(&self, markdown: &str) -> Result<String, String> {
+        if markdown.len() > MAX_FORMATTED_BYTES {
+            return Err("Select up to 4 MiB to copy formatted text.".into());
+        }
+        Ok(self
+            .render_document(markdown, Target::Export, None, false)?
+            .html)
     }
 
     pub fn preview_update(
@@ -828,6 +842,21 @@ mod tests {
             );
             assert_eq!(result.omitted, usize::from(target == Target::Export));
         }
+    }
+
+    #[test]
+    fn formatted_copy_accepts_a_megabyte_and_stops_at_its_limit() {
+        let r = Renderer::new();
+        let paragraph = "Some **bold** text.\n\n";
+        let megabyte = paragraph.repeat(1024 * 1024 / paragraph.len() + 1);
+        let html = r.formatted(&megabyte).unwrap();
+        assert!(html.contains("<strong>bold</strong>") && !html.contains("data-sourcepos"));
+        let limit = "a".repeat(MAX_FORMATTED_BYTES);
+        assert!(r.formatted(&limit).is_ok());
+        assert_eq!(
+            r.formatted(&(limit + "a")).unwrap_err(),
+            "Select up to 4 MiB to copy formatted text."
+        );
     }
 
     #[test]

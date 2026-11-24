@@ -1,8 +1,9 @@
 // One document identity per load. File commands share an ordered queue, while
 // typing remains synchronous and can continue during disk I/O.
 class DocumentSession {
-  constructor(readText) {
+  constructor(readText, readLength = null) {
     this.readText = readText;
+    this.readLength = readLength;
     this.queue = Promise.resolve();
     this.reset("");
   }
@@ -35,7 +36,12 @@ class DocumentSession {
     // An in-flight write can replace the old baseline even after Undo returns
     // to its text. Keep a recovery copy of that text until the writer settles.
     if (this.pending && !this.isCurrent(this.pending) && this.pending.content !== this.readText()) return true;
-    if (this.cachedDirty === undefined) this.cachedDirty = this.document.saved !== this.readText();
+    if (this.cachedDirty === undefined) {
+      const saved = this.document.saved;
+      // Typing nearly always changes the length, which settles the question
+      // without copying a large document out of the editor.
+      this.cachedDirty = saved === null || (this.readLength !== null && saved.length !== this.readLength()) || saved !== this.readText();
+    }
     return this.cachedDirty;
   }
 
