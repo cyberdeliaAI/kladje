@@ -15,7 +15,13 @@ const id = "app.kladje.qa." + path.basename(tmp).replaceAll("-", "").toLowerCase
 const ui = path.join(tmp, "ui");
 const result = path.join(tmp, "result.txt");
 const probeWindows = process.argv.includes("--windows");
+const probeLarge = process.argv.includes("--large");
 fs.cpSync(path.join(root, "ui"), ui, { recursive: true });
+let largeSetup = "";
+if (probeLarge) {
+  const { prepareLarge } = await import("./large.mjs");
+  largeSetup = prepareLarge({ ui, tmp });
+}
 const html = path.join(ui, "index.html");
 fs.writeFileSync(
   html,
@@ -27,8 +33,8 @@ fs.writeFileSync(
   path.join(ui, "qualification.js"),
   "window.qaResultPath=" +
     JSON.stringify(result) +
-    ";\nwindow.qaPaste = " + process.argv.includes("--paste") + ";\n" +
-    fs.readFileSync(new URL(probeWindows ? "window-probe.js" : "webview.js", import.meta.url), "utf8"),
+    ";\nwindow.qaPaste = " + process.argv.includes("--paste") + ";\n" + largeSetup +
+    fs.readFileSync(new URL(probeWindows ? "window-probe.js" : probeLarge ? "large-documents.js" : "webview.js", import.meta.url), "utf8"),
 );
 fs.copyFileSync(path.join(root, "src-tauri/icons/32x32.png"), path.join(tmp, "figure.png"));
 const fixture = path.join(tmp, "start.md");
@@ -87,6 +93,12 @@ if (probeWindows) {
   const {verifyWindows} = await import("./windows.mjs");
   await verifyWindows({app, executable, tmp, id, fixture});
   process.exit(0);
+}
+if (probeLarge) {
+  imageProbe.close();
+  const { measureLarge } = await import("./large.mjs");
+  await measureLarge({ app, executable, tmp, id, fixture, result, root });
+  process.exit();
 }
 const manual = process.argv.includes("--manual");
 const started = Date.now();
