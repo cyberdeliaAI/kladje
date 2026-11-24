@@ -948,6 +948,7 @@
     return runFileAction(() => identity === session.document && save(saveAs));
   }
 
+  const basicVolumes = new Set();
   async function save(saveAs = false) {
     let path = doc.path;
     if (!path || saveAs) {
@@ -1031,7 +1032,11 @@
     const clean = confirmed && session.acknowledge(snapshot);
     if (clean) clearRecovery();
     else saveRecovery();
-    if (confirmed) notify(clean ? (copied ? `Saved copy to ${path}` : "Saved") : "Earlier edits saved · newer edits are unsaved");
+    // Mention a volume without atomic replacement once per folder, then save quietly.
+    const plain = result.basic && !basicVolumes.has(dirname(path));
+    if (result.basic) basicVolumes.add(dirname(path));
+    const saved = copied ? `Saved copy to ${path}` : plain ? "Saved · this volume does not support protected replacement" : "Saved";
+    if (confirmed) notify(clean ? saved : "Earlier edits saved · newer edits are unsaved", plain ? 12000 : undefined);
     else notify("Save unconfirmed · recovery retained · retry Save or use Save As", 60000);
     refreshChrome();
     if (moved) {

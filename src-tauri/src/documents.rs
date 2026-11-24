@@ -363,6 +363,7 @@ mod tests {
         ));
         docs.write("main", &dest, true, || {
             Ok(storage::Written {
+                basic: false,
                 version: storage::version(&dest)?.unwrap(),
                 confirmed: false,
                 warning: Some("unconfirmed".into()),
