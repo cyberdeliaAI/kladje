@@ -43,7 +43,7 @@ test("ordered list markers and footer notices remain readable in light and dark 
   const variable = (block, key) => luminance(block.match(new RegExp("--" + key + ": #([a-f0-9]{6})"))[1]);
   const light = app.split(":root {")[1].split("}")[0];
   const dark = app.split(':root[data-theme="dark"] {')[1].split("}")[0];
-  const previewDark = app.split(':root[data-theme="dark"] .markdown-body {')[1].split("}")[0];
+  const previewDark = read("dark-document.css");
   for (const [fg, bg] of [[variable(read("preview.css"), "md-faint"), 1],
     [variable(previewDark, "md-faint"), variable(dark, "bg")], ...[light, dark].map(t => [variable(t,"accent"),variable(t,"bg-chrome")])]) {
     assert.ok((Math.max(fg,bg)+0.05)/(Math.min(fg,bg)+0.05) >= 4.5);

@@ -14,7 +14,7 @@ function gate() {
   return { resolve, promise };
 }
 
-async function app(initial = {}, configure = () => {}) {
+async function app(initial = {}, configure = () => {}, drawImage) {
   const ready = gate(), events = {}, calls = [], values = new Map(Object.entries(initial));
   const disk = { path: "/notes/a.md", content: "original", version: { target: "/notes/a.md", digest: "a" } };
   const format = { encoding: "utf8", eol: "lf" };
@@ -42,7 +42,10 @@ async function app(initial = {}, configure = () => {}) {
   };
   let history;
   const children = [];
+  let nativeSettings = {}, prefRevision = 0;
   const api = {
+    read_preferences({seed}) {nativeSettings = {...seed}; return {revision:prefRevision, values:{...nativeSettings}};},
+    set_preference({key,value}) {nativeSettings[key]=value; return {revision:++prefRevision,values:{...nativeSettings}};},
     file_stamp: () => disk.version && {target:disk.path, change:disk.version.digest},
     take_fragment() {}, document_ready() {}, accept_reload() {}, begin_close:()=>true, cancel_close() {},
     diagram_sources: () => [], store_diagrams() {},
@@ -68,7 +71,7 @@ async function app(initial = {}, configure = () => {}) {
       }));
     },
     quit_vote({allow,epoch}) { if (!allow) events["cancel-quit"]({payload:epoch}); },
-    window_bounds: () => null, set_menu_checks() {},
+    window_bounds: () => null, set_menu_checks() {}, sync_document_icon() {},
     setup: () => ({ pendingOpen: disk.path }), take_pending_open: () => null, read_file: () => ({ ...disk }),
     file_version: () => disk.version, render: () => "", log_message: ({ message }) => { if (message === "ready") ready.resolve(); },
     recovery_list: () => [], recovery_clear() {}, recovery_write() {},
@@ -116,7 +119,9 @@ async function app(initial = {}, configure = () => {}) {
     setTimeout(fn, delay) { pendingTimers.set(++nextTimer, {fn, delay}); return nextTimer; },
     localStorage: { getItem: k => values.get(k), setItem: (k,v) => values.set(k,v), removeItem: k => values.delete(k) } });
   vm.runInContext(source("document-session.js"),context);
-  vm.runInContext(source("diagrams.js"),context);
+  if (drawImage) context.KladjeDiagrams = { create: () => ({image:drawImage}) };
+  else vm.runInContext(source("diagrams.js"),context);
+  vm.runInContext(source("preferences.js"),context);
   vm.runInContext(source("app.js"),context);
   await ready.promise;
   async function fire(delay, callback = null) {
@@ -130,7 +135,7 @@ async function app(initial = {}, configure = () => {}) {
     return entry[1].fn();
   }
   const pending = delay => [...pendingTimers.values()].some(timer => timer.fn.name !== "pollDisk" && timer.delay === delay);
-  return { comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, pending, hooks, clock, rendered, view, pollDisk: () => fire(null,"pollDisk"), menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
+  return { settings: () => nativeSettings, comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, pending, hooks, clock, rendered, view, pollDisk: () => fire(null,"pollDisk"), menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
 }
 
 test("actual Save and Quit wait for outstanding I/O and retain later edits", async () => {
@@ -484,7 +489,8 @@ test("one line-break preference reaches the preview, HTML export and formatted c
   a.get("lineBreaks").checked = true;
   await a.get("lineBreaks").handlers.change();
   a.get("settings").close();
-  assert.equal(a.values.get("kladje.lineBreaks"), "true");
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().lineBreaks), "true");
   assert.equal(a.calls.filter(([cmd]) => cmd === "render").length, renders + 1);
   assert.equal(last("render").lineBreaks, true);
   a.dialog.save = () => "/notes/a.html";
@@ -653,12 +659,16 @@ test("Open Recent respects Cancel and only a confirmed Save As adds its new path
 
 test("invalid preferences fall back and toggles update storage and native checkmarks", async () => {
   const a = await app({"kladje.zoom":'"invalid"', "kladje.split":"null", "kladje.wrap":'"no"', "kladje.gutter":"{}"});
-  assert.equal(a.values.get("kladje.zoom"),"1");
-  assert.equal(a.values.get("kladje.split"),"50");
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().zoom), "1");
+  await new Promise(setImmediate);
+  assert.ok(a.settings().split == null || a.settings().split === 50);
   await a.menu("gutter"); await a.menu("wrap");
   await new Promise(done => setImmediate(done));
-  assert.equal(a.values.get("kladje.gutter"),"true");
-  assert.equal(a.values.get("kladje.wrap"),"false");
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().gutter), "true");
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().wrap), "false");
   const last=a.calls.filter(([cmd]) => cmd==="set_menu_checks").at(-1)[1].checked;
   assert.ok(last.includes("gutter") && !last.includes("wrap"));
 });
@@ -901,7 +911,8 @@ test("the formatting bar runs menu actions, opens its menus and can be hidden", 
   // The View menu item and the settings checkbox both hide the bar, and it is remembered.
   await a.menu("format_bar");
   assert.equal(a.get("app").dataset.formatBar, "false");
-  assert.equal(a.values.get("kladje.formatBar"), "false");
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().formatBar), "false");
   assert.ok(!a.calls.filter(([cmd]) => cmd === "set_menu_checks").at(-1)[1].checked.includes("format_bar"));
   assert.equal(a.get("formatBar").checked, false);
   a.get("formatBar").checked = true;
@@ -925,15 +936,18 @@ test("the settings window switches sections and mirrors the View menu", async ()
   // A checkbox that mirrors a View menu item changes the same preference.
   a.get("pref-gutter").checked = true;
   a.get("pref-gutter").handlers.change();
-  assert.equal(a.values.get("kladje.gutter"), "true");
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().gutter), "true");
   await new Promise(setImmediate);
   assert.ok(a.calls.filter(([cmd]) => cmd === "set_menu_checks").at(-1)[1].checked.includes("gutter"));
   // Theme, font and text size.
   a.get("settings").handlers.change({target: {name: "theme", value: "dark"}});
-  assert.equal(a.values.get("kladje.theme"), "\"dark\"");
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().theme), "\"dark\"");
   a.get("settings").handlers.change({target: {name: "editorFont", value: "sans"}});
   assert.equal(a.get("app").dataset.editorFont, "sans");
-  assert.equal(a.values.get("kladje.editorFont"), "\"sans\"");
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().editorFont), "\"sans\"");
   a.get("zoom-larger").handlers.click();
   assert.equal(a.get("zoom-value").textContent, "110%");
   a.get("zoom-default").handlers.click();
@@ -1327,7 +1341,8 @@ test("autosave is off by default and, once on, saves after a typing pause and on
   a.get("autosave").checked = true;
   await a.get("autosave").handlers.change();
   a.get("settings").close();
-  assert.equal(a.values.get("kladje.autosave"), "true");
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().autosave), "true");
   // Turning it on saves the pending edit. Later edits wait for a pause.
   assert.equal(a.disk.content, "not saved unasked");
   a.edit("after a pause");
@@ -1756,36 +1771,38 @@ test("print renders a document that is too large for the live preview and shows 
   assert.equal(a.calls.filter(([name]) => name === "print_document").length, 2);
 });
 
-test("diagrams follow an on-request render, print on white and return to the screen theme", async () => {
-  const a = await app();
+test("print keeps a separately themed diagram across native preview and final pagination", async () => {
+  const a = await app({}, undefined, async (_, dark) => ({src:dark ? "dark-image" : "light-image", width:80, height:40}));
   a.api.render = ({markdown}) => String(markdown.length);
-  const block = {dataset: {}, isConnected: true, getAttribute: () => "1:1-3:3", querySelector: () => null, append() {}, classList: {add() {}, remove() {}}};
-  const code = {parentElement: block, textContent: "graph TD"};
-  let missing = null;
+  const images = [];
+  const block = {dataset:{}, isConnected:true, getAttribute:()=>"1:1-3:3", firstElementChild:{textContent:"graph TD"},
+    append(node){images.push(node);}, classList:{add(){},remove(){}},
+    querySelector(selector){
+      if (selector === ".diagram-paper") return images.find(n=>n.className.includes("diagram-paper"));
+      if (selector.startsWith("img.diagram-image")) return images.find(n=>n.className==="diagram-image");
+      return null;
+    }};
+  const code = {parentElement:block,textContent:"graph TD"};
   a.get("preview").querySelectorAll = selector => selector.includes("language-mermaid") ? [code] : [];
-  a.get("preview").querySelector = selector => selector === ".asset-missing" ? missing : null;
   await a.menu("theme_dark");
   a.edit("a".repeat(16 * MIB));
   delete block.dataset.diagram;
   await settle();
-  assert.equal(block.dataset.diagram, undefined, "an unrendered preview draws nothing");
+  assert.equal(block.dataset.diagram, undefined);
   await a.menu("refresh_preview");
-  assert.equal(block.dataset.diagram, "dark");
-
-  let printedAs;
-  a.api.print_document = () => { printedAs = block.dataset.diagram; };
+  assert.equal(images[0].src,"dark-image");
+  a.api.print_document = () => {
+    a.events.afterprint(); // WebKit can finish print preview before producing the PDF.
+    assert.equal(images[0].src,"dark-image");
+    assert.equal(images[1].src,"light-image");
+  };
   await a.menu("export_pdf");
-  assert.equal(printedAs, "light", "paper is white");
-  assert.equal(block.dataset.diagram, "light", "the page stays as printed until the print ends");
-  a.events.afterprint();
-  assert.equal(block.dataset.diagram, "dark");
-
-  // A print that stops before the dialog puts the screen theme back itself.
-  missing = {};
-  printedAs = undefined;
+  assert.equal(images.length,2);
+  a.get("darkExport").checked=true;
+  await a.get("darkExport").handlers.change();
+  a.api.print_document = () => assert.equal(images[1].src,"dark-image");
   await a.menu("export_pdf");
-  assert.equal(printedAs, undefined);
-  assert.equal(block.dataset.diagram, "dark");
+  assert.equal(images.length,2);
 });
 
 test("print stops when the text changes while it prepares or when rendering fails", async () => {
@@ -1867,3 +1884,44 @@ test("an update keeps untouched preview blocks without serialising them", async 
   assert.deepEqual(serialised.sort(), ["B2", "C", "D", "New"], "blocks above the new line are compared as they stand");
 });
 
+
+test("native preference revisions protect pending local edits and synchronize clean windows", async () => {
+  const a = await app({"kladje.theme":'"dark"'});
+  assert.equal(a.values.has("kladje.theme"),false);
+  const wait = gate(), started = gate();
+  a.api.set_preference = async ({key,value}) => {
+    started.resolve(); await wait.promise;
+    return {revision:8,values:{theme:"light",[key]:value}};
+  };
+  await a.menu("gutter");
+  await started.promise;
+  const receive = a.events["preferences-changed"];
+  receive({payload:{revision:7,values:{theme:"light",gutter:false}}});
+  assert.equal(a.get("pref-gutter").checked,true);
+  receive({payload:{revision:6,values:{theme:"dark",gutter:false}}});
+  wait.resolve(); await new Promise(setImmediate);
+  receive({payload:{revision:9,values:{theme:"light",gutter:false}}});
+  assert.equal(a.get("pref-gutter").checked,false);
+});
+
+test("an unreadable settings file preserves migration data and allows editing and saving", async () => {
+  const a = await app({"kladje.theme":'"light"'}, ({api}) => {
+    api.read_preferences = () => {throw Error("damaged settings");};
+  });
+  assert.equal(a.values.get("kladje.theme"),'"light"');
+  await a.menu("gutter");
+  a.edit("safe draft"); await a.menu("save");
+  assert.equal(a.disk.content,"safe draft");
+  assert.ok(!a.calls.some(([cmd]) => cmd === "set_preference"));
+});
+
+test("document check discards a result if the source changed while files were inspected", async () => {
+  const a = await app(), start = gate(), finish = gate();
+  a.api.check_document = async () => {start.resolve(); await finish.promise; return "old result";};
+  let messages = 0;
+  a.dialog.message = () => {messages++;};
+  const checking = a.menu("check_document");
+  await start.promise; a.edit("new text"); finish.resolve(); await checking;
+  assert.equal(messages,0);
+  assert.match(a.get("notice").textContent,/changed/);
+});

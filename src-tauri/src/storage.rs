@@ -65,15 +65,25 @@ pub fn protected_copy(requested: &Path, bytes: &[u8]) -> Result<Written, String>
         .parent()
         .ok_or("Choose a folder for the copy.")?
         .canonicalize()
-        .map_err(|e| e.to_string())?;
-    let (dir, file, folder_name) = stage_folder(&parent, name, bytes).map_err(|e| e.to_string())?;
+        .map_err(|e| file_error("copy", requested, e))?;
+    let (dir, file, folder_name) =
+        stage_folder(&parent, name, bytes).map_err(|e| file_error("copy", requested, e))?;
     let folder = parent.join(folder_name);
-    if folder.try_exists().map_err(|e| e.to_string())? {
+    if folder
+        .try_exists()
+        .map_err(|e| file_error("copy", requested, e))?
+    {
         return Err("Copy folder already exists. Try saving the copy again.".into());
     }
     let path = folder.join(name);
-    let expected = stamp(&path, &file.metadata().map_err(|e| e.to_string())?, bytes);
-    fs::rename(dir.path(), &folder).map_err(|e| e.to_string())?;
+    let expected = stamp(
+        &path,
+        &file
+            .metadata()
+            .map_err(|e| file_error("copy", requested, e))?,
+        bytes,
+    );
+    fs::rename(dir.path(), &folder).map_err(|e| file_error("copy", requested, e))?;
     // The staging directory no longer exists under its old name.
     let _ = dir.keep();
     let confirmed = sync_directory(&parent).is_ok()
@@ -259,12 +269,35 @@ fn stamp(target: &Path, meta: &fs::Metadata, bytes: &[u8]) -> Version {
     }
 }
 
+pub(crate) fn document_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+// Keep recovery paths and detailed conflict warnings intact. Translate ordinary
+// filesystem failures at the boundary where we still know the operation and file.
+fn file_error(action: &str, path: &Path, error: io::Error) -> String {
+    use io::ErrorKind::*;
+    let reason = match error.kind() {
+        NotFound => "The file or folder has moved or is unavailable. Check its location and try again.",
+        PermissionDenied => "Access was denied. Check the file and folder permissions or choose another folder.",
+        StorageFull | QuotaExceeded => "The disk is full or its storage quota was reached. Free some space or choose another disk.",
+        ReadOnlyFilesystem => "The volume is read-only. Choose a writable folder.",
+        AlreadyExists => "That name is already in use. Choose another name.",
+        WouldBlock | ResourceBusy => "The file is busy. Try again after the other operation finishes.",
+        _ => return format!("Could not {action} “{}”. {error}", document_name(path)),
+    };
+    format!("Could not {action} “{}”. {reason}", document_name(path))
+}
+
 pub fn read(path: &Path) -> Result<(Vec<u8>, Version), String> {
     read_bounded(path, MAX_FILE_BYTES)
 }
 
 pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<(Vec<u8>, Version), String> {
-    let resolved = target(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let resolved = target(path).map_err(|e| file_error("read", path, e))?;
     let mut options = File::options();
     options.read(true);
     #[cfg(unix)]
@@ -274,12 +307,12 @@ pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<(Vec<u8>, Version)
     }
     let mut file = options
         .open(&resolved)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    let meta = file.metadata().map_err(|e| e.to_string())?;
+        .map_err(|e| file_error("read", path, e))?;
+    let meta = file.metadata().map_err(|e| file_error("read", path, e))?;
     if !meta.is_file() || meta.len() > limit {
         return Err(format!(
             "{} is not a regular file within the {} KiB limit.",
-            path.display(),
+            document_name(path),
             limit / 1024
         ));
     }
@@ -287,7 +320,7 @@ pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<(Vec<u8>, Version)
     (&mut file)
         .take(limit + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| file_error("read", path, e))?;
     if bytes.len() as u64 > limit {
         return Err(format!("File exceeds the {} KiB limit.", limit / 1024));
     }
@@ -336,7 +369,7 @@ pub fn disk_stamp(path: &Path) -> Result<Option<DiskStamp>, String> {
     match probe() {
         Ok(stamp) => Ok(Some(stamp)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(file_error("check", path, e)),
     }
 }
 
@@ -344,7 +377,7 @@ pub fn version(path: &Path) -> Result<Option<Version>, String> {
     match fs::symlink_metadata(path) {
         Ok(_) => read(path).map(|(_, stamp)| Some(stamp)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(file_error("check", path, e)),
     }
 }
 
@@ -546,7 +579,7 @@ fn replace_using(
         if e.to_string() == COPY_REQUIRED {
             COPY_REQUIRED.into()
         } else {
-            format!("{}: {e}", path.display())
+            file_error("save", path, e)
         }
     })
 }
@@ -682,7 +715,7 @@ pub fn move_noclobber(
             .to_string_lossy()
             .into_owned()
     };
-    let meta = fs::symlink_metadata(from).map_err(|e| format!("{}: {e}", from.display()))?;
+    let meta = fs::symlink_metadata(from).map_err(|e| file_error("move", from, e))?;
     if meta.file_type().is_symlink() {
         return Err(
             "This document is opened through a link. Use Save As to keep a copy elsewhere.".into(),
@@ -713,7 +746,7 @@ pub fn move_noclobber(
             "This volume cannot safely rename or move this document. The original remains in place."
                 .into()
         } else {
-            format!("Could not move “{}”: {e}", shown(from))
+            file_error("move", from, e)
         }
     })?;
     for dir in [to.parent(), from.parent()].into_iter().flatten() {
@@ -959,6 +992,30 @@ mod moving {
 #[cfg(test)]
 mod conflicts {
     use super::*;
+
+    #[test]
+    fn file_errors_name_the_document_and_an_action_without_exposing_its_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.md");
+        let missing = read(&path).unwrap_err();
+        assert!(missing.contains("journal.md") && missing.contains("location"));
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::StorageFull,
+            io::ErrorKind::ReadOnlyFilesystem,
+        ] {
+            let message = file_error("save", &path, kind.into());
+            assert!(
+                message.contains("journal.md")
+                    && (message.contains("folder") || message.contains("another disk"))
+            );
+            assert!(
+                !message.contains(dir.path().to_str().unwrap()) && !message.contains("os error")
+            );
+        }
+        let diagnostic = "The previous version was kept at /backup/previous.md";
+        assert!(file_error("save", &path, io::Error::other(diagnostic)).contains(diagnostic));
+    }
 
     #[test]
     fn replacement_failure_preserves_original_and_cleans_stage() {

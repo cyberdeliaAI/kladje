@@ -6,6 +6,7 @@
   <title>Kladje</title>
   <link rel="stylesheet" href="app.css">
   <link rel="stylesheet" href="preview.css">
+  <link id="dark-document" rel="stylesheet" href="dark-document.css" media="not all">
   <link rel="stylesheet" href="vendor/mathml.css">
   <!-- Syntax colours come from the Rust side: one sheet for the screen theme, a light one for print. -->
   <style id="syntax-screen" media="screen"></style>
@@ -108,6 +109,7 @@
           <div class="setting-options" role="group" aria-labelledby="label-pasting">
             <label><input type="checkbox" id="linkPaste"> Paste a URL over selected text as a link</label>
             <label><input type="checkbox" id="htmlPaste"> Convert pasted rich text to Markdown</label>
+            <label><input type="checkbox" id="tablePaste"> Paste spreadsheet cells as a Markdown table</label>
             <label><input type="checkbox" id="confirmImage"> Ask before saving a pasted image beside the document</label>
           </div>
         </div>
@@ -145,6 +147,13 @@
       </section>
 
       <section class="settings-pane" role="tabpanel" id="pane-preview" aria-labelledby="tab-preview" hidden>
+        <div class="setting-row">
+          <span class="setting-label" id="label-export">Export</span>
+          <div class="setting-options" role="group" aria-labelledby="label-export">
+            <label><input type="checkbox" id="darkExport"> Use dark colors for HTML and PDF</label>
+            <label id="page-numbers-option"><input type="checkbox" id="pageNumbers"> Include page numbers, title and date on macOS</label>
+          </div>
+        </div>
         <div class="setting-row">
           <span class="setting-label" id="label-breaks">Line breaks</span>
           <div class="setting-options" role="group" aria-labelledby="label-breaks">
@@ -208,6 +217,7 @@
   <script src="vendor/editor.js"></script>
   <script src="document-session.js"></script>
   <script src="diagrams.js"></script>
+  <script src="preferences.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

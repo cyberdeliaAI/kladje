@@ -3,6 +3,11 @@ import {markdown, markdownLanguage} from "@codemirror/lang-markdown";
 import {javascriptLanguage, typescriptLanguage} from "@codemirror/lang-javascript";
 import {htmlLanguage} from "@codemirror/lang-html";
 import {cssLanguage} from "@codemirror/lang-css";
+import {StreamLanguage} from "@codemirror/language";
+import {python} from "@codemirror/legacy-modes/mode/python";
+import {rust} from "@codemirror/legacy-modes/mode/rust";
+import {shell} from "@codemirror/legacy-modes/mode/shell";
+import {yaml} from "@codemirror/legacy-modes/mode/yaml";
 import {tags} from "@lezer/highlight";
 
 // Match comrak's exact delimiter at the start of the file, including its
@@ -22,8 +27,13 @@ export function frontmatterLines(doc) {
   return end;
 }
 
+const pythonLanguage = StreamLanguage.define(python), rustLanguage = StreamLanguage.define(rust);
+const shellLanguage = StreamLanguage.define(shell), yamlLanguage = StreamLanguage.define(yaml);
 const fences = {js:javascriptLanguage, javascript:javascriptLanguage, ts:typescriptLanguage,
-  typescript:typescriptLanguage, html:htmlLanguage, css:cssLanguage};
+  typescript:typescriptLanguage, html:htmlLanguage, css:cssLanguage,
+  python:pythonLanguage, py:pythonLanguage, rust:rustLanguage, rs:rustLanguage,
+  shell:shellLanguage, sh:shellLanguage, bash:shellLanguage, zsh:shellLanguage,
+  yaml:yamlLanguage, yml:yamlLanguage};
 function support(lines) {
   return markdown({base:markdownLanguage, addKeymap:false,
     codeLanguages: info => {

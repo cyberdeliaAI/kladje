@@ -6,6 +6,7 @@ pub mod fileio;
 pub mod history;
 pub mod import;
 pub mod markdown;
+pub mod preferences;
 pub mod recovery;
 pub mod storage;
 

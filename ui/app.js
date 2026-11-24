@@ -1,7 +1,7 @@
 // Kladje — application logic. Plain JavaScript, no framework and no build step.
 // Rendering, file access, import and export all happen in Rust (see src-tauri).
 
-(() => {
+(async () => {
   "use strict";
 
   const T = window.__TAURI__;
@@ -33,7 +33,7 @@
   // ---------------------------------------------------------------- settings
 
   let applyingPreference = false;
-  const store = {
+  const legacyStore = {
     get(key, fallback) {
       try {
         const raw = localStorage.getItem("kladje." + key);
@@ -58,6 +58,15 @@
     },
   };
 
+  const preferences = await openPreferences(T, legacyStore);
+  const store = {
+    get(key, fallback) { return (preferences.keys.has(key) ? preferences : legacyStore).get(key, fallback); },
+    set(key, value) {
+      if (!applyingPreference) return (preferences.keys.has(key) ? preferences : legacyStore).set(key, value);
+    },
+    remove(key) { legacyStore.remove(key); },
+  };
+
   // ---------------------------------------------------------------- state
 
   const draftId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
@@ -74,7 +83,7 @@
   let syncEnabled = storedFlag("sync", true);
   let gutter = storedFlag("gutter", false), wrap = storedFlag("wrap", true), measure = storedFlag("measure", true);
   const settings = $("settings");
-  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:false, formatBar:true};
+  const writing = {pairing:true, linkPaste:true, htmlPaste:false, tablePaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:false, darkExport:false, pageNumbers:false, formatBar:true};
   for (const [key, fallback] of Object.entries(writing)) {
     writing[key] = storedFlag(key, fallback);
     const control = $(key);
@@ -228,9 +237,7 @@
     } finally { applyingPreference = false; }
   }
 
-  window.addEventListener("storage", event => {
-    if (event.key?.startsWith("kladje.")) applyPreference(event.key.slice(7));
-  });
+  preferences.subscribe(applyPreference, message => notify(message, 12000));
 
   async function openRecent(path) {
     await updateHistory({kind:"read"});
@@ -314,6 +321,8 @@
   // ---------------------------------------------------------------- formatting bar
 
   const onMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform || "");
+
+  if (!onMac) $("page-numbers-option").hidden = true;
 
   // A row of formatting buttons along the bottom of the source pane. Every
   // button runs a menu action, so the bar adds no behaviour of its own.
@@ -553,6 +562,7 @@
   });
 
   let shownTitle = null;
+  let representedPath;
   function refreshChrome() {
     renderStart();
     const dirty = session.isDirty();
@@ -564,6 +574,10 @@
     if (filename.textContent !== label) filename.textContent = label;
     if (stateLabel.textContent !== stateText) stateLabel.textContent = stateText;
     els.docName.title = (doc.path || "Not saved yet") + (dirty ? " — edited" : "");
+    if (representedPath !== doc.path) {
+      representedPath = doc.path;
+      invoke("sync_document_icon").catch(report);
+    }
     const title = `${dirty ? "• " : ""}${doc.name} — Kladje`;
     if (title !== shownTitle) {
       shownTitle = title;
@@ -603,11 +617,20 @@
     if (event.key === "Tab" || event.key === "Escape") els.app.dataset.pointerFocus = "false";
   }, true);
   const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+  function updateExportAppearance() {
+    const media = [];
+    if (document.documentElement.dataset.theme === "dark") media.push("screen");
+    if (writing.darkExport) media.push("print");
+    $("dark-document").media = media.join(", ") || "not all";
+    document.documentElement.dataset.printTheme = writing.darkExport ? "dark" : "light";
+    $("syntax-print").textContent = writing.darkExport ? config.syntaxCssDark : config.syntaxCssLight;
+  }
+
   function applyTheme() {
     const dark = themeSetting === "dark" || (themeSetting === "auto" && systemDark.matches);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     $("syntax-screen").textContent = dark ? config.syntaxCssDark : config.syntaxCssLight;
-    $("syntax-print").textContent = config.syntaxCssLight;
+    updateExportAppearance();
     drawDiagrams();
   }
   systemDark.addEventListener("change", applyTheme);
@@ -643,13 +666,13 @@
     editor.remeasure();
   }
 
-  function setSplit(percent) {
+  function setSplit(percent, persist = true) {
     const clamped = Math.min(80, Math.max(20, Number.isFinite(percent) ? percent : 50));
     els.panes.style.setProperty("--split", clamped + "%");
     const sourceWidth = Math.round(clamped);
     els.divider.setAttribute("aria-valuenow", String(sourceWidth));
     els.divider.setAttribute("aria-valuetext", `${sourceWidth}% source, ${100 - sourceWidth}% preview`);
-    store.set("split", clamped);
+    if (persist) store.set("split", clamped);
     anchors = null;
     editor.remeasure();
   }
@@ -673,9 +696,10 @@
     els.app.classList.add("resizing");
     const move = (ev) => {
       const rect = els.panes.getBoundingClientRect();
-      setSplit(((ev.clientX - rect.left) / rect.width) * 100);
+      setSplit(((ev.clientX - rect.left) / rect.width) * 100, false);
     };
     const stop = () => {
+      store.set("split", Number(els.divider.getAttribute("aria-valuenow")));
       els.divider.classList.remove("dragging");
       els.app.classList.remove("resizing");
       els.divider.removeEventListener("pointermove", move);
@@ -987,7 +1011,7 @@
     block.dataset.diagram = theme;
     const source = code.textContent;
     const line = parseInt(block.getAttribute("data-sourcepos"), 10) || 0;
-    let image = block.querySelector("img.diagram-image");
+    let image = block.querySelector("img.diagram-image:not(.diagram-paper)");
     const earlier = drawnDiagrams.get(line);
     if (!image && earlier) {
       image = showDiagram(block, null, earlier);
@@ -1010,6 +1034,32 @@
       drawnDiagrams.set(line, result);
     }
     anchors = null;
+  }
+
+  // The native print panel paginates more than once. Keep its image separate
+  // from the live preview so screen-theme redraws cannot change a printed page.
+  async function preparePrintDiagrams(dark) {
+    const blocks = Array.from(els.preview.querySelectorAll("pre > code.language-mermaid"));
+    for (const code of blocks) {
+      const block = code.parentElement;
+      const drawn = await diagrams.image(code.textContent, dark);
+      let paper = block.querySelector(".diagram-paper");
+      if (drawn.error) {
+        paper?.remove();
+        block.classList.remove("has-paper-diagram");
+        continue;
+      }
+      if (!paper) {
+        paper = document.createElement("img");
+        paper.className = "diagram-image diagram-paper";
+        block.append(paper);
+      }
+      paper.alt = "Diagram: " + code.textContent.trim().split(/\s/)[0];
+      paper.width = drawn.width;
+      paper.height = drawn.height;
+      paper.src = drawn.src;
+      block.classList.add("has-paper-diagram");
+    }
   }
 
   function showDiagram(block, image, drawn) {
@@ -1038,7 +1088,6 @@
   });
   window.addEventListener("afterprint", () => {
     for (const link of els.preview.querySelectorAll("a[data-destination]")) link.setAttribute("href", "#");
-    drawDiagrams();
   });
 
   /** Lines shift as you type; kept nodes take over the fresh source positions. */
@@ -1921,19 +1970,22 @@
         filters: [{ name: "HTML", extensions: ["html"] }],
       });
       if (!path) return;
+      const snapshot = session.snapshot();
+      const dark = writing.darkExport;
+      const lineBreaks = writing.lineBreaks;
       // The exported page shows diagrams as images. A diagram that cannot be
       // drawn stays in the page as its source text.
       const drawn = [];
-      for (const source of (await invoke("diagram_sources", { markdown: editor.getText() })).slice(0, 64)) {
-        const diagram = await diagrams.image(source, false);
-        if (!diagram.error) drawn.push({ source, ...diagram });
+      for (const source of (await invoke("diagram_sources", { markdown: snapshot.content })).slice(0, 64)) {
+        const diagram = await diagrams.image(source, dark);
+        if (!diagram.error) drawn.push({ source, dark, ...diagram });
       }
       if (drawn.length) await invoke("store_diagrams", { diagrams: drawn });
       const expected = await invoke("file_version", { path });
       if (expected && !await T.dialog.ask(`Replace “${basename(path)}” with this HTML export?`, {
         title: "Export HTML", okLabel: "Replace File", cancelLabel: "Cancel",
       })) return;
-      const result = await invoke("export_html", { path, markdown: editor.getText(), title: stem(doc.name), source: doc.path, expected, lineBreaks: writing.lineBreaks });
+      const result = await invoke("export_html", { path, markdown: snapshot.content, title: stem(doc.name), source: doc.path, expected, lineBreaks, dark });
       if (result.warning) await showError(result.warning);
       if (result.confirmed) notify(`Exported ${basename(path)}`);
     } catch (error) {
@@ -1948,7 +2000,7 @@
   const donePreparing = () => { if (els.notice.textContent === PREPARING_PRINT) els.notice.classList.remove("visible"); };
   async function printDocument() {
     const snapshot = { document: session.document, revision: session.document.revision };
-    let timeout, handedOver = false;
+    let timeout;
     try {
       // Print uses the rendered document, so render it now whatever the live preview is doing.
       notify(PREPARING_PRINT, 600000);
@@ -1956,8 +2008,8 @@
         if (!session.isCurrent(snapshot)) return notify(PRINT_OVERTAKEN, 15000);
         return showError("The document could not be rendered for printing.");
       }
-      // Paper is white. Draw the diagrams in the light theme before printing.
-      await drawDiagrams(false);
+      updateExportAppearance();
+      await preparePrintDiagrams(writing.darkExport);
       const images = Array.from(els.preview.querySelectorAll("img[src]"));
       const decoded = Promise.all(images.map(image => image.decode())).then(() => true, () => false);
       const loaded = await Promise.race([decoded, new Promise(resolve => { timeout = setTimeout(() => resolve(false), 10000); })]);
@@ -1969,13 +2021,10 @@
       donePreparing();
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       if (!session.isCurrent(snapshot)) return notify(PRINT_OVERTAKEN, 15000);
-      handedOver = true;
-      await invoke("print_document");
+      await invoke("print_document", {pageNumbers:writing.pageNumbers});
     } finally {
       clearTimeout(timeout);
       donePreparing();
-      // After printing, `afterprint` restores the screen theme. A print that stopped early does it here.
-      if (!handedOver) drawDiagrams();
     }
   }
 
@@ -2015,6 +2064,11 @@
     if (literalPasteUntil > performance.now()) { literalPasteUntil = 0; return; }
     const plain = data.getData("text/plain");
     if (plain && writing.linkPaste && editor.pasteUrl(plain)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (writing.tablePaste && editor.pasteTable(plain)) {
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -2219,6 +2273,7 @@
       }
       await rememberPlace();
       await rememberBounds();
+      await preferences.flush();
       await clearRecovery();
       await close();
     } catch (error) {
@@ -2254,6 +2309,7 @@
         await saveRecovery();
         allow = await confirmDiscard();
         if (allow) {
+          await preferences.flush();
           await rememberPlace();
           if (rememberWindow) await rememberBounds();
         }
@@ -2337,6 +2393,12 @@
     }),
     refresh_preview: refreshPreview,
     jump_heading: jumpToHeading,
+    check_document: () => runFileAction(async () => {
+      const snapshot = session.snapshot();
+      const message = await invoke("check_document", {markdown:editor.getText(), source:doc.path});
+      if (!session.isCurrent(snapshot)) return notify("The document changed. Run Check Document again.");
+      await T.dialog.message(message, {title:"Check Document"});
+    }),
     document_outline: toggleSidebar,
     // The window reopens on the section that was open last.
     settings: () => { syncSettings(); showSettingsTab(settingsTab); settings.showModal(); },
@@ -2483,6 +2545,7 @@
 
   async function start() {
     els.editorPane.inert = true;
+    if (preferences.warning) notify(preferences.warning, 15000);
     setView(viewMode);
     applyEditorLayout();
     editor.setPairing(writing.pairing);

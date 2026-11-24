@@ -182,6 +182,8 @@
 .markdown-body details[open] > summary { margin-bottom: 0.6em; }
 .markdown-body figcaption { margin-top: 0.4em; font-size: 0.875em; color: var(--md-muted); text-align: center; }
 
+.markdown-body .diagram-paper { display: none; }
+
 /* Diagrams: an image replaces the source of a Mermaid block. */
 .markdown-body pre.diagram-drawn { padding: 0; border: 0; background: none; text-align: center; overflow-x: auto; }
 .markdown-body pre.diagram-drawn > code { display: none; }
@@ -201,6 +203,10 @@
 .markdown-body math { font-size: 1.1em; }
 
 @media print {
+  .markdown-body pre.has-paper-diagram > code,
+  .markdown-body pre.has-paper-diagram > .diagram-image:not(.diagram-paper),
+  .markdown-body pre.has-paper-diagram > .diagram-error { display: none; }
+  .markdown-body pre.has-paper-diagram > .diagram-paper { display: inline; }
   .markdown-body .page-break { break-after: page; }
   .markdown-body { font-size: 11.5pt; }
   .markdown-body pre { white-space: pre-wrap; overflow: visible; }

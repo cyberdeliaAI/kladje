@@ -7,7 +7,7 @@ import { paragraphFocus, typewriter } from "./writing-modes.mjs";
 import { inlineCodeChange } from "./inline-code.mjs";
 import { changedSections, compareView } from "./compare.mjs";
 import { documentLanguage } from "./markdown-language.mjs";
-import { urlOverSelection } from "./smart-paste.mjs";
+import { spreadsheetPaste, urlOverSelection } from "./smart-paste.mjs";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { adjacentTableCell, tableRowChange } from "./table-row.mjs";
 import { readTable, tableEdit } from "./table-edit.mjs";
@@ -198,6 +198,12 @@ function create(parent, options = {}) {
       view.dispatch({effects:modes.reconfigure(modeExtensions)});
     },
     setPairing(value) { pairing=value; view.dispatch({effects:pairs.reconfigure(value?pairKeys:[])}); },
+    pasteTable(text) {
+      const change = spreadsheetPaste(view.state, text);
+      if (!change) return false;
+      view.dispatch(change);
+      return true;
+    },
     pasteUrl(text) {
       const change=urlOverSelection(view.state,text);
       if (!change) return false;

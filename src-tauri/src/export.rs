@@ -92,6 +92,8 @@ pub(crate) fn document_metadata(root: comrak::nodes::Node<'_>) -> (Option<String
 /// One Mermaid diagram as the webview drew it: an SVG image for a source text.
 #[derive(serde::Deserialize)]
 pub struct Diagram {
+    #[serde(default)]
+    dark: bool,
     source: String,
     src: String,
     width: u32,
@@ -108,7 +110,7 @@ const DIAGRAM_MARKUP: &str = "<pre><code class=\"language-mermaid\">";
 /// An SVG shown through `img` cannot run script or load other resources.
 #[derive(Default)]
 pub struct DiagramStore {
-    figures: std::collections::VecDeque<(String, String)>,
+    figures: std::collections::VecDeque<(String, String, bool)>,
 }
 
 impl DiagramStore {
@@ -136,11 +138,13 @@ impl DiagramStore {
              src=\"data:image/svg+xml;base64,{encoded}\" width=\"{}\" height=\"{}\"></figure>",
             diagram.width, diagram.height
         );
-        self.figures.retain(|(source, _)| *source != diagram.source);
+        self.figures
+            .retain(|(source, _, dark)| *source != diagram.source || *dark != diagram.dark);
         while self.figures.len() >= DIAGRAM_ENTRIES {
             self.figures.pop_front();
         }
-        self.figures.push_back((diagram.source, figure));
+        self.figures
+            .push_back((diagram.source, figure, diagram.dark));
         Ok(())
     }
 }
@@ -158,14 +162,17 @@ impl Renderer {
 
 /// Replace each Mermaid code block whose diagram is known with its image. A
 /// block without one stays as readable source.
-fn embed_diagrams(renderer: &Renderer, mut body: String) -> String {
+fn embed_diagrams(renderer: &Renderer, mut body: String, dark: bool) -> String {
     if !body.contains(DIAGRAM_MARKUP) {
         return body;
     }
     let Ok(store) = renderer.diagrams.lock() else {
         return body;
     };
-    for (source, figure) in &store.figures {
+    for (source, figure, theme) in &store.figures {
+        if *theme != dark {
+            continue;
+        }
         // Render the block on its own to get exactly the markup it has in the
         // document. The fence is longer than any run of tildes inside it.
         let mut run = 0;
@@ -187,32 +194,51 @@ fn embed_diagrams(renderer: &Renderer, mut body: String) -> String {
     body
 }
 
+#[derive(Default)]
+pub struct ExportOptions {
+    pub line_breaks: bool,
+    pub dark: bool,
+}
+
+impl From<bool> for ExportOptions {
+    fn from(line_breaks: bool) -> Self {
+        Self {
+            line_breaks,
+            dark: false,
+        }
+    }
+}
+
 /// Build an offline HTML file with its checked raster assets embedded.
 pub fn standalone_html(
     renderer: &Renderer,
     markdown: &str,
     fallback_title: &str,
     source: Option<&std::path::Path>,
-    line_breaks: bool,
+    options: impl Into<ExportOptions>,
 ) -> Result<(String, usize), String> {
+    let ExportOptions { line_breaks, dark } = options.into();
     let rendered =
         renderer.render_with_breaks(markdown, Target::Export, source, false, line_breaks)?;
     let title = rendered.title.as_deref().unwrap_or(fallback_title);
     let lang = rendered.language.as_deref().unwrap_or("en");
-    let body = embed_diagrams(renderer, rendered.html);
+    let body = embed_diagrams(renderer, rendered.html, dark);
 
     let html = format!(
         "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">\n\
          <meta name=\"generator\" content=\"Kladje\">\n<title>{title}</title>\n<style>\n\
-         html {{ background: #fff; }}\n\
+         html {{ background: {background}; color-scheme: {theme}; }}\n\
          body {{ margin: 0; }}\n\
          .markdown-body {{ max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }}\n\
-         {DOCUMENT_CSS}\n{MATH_CSS}\n{syntax}\n</style>\n</head>\n<body>\n\
+         {DOCUMENT_CSS}\n{palette}\n{MATH_CSS}\n{syntax}\n</style>\n</head>\n<body>\n\
          <article class=\"markdown-body\">\n{body}</article>\n</body>\n</html>\n",
         title = escaped(title),
-        syntax = renderer.syntax_css_light,
+        syntax = if dark { &renderer.syntax_css_dark } else { &renderer.syntax_css_light },
+        palette = if dark { include_str!("../../ui/dark-document.css") } else { "" },
+        background = if dark { "#181b20" } else { "#fff" },
+        theme = if dark { "dark" } else { "light" },
     );
     Ok((html, rendered.omitted))
 }
@@ -224,9 +250,9 @@ pub fn export_document(
     title: &str,
     source: Option<&std::path::Path>,
     expected: Option<&crate::storage::Version>,
-    line_breaks: bool,
+    options: impl Into<ExportOptions>,
 ) -> Result<crate::storage::Written, String> {
-    let (html, omitted) = standalone_html(renderer, markdown, title, source, line_breaks)?;
+    let (html, omitted) = standalone_html(renderer, markdown, title, source, options)?;
     let mut result = write_html(path, &html, source, expected)?;
     if omitted > 0 {
         let message = format!("{omitted} image reference(s) omitted from the offline export. Check for remote, missing or oversized images.");
@@ -335,6 +361,7 @@ mod tests {
     fn drawn(source: &str, svg: &str) -> Diagram {
         use base64::Engine;
         Diagram {
+            dark: false,
             source: source.into(),
             src: format!(
                 "data:image/svg+xml;base64,{}",
@@ -386,6 +413,44 @@ mod tests {
     }
 
     #[test]
+    fn export_uses_images_and_styles_for_its_selected_theme() {
+        let renderer = Renderer::new();
+        let source = "graph TD\nA --> B\n";
+        let light = drawn(source, "<svg><title>Light</title></svg>");
+        let mut dark = drawn(source, "<svg><title>Dark</title></svg>");
+        dark.dark = true;
+        let (day, night) = (light.src.clone(), dark.src.clone());
+        renderer.store_diagrams(vec![dark, light]).unwrap();
+        let md = format!("```mermaid\n{source}```\n");
+        for dark in [true, false] {
+            let html = standalone_html(
+                &renderer,
+                &md,
+                "title",
+                None,
+                ExportOptions {
+                    line_breaks: false,
+                    dark,
+                },
+            )
+            .unwrap()
+            .0;
+            assert_eq!(html.contains(&day), !dark);
+            assert_eq!(html.contains(&night), dark);
+            assert!(html.contains(if dark {
+                "color-scheme: dark"
+            } else {
+                "color-scheme: light"
+            }));
+            assert!(html.contains(if dark {
+                &renderer.syntax_css_dark
+            } else {
+                &renderer.syntax_css_light
+            }));
+        }
+    }
+
+    #[test]
     fn the_diagram_store_accepts_only_bounded_svg_images() {
         let r = Renderer::new();
         let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
@@ -414,7 +479,7 @@ mod tests {
         assert!(store
             .figures
             .iter()
-            .all(|(source, _)| source != "pie\n\"5\" : 1\n"));
+            .all(|(source, _, _)| source != "pie\n\"5\" : 1\n"));
     }
 
     #[test]
