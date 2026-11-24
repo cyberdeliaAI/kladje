@@ -107,3 +107,5 @@ Apple silicon M4, macOS 27.2.1, 23 November 2026. Native workflows used isolated
 | Installer | The arm64 app and DMG passed Developer ID and secure timestamp verification. The app enables hardened runtime. The read-only DMG passed checksum verification, contained the Applications shortcut, and its copied, strictly verified bundle matched the original byte for byte. The DMG has no stapled ticket. Gatekeeper reported “Unnotarized Developer ID”. | Apple notarization and stapling, a quarantined download and offline launch, and Finder defaults on a clean account. |
 
 Keep native Windows and Linux interaction unverified. Choose distribution terms before external sharing. [Preview build and release checklist](../MACOS_PREVIEW.md)
+
+On 24 November, single Returns within a paragraph became visible in the live preview. A native macOS keyboard check saved the four-line Dutch fixture with its three original LF characters, and a release WKWebView check verified four displayed lines in one paragraph. The preview branch passed 133 automated tests including mounted exFAT, plus 38 native editor checks. Standalone HTML keeps standard Markdown soft-break behavior.
