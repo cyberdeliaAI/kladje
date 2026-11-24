@@ -119,7 +119,7 @@ Hidden until opened.
 
 Press **⌘⇧J** on macOS (Ctrl+Shift+J elsewhere) to search headings. Type part of a heading, press the down arrow to select a match, and press Enter to jump. Escape returns to the document.
 
-Use **View** to toggle line numbers, wrapping or a narrower writing width. The footer counts Unicode code points and word-like segments of Markdown source. A document above 262,144 UTF-16 code units shows its line count first and its totals once a background count finishes. **Format → Insert Table Row Below** adds an empty row with the same number of columns.
+Use **View** or **Settings** to toggle line numbers, wrapping or a narrower writing width. The footer counts Unicode code points and word-like segments of Markdown source. A document above 262,144 UTF-16 code units shows its line count first and its totals once a background count finishes. **Format → Table → Add Row Below** adds an empty row with the same number of columns.
 
 ## Large documents
 
@@ -142,14 +142,18 @@ Choose **File → Compare with Disk** to see your text and the saved file side b
 
 ## Writing shortcuts
 
-Use **Kladje → Settings…** (⌘,) on macOS or **File → Settings…** on other desktops to change automatic pairing, URL paste, rich-text conversion, reading time or image confirmation. Normal paste keeps plain text by default. With URL paste enabled, select a label and paste an HTTP or HTTPS address. With rich-text conversion enabled, paste formatted content to insert Markdown. Shift with the platform’s plain-paste shortcut bypasses these conversions. **Edit → Copy as Formatted Text** puts both Markdown source and formatted HTML on the clipboard, for a selection of up to 4 MiB.
+The formatting bar along the bottom of the source has headings, a task, lists and callouts, bold, italic, highlight, link, table and image, and more under the last button. Arrow keys move along the bar; the Up arrow opens a button's menu. Hide it with **View → Formatting Bar** (⌥⌘B) or in **Settings**.
 
-Use Tab and Shift-Tab to select adjacent GFM table cells. Choose **View → Fold or Unfold at Cursor** on a heading. **⌘E** opens Find with the current selection; **⌘⇧C** toggles inline code. Fenced JavaScript, TypeScript, HTML and CSS have editor syntax colors. A closed initial frontmatter block stays in the file and is excluded from the prose word total.
+**Format** also inserts a footnote (⌥⌘F), which takes the next free number and starts its text at the end of the document, a callout, inline or block math, and today's date. **File → Rename…**, **Move To…** and **Duplicate** work on the open document. Rename and Move To never replace another file and keep unsaved edits in the window; Duplicate opens a copy of the text as it is now.
+
+Use **Kladje → Settings…** (⌘,) on macOS or **File → Settings…** on other desktops. **General** covers saving and pasting, **Editor** the formatting bar, layout and focus, **Preview** line breaks and scrolling, and **Appearance** the theme, text size and a monospaced or proportional editor font. Normal paste keeps plain text by default. With URL paste enabled, select a label and paste an HTTP or HTTPS address. With rich-text conversion enabled, paste formatted content to insert Markdown. Shift with the platform’s plain-paste shortcut bypasses these conversions. **Edit → Copy as Formatted Text** puts both Markdown source and formatted HTML on the clipboard, for a selection of up to 4 MiB.
+
+Use Tab and Shift-Tab to select adjacent GFM table cells. **Format → Table** adds rows above or below and columns before or after the cursor, moves a row, aligns a column, deletes a row or column, and **Tidy Table** pads the columns so the source lines up. Choose **Format → Fold or Unfold at Cursor** on a heading, or **Fold All** and **Unfold All**. **⌘E** opens Find with the current selection; **⌘⇧C** toggles inline code. Fenced JavaScript, TypeScript, HTML and CSS have editor syntax colors. A closed initial frontmatter block stays in the file and is excluded from the prose word total.
 
 Click a standard list checkbox in the preview or focus it and press Space to change its Markdown marker. Undo restores it. Checkboxes stay read-only in exports, tables and documents containing raw HTML. The status bar shows the encoding and line endings of the current document. Optional reading time uses 200 words per minute.
 
 Choose **View → Document Outline**, or the outline button at the bottom right, to keep headings beside your document. They are indented by level, and the section that holds the cursor is marked. Click a heading to go there, or filter and press Enter. The arrow next to a heading folds its subheadings away; with the keyboard, Left and Right do the same. The close button or Escape returns the space to the document. Windows 800 pixels wide or smaller use the compact heading picker. Tab in the final table cell adds a blank row.
 
-Writing Settings can emphasize the current paragraph or keep the caret centered while you type. Both options start off. You can still scroll through the document and use Find.
+Settings can emphasize the current paragraph or keep the caret centered while you type. Both options start off. You can still scroll through the document and use Find.
 
 Standalone HTML exports recognize a simple, single-line `title` and `lang` at the top level of initial frontmatter. For example, `lang: nl-BE` sets the document language. An omitted or unsupported title uses the first level-one heading, then the filename. Put `<!-- pagebreak -->` on a line between paragraphs to start a new printed page.

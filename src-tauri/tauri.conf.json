@@ -48,7 +48,8 @@
     "resources": {
       "../LICENSE": "licenses/LICENSE.txt",
       "THIRD-PARTY-NOTICES.txt": "licenses/THIRD-PARTY-NOTICES-RUST.txt",
-      "../ui/vendor/THIRD-PARTY-NOTICES.txt": "licenses/THIRD-PARTY-NOTICES-FRONTEND.txt"
+      "../ui/vendor/THIRD-PARTY-NOTICES.txt": "licenses/THIRD-PARTY-NOTICES-FRONTEND.txt",
+      "../ui/vendor/THIRD-PARTY-NOTICES-DIAGRAMS.txt": "licenses/THIRD-PARTY-NOTICES-DIAGRAMS.txt"
     },
     "macOS": { "signingIdentity": "-" },
     "shortDescription": "A light, fast Markdown editor",

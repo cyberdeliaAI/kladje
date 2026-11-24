@@ -14,7 +14,10 @@
 <body>
   <div id="app" data-view="split" data-pointer-focus="true" data-empty="true">
     <main id="panes">
-      <section id="editor-pane" aria-label="Markdown source"></section>
+      <section id="editor-pane" aria-label="Markdown source">
+        <div id="format-bar" role="toolbar" aria-label="Formatting" aria-orientation="horizontal"></div>
+        <div id="format-menu" role="menu" hidden></div>
+      </section>
       <div id="divider" role="separator" tabindex="0" aria-label="Source pane width" aria-controls="editor-pane" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50" aria-valuetext="50% source, 50% preview" aria-orientation="vertical" title="Drag to resize, double-click to reset"></div>
       <section id="preview-pane" tabindex="-1" aria-label="Preview">
         <div id="preview-status" hidden><div><span id="preview-status-text"></span><button type="button" id="preview-refresh">Refresh Preview</button></div></div>
@@ -69,18 +72,130 @@
   </dialog>
   </div>
   <dialog id="settings" aria-labelledby="settings-title">
-    <form method="dialog">
-      <h2 id="settings-title">Writing Settings</h2>
-      <label><input type="checkbox" id="autosave"> Save automatically after a pause in typing and when you switch away</label>
-      <label><input type="checkbox" id="pairing"> Pair brackets and quotes while typing</label>
-      <label><input type="checkbox" id="linkPaste"> Paste a URL over selected text as a link</label>
-      <label><input type="checkbox" id="htmlPaste"> Convert pasted rich text to Markdown</label>
-      <label><input type="checkbox" id="confirmImage"> Ask before saving pasted images beside a saved document</label>
-      <label><input type="checkbox" id="focusParagraph"> Emphasize the current paragraph</label>
-      <label><input type="checkbox" id="typewriter"> Center the cursor while typing</label>
-      <label><input type="checkbox" id="readingTime"> Show estimated reading time</label>
-      <label><input type="checkbox" id="lineBreaks"> Show a single Return as a line break in the preview, PDF and HTML export</label>
+    <form method="dialog" id="settings-form">
+      <header class="settings-head">
+        <h2 id="settings-title">Settings</h2>
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+          <button type="button" role="tab" id="tab-general" aria-controls="pane-general" aria-selected="true">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6"/></svg>
+            <span>General</span>
+          </button>
+          <button type="button" role="tab" id="tab-editor" aria-controls="pane-editor" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13M3.5 10h13M3.5 14.5h8"/><path d="M14.5 12.5v5"/></svg>
+            <span>Editor</span>
+          </button>
+          <button type="button" role="tab" id="tab-preview" aria-controls="pane-preview" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10z"/><circle cx="10" cy="10" r="2.3"/></svg>
+            <span>Preview</span>
+          </button>
+          <button type="button" role="tab" id="tab-appearance" aria-controls="pane-appearance" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 15.5L9.6 3.5h.8L15 15.5M6.6 11.5h6.8"/></svg>
+            <span>Appearance</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="settings-pane" role="tabpanel" id="pane-general" aria-labelledby="tab-general">
+        <div class="setting-row">
+          <span class="setting-label" id="label-saving">Saving</span>
+          <div class="setting-options" role="group" aria-labelledby="label-saving">
+            <label><input type="checkbox" id="autosave"> Save automatically</label>
+            <p class="setting-note">After a two-second pause in typing, when you switch to another window and when you close. A new document still needs its first Save.</p>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label" id="label-pasting">Pasting</span>
+          <div class="setting-options" role="group" aria-labelledby="label-pasting">
+            <label><input type="checkbox" id="linkPaste"> Paste a URL over selected text as a link</label>
+            <label><input type="checkbox" id="htmlPaste"> Convert pasted rich text to Markdown</label>
+            <label><input type="checkbox" id="confirmImage"> Ask before saving a pasted image beside the document</label>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-pane" role="tabpanel" id="pane-editor" aria-labelledby="tab-editor" hidden>
+        <div class="setting-row">
+          <span class="setting-label" id="label-typing">Typing</span>
+          <div class="setting-options" role="group" aria-labelledby="label-typing">
+            <label><input type="checkbox" id="pairing"> Pair brackets and quotes</label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label" id="label-layout">Layout</span>
+          <div class="setting-options" role="group" aria-labelledby="label-layout">
+            <label><input type="checkbox" id="formatBar"> Show the formatting bar</label>
+            <label><input type="checkbox" id="pref-gutter"> Show line numbers</label>
+            <label><input type="checkbox" id="pref-wrap"> Wrap long lines</label>
+            <label><input type="checkbox" id="pref-measure"> Limit the writing width</label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label" id="label-focus">Focus</span>
+          <div class="setting-options" role="group" aria-labelledby="label-focus">
+            <label><input type="checkbox" id="focusParagraph"> Emphasize the current paragraph</label>
+            <label><input type="checkbox" id="typewriter"> Keep the cursor centred while typing</label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label" id="label-status">Status bar</span>
+          <div class="setting-options" role="group" aria-labelledby="label-status">
+            <label><input type="checkbox" id="readingTime"> Show estimated reading time</label>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-pane" role="tabpanel" id="pane-preview" aria-labelledby="tab-preview" hidden>
+        <div class="setting-row">
+          <span class="setting-label" id="label-breaks">Line breaks</span>
+          <div class="setting-options" role="group" aria-labelledby="label-breaks">
+            <label><input type="checkbox" id="lineBreaks"> Show a single Return as a line break</label>
+            <p class="setting-note">Applies to the preview, PDF, HTML export and formatted copies. Most other Markdown readers join such lines with a space.</p>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label" id="label-scrolling">Scrolling</span>
+          <div class="setting-options" role="group" aria-labelledby="label-scrolling">
+            <label><input type="checkbox" id="pref-sync"> Keep the source and preview in step</label>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-pane" role="tabpanel" id="pane-appearance" aria-labelledby="tab-appearance" hidden>
+        <div class="setting-row">
+          <span class="setting-label" id="label-theme">Theme</span>
+          <div class="segmented" role="radiogroup" aria-labelledby="label-theme">
+            <label><input type="radio" name="theme" value="auto"><span>Match System</span></label>
+            <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+            <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label" id="label-size">Text size</span>
+          <div class="setting-inline" role="group" aria-labelledby="label-size">
+            <button type="button" id="zoom-smaller" aria-label="Smaller text">A−</button>
+            <output id="zoom-value" aria-live="polite">100%</output>
+            <button type="button" id="zoom-larger" aria-label="Larger text">A+</button>
+            <button type="button" id="zoom-default">Default</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label" id="label-font">Editor font</span>
+          <div class="segmented" role="radiogroup" aria-labelledby="label-font">
+            <label><input type="radio" name="editorFont" value="mono"><span>Monospaced</span></label>
+            <label><input type="radio" name="editorFont" value="sans"><span>Proportional</span></label>
+          </div>
+        </div>
+      </section>
+
       <div class="dialog-actions"><button>Done</button></div>
+    </form>
+  </dialog>
+  <dialog id="rename" aria-labelledby="rename-title">
+    <form id="rename-form">
+      <h2 id="rename-title">Rename</h2>
+      <input id="rename-name" type="text" aria-label="File name" spellcheck="false" autocomplete="off">
+      <p id="rename-error" class="dialog-error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" id="rename-cancel">Cancel</button><button type="submit">Rename</button></div>
     </form>
   </dialog>
   <dialog id="comparison" aria-labelledby="comparison-title" aria-describedby="comparison-summary">

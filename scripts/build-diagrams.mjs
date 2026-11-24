@@ -1,6 +1,7 @@
 // Put the Mermaid engine where the application can load it and list the
-// licences of everything that bundle contains. Both outputs are generated from
-// node_modules and are not checked in. Tauri runs this before a build.
+// licences of everything that bundle contains. Both are generated from
+// node_modules. The engine is not checked in; the notices are, because the
+// bundle configuration ships them. Tauri runs this before a build.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,5 +69,16 @@ const notices =
   "\nLICENSE TEXTS\n" + rule + "\n" +
   [...texts].map(([text, users]) => "Applies to:\n  " + users.join("\n  ") + "\n\n" + text).join("\n" + rule + "\n") + "\n";
 
+// The notices are checked in, so a native build finds them even before this
+// script runs. --check verifies them against the installed packages.
+if (process.argv.includes("--check")) {
+  const file = path.join(vendor, "THIRD-PARTY-NOTICES-DIAGRAMS.txt");
+  if (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== notices) {
+    console.error("ui/vendor/THIRD-PARTY-NOTICES-DIAGRAMS.txt is out of date. Run: npm run build:diagrams");
+    process.exit(1);
+  }
+  console.log("ui/vendor/THIRD-PARTY-NOTICES-DIAGRAMS.txt matches package-lock.json:", packages.size, "packages.");
+  process.exit(0);
+}
 const changed = [write("mermaid.min.js", fs.readFileSync(engine)), write("THIRD-PARTY-NOTICES-DIAGRAMS.txt", notices)];
 console.log(changed.some(Boolean) ? "Updated" : "Up to date:", "ui/vendor/mermaid.min.js and its notices for", packages.size, "packages.");

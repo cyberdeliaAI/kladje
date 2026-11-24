@@ -322,6 +322,15 @@ fn invoke(
             )?)
         }
         "file_version" => json!(storage::version(&path("path")?)?),
+        "move_document" => {
+            let expected: Option<storage::Version> =
+                serde_json::from_value(args["expected"].clone()).map_err(|e| e.to_string())?;
+            json!(storage::move_noclobber(
+                &path("from")?,
+                &path("to")?,
+                expected.as_ref()
+            )?)
+        }
         "import_file" => json!(import::import(&path("path")?)?),
         "export_html" => {
             let expected: Option<storage::Version> =

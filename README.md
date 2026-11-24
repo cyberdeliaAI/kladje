@@ -12,10 +12,10 @@ Kladje is being qualified for a first Apple silicon macOS preview. Windows and L
 ## What you can do
 
 - Open several documents side by side. On macOS, **⌘T** opens a new document in a native tab. Opening the same file again brings its window forward. Each document has its own undo history, save status and recovery draft.
-- Pair brackets and quotes, paste a URL over selected text, and use **Writing Settings** to enable rich-text paste or estimated reading time. Copy selected Markdown as formatted text from **Edit**.
-- Edit Markdown with native menu shortcuts, heading and list commands, undo and redo, and Find and Replace. Open **Help → Markdown Guide** for an editable guide.
+- Pair brackets and quotes, paste a URL over selected text, and use **Settings** to enable rich-text paste, reading time or a proportional editor font. Copy selected Markdown as formatted text from **Edit**.
+- Edit Markdown with native menu shortcuts or the formatting bar below the source, heading, list, callout, footnote and math commands, undo and redo, and Find and Replace. Open **Help → Markdown Guide** for an editable guide.
 - Reopen any of the last ten files from **File → Open Recent**. Search headings with **⌘⇧J** on macOS or keep **View → Document Outline** open beside the source. An empty document shows ways to begin and your recent files in its preview.
-- Toggle line numbers, wrapping and writing width in **View**. Writing Settings also offers paragraph focus and typewriter scrolling. Use **Format → Insert Table Row Below** to extend an existing Markdown table.
+- Toggle line numbers, wrapping and writing width in **View** or **Settings**, which also offers paragraph focus and typewriter scrolling. **Format → Table** adds, moves and deletes rows and columns, aligns a column and tidies the table. **File** can rename, move or duplicate the open document.
 - Preview tables, task lists, footnotes, strikethrough, fenced code with syntax highlighting, math and [Mermaid](https://mermaid.js.org) diagrams. Diagrams also appear in PDF and exported HTML. Switch between editor, preview and split views in light or dark mode.
 - Open Markdown and plain text, import HTML or Word documents as editable Markdown, export HTML, and print or save a PDF through the system print dialog.
 - Use **Format → Insert Local Image** or drop a PNG, JPEG, GIF or WebP into the document. Edit the selected description to supply alt text.
@@ -78,4 +78,4 @@ The [development roadmap](docs/planning/DEVELOPMENT_ROADMAP.md) records the veri
 
 Kladje's own code is available under the [MIT License](LICENSE). The licence covers the source code. The name Kladje, the application icon and the wordmark are not licensed for use by other products.
 
-The application includes third-party software under its own licences. Their notices ship inside the app under `Resources/licenses`: the [Rust packages, syntax definitions and themes](src-tauri/THIRD-PARTY-NOTICES.txt) and the [bundled editor and MathML stylesheet](ui/vendor/THIRD-PARTY-NOTICES.txt). After changing `src-tauri/Cargo.lock`, regenerate the first file with `npm run build:notices`. `node scripts/check-dependencies.mjs` fails when it is out of date.
+The application includes third-party software under its own licences. Their notices ship inside the app under `Resources/licenses`: the [Rust packages, syntax definitions and themes](src-tauri/THIRD-PARTY-NOTICES.txt), the [bundled editor and MathML stylesheet](ui/vendor/THIRD-PARTY-NOTICES.txt) and the [diagram engine](ui/vendor/THIRD-PARTY-NOTICES-DIAGRAMS.txt). After changing `src-tauri/Cargo.lock`, regenerate the first file with `npm run build:notices`; after changing the Mermaid version, regenerate the last with `npm run build:diagrams`. `node scripts/check-dependencies.mjs` fails when either is out of date.

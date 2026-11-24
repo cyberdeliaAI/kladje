@@ -191,8 +191,8 @@ window.addEventListener("load", async () => {
     await wait(() => settings.open, "native Settings command");
     const pref = document.getElementById("htmlPaste");
     if (!pref.checked) pref.click();
-    settings.querySelector("button").click();
-    await wait(() => !settings.open, "close Writing Settings");
+    settings.querySelector(".dialog-actions button").click();
+    await wait(() => !settings.open, "close Settings");
     edit("label");
     qaEditor.focus();
     await frame();
@@ -232,7 +232,7 @@ window.addEventListener("load", async () => {
     await wait(() => settings.open, "writing modes");
     document.getElementById("focusParagraph").click();
     document.getElementById("typewriter").click();
-    settings.querySelector("button").click();
+    settings.querySelector(".dialog-actions button").click();
     edit(Array.from({length:100},(_,i)=>"Paragraph "+i).join("\n\n"));
     qaEditor.goToLine(89);
     qaEditor.focus();
@@ -248,7 +248,7 @@ window.addEventListener("load", async () => {
     await wait(() => settings.open, "restore standard writing modes");
     document.getElementById("focusParagraph").click();
     document.getElementById("typewriter").click();
-    settings.querySelector("button").click();
+    settings.querySelector(".dialog-actions button").click();
     const proof = await core.invoke("export_html", {path:window.qaResultPath+".paged.html", expected:null,
       title:"proof", source:null, markdown:"---\ntitle: Page proof\nlang: en-GB\n---\n# First proof page\n\n<!-- pagebreak -->\n\n# Second proof page"});
     check(proof.confirmed, "offline export with explicit page break");

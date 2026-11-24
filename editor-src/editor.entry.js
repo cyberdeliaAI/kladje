@@ -10,6 +10,8 @@ import { documentLanguage } from "./markdown-language.mjs";
 import { urlOverSelection } from "./smart-paste.mjs";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { adjacentTableCell, tableRowChange } from "./table-row.mjs";
+import { readTable, tableEdit } from "./table-edit.mjs";
+import { footnoteChange } from "./footnote.mjs";
 import { counts, counted, counting, codePoints, countLimit, selectedProseWords, totals } from "./statistics.mjs";
 import { EditorState, EditorSelection, Compartment, Text } from "@codemirror/state";
 import {
@@ -30,7 +32,7 @@ import {
   redo,
 } from "@codemirror/commands";
 import { deleteMarkupBackward, insertNewlineContinueMarkupCommand } from "@codemirror/lang-markdown";
-import { syntaxHighlighting, indentUnit, toggleFold, codeFolding } from "@codemirror/language";
+import { syntaxHighlighting, indentUnit, toggleFold, foldAll, unfoldAll, codeFolding } from "@codemirror/language";
 import { search, searchKeymap, openSearchPanel, SearchQuery, setSearchQuery, highlightSelectionMatches } from "@codemirror/search";
 import { tags as t, tagHighlighter } from "@lezer/highlight";
 
@@ -171,6 +173,26 @@ function create(parent, options = {}) {
       view.focus();
       return true;
     },
+    inTable: () => readTable(view.state) !== null,
+    /** A structural table edit (see table-edit.mjs). False outside a table. */
+    editTable(op, arg) {
+      const change = tableEdit(view.state, op, arg);
+      if (!change) return false;
+      view.dispatch(change);
+      view.focus();
+      return true;
+    },
+    insertFootnote() {
+      view.dispatch(footnoteChange(view.state));
+      view.focus();
+    },
+    /** Insert text at the cursor, replacing a selection. */
+    insertText(text) {
+      view.dispatch(view.state.replaceSelection(text), {scrollIntoView: true, userEvent: "input"});
+      view.focus();
+    },
+    foldAll() { foldAll(view); view.focus(); },
+    unfoldAll() { unfoldAll(view); view.focus(); },
     setWritingModes(focus, center) {
       modeExtensions = [focus ? paragraphFocus : [], center ? typewriter : []];
       view.dispatch({effects:modes.reconfigure(modeExtensions)});

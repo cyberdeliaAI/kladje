@@ -74,7 +74,7 @@
   let syncEnabled = storedFlag("sync", true);
   let gutter = storedFlag("gutter", false), wrap = storedFlag("wrap", true), measure = storedFlag("measure", true);
   const settings = $("settings");
-  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:false};
+  const writing = {pairing:true, linkPaste:true, htmlPaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:false, formatBar:true};
   for (const [key, fallback] of Object.entries(writing)) {
     writing[key] = storedFlag(key, fallback);
     const control = $(key);
@@ -86,7 +86,16 @@
       if (key === "pairing") editor.setPairing(control.checked);
       if (key === "readingTime") updateStats();
       if (key === "lineBreaks" && viewMode !== "editor") renderNow();
+      if (key === "formatBar") { applyFormatBar(); syncChecks(); }
     });
+  }
+  let editorFont = store.get("editorFont", "mono") === "sans" ? "sans" : "mono";
+  function setEditorFont(value) {
+    editorFont = value === "sans" ? "sans" : "mono";
+    store.set("editorFont", editorFont);
+    els.app.dataset.editorFont = editorFont;
+    editor.remeasure();
+    syncSettings();
   }
   function applyWritingModes() {
     editor.setWritingModes(writing.focusParagraph, writing.typewriter);
@@ -108,11 +117,21 @@
   let checkUpdate = Promise.resolve();
   function syncChecks() {
     const checked = ["view_" + viewMode, "theme_" + themeSetting];
-    for (const [id, enabled] of Object.entries({sync_scroll:syncEnabled, gutter, wrap, measure, document_outline:sidebarOpen})) {
+    for (const [id, enabled] of Object.entries({sync_scroll:syncEnabled, gutter, wrap, measure, document_outline:sidebarOpen, format_bar:writing.formatBar})) {
       if (enabled) checked.push(id);
     }
     $("outline-toggle").setAttribute("aria-pressed", String(sidebarOpen));
+    syncSettings();
     checkUpdate = checkUpdate.then(() => invoke("set_menu_checks", {checked})).catch(report);
+  }
+  // The settings window shows preferences that also live in the View menu.
+  function syncSettings() {
+    for (const [id, on] of Object.entries({"pref-gutter": gutter, "pref-wrap": wrap, "pref-measure": measure, "pref-sync": syncEnabled, formatBar: writing.formatBar})) {
+      $(id).checked = on;
+    }
+    for (const radio of settings.querySelectorAll('input[name="theme"]')) radio.checked = radio.value === themeSetting;
+    for (const radio of settings.querySelectorAll('input[name="editorFont"]')) radio.checked = radio.value === editorFont;
+    $("zoom-value").textContent = Math.round(zoom * 100) + "%";
   }
   function applyEditorLayout() {
     editor.configureLayout({gutter, wrap});
@@ -190,7 +209,9 @@
         if (key === "readingTime") updateStats();
         if (key === "lineBreaks" && viewMode !== "editor") renderNow();
         if (key === "focusParagraph" || key === "typewriter") applyWritingModes();
-      } else if (key === "theme") setTheme(store.get(key, "auto"));
+        if (key === "formatBar") { applyFormatBar(); syncChecks(); }
+      } else if (key === "editorFont") setEditorFont(store.get(key, "mono"));
+      else if (key === "theme") setTheme(store.get(key, "auto"));
       else if (key === "view") setView(store.get(key, "split"));
       else if (key === "zoom") setZoom(store.get(key, 1));
       else if (key === "split") setSplit(store.get(key, 50));
@@ -290,11 +311,188 @@
 
   // ---------------------------------------------------------------- chrome
 
+  // ---------------------------------------------------------------- formatting bar
+
+  const onMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform || "");
+
+  // A row of formatting buttons along the bottom of the source pane. Every
+  // button runs a menu action, so the bar adds no behaviour of its own.
+  const glyphs = onMac => text => onMac ? text :
+    text.replace(/⌃/g, "Ctrl+").replace(/⌥/g, "Alt+").replace(/⇧/g, "Shift+").replace(/⌘/g, "Ctrl+").replace(/Ctrl\+Ctrl\+/, "Ctrl+");
+  const FORMAT_ICONS = {
+    heading: '<path d="M3.5 3v10M10.5 3v10M3.5 8h7"/>',
+    task: '<rect x="2.5" y="2.5" width="11" height="11" rx="2.5"/><path d="M5.3 8.2l1.9 1.9 3.6-4"/>',
+    list: '<path d="M6 4h7.5M6 8h7.5M6 12h7.5"/><circle cx="3" cy="4" r=".9" fill="currentColor" stroke="none"/><circle cx="3" cy="8" r=".9" fill="currentColor" stroke="none"/><circle cx="3" cy="12" r=".9" fill="currentColor" stroke="none"/>',
+    bold: '<path d="M4.5 2.8h4.2a2.6 2.6 0 0 1 0 5.2H4.5zM4.5 8h4.9a2.6 2.6 0 0 1 0 5.2H4.5z"/>',
+    italic: '<path d="M7 2.8h5M4 13.2h5M9.8 2.8L6.2 13.2"/>',
+    highlight: '<path d="M9.8 2.6l3.6 3.6-6 6H3.8V8.6z"/><path d="M2.5 14h11"/>',
+    link: '<path d="M6.8 9.2a2.8 2.8 0 0 0 4 0l2-2a2.8 2.8 0 0 0-4-4l-.9.9"/><path d="M9.2 6.8a2.8 2.8 0 0 0-4 0l-2 2a2.8 2.8 0 0 0 4 4l.9-.9"/>',
+    table: '<rect x="2" y="3" width="12" height="10" rx="1.6"/><path d="M2 6.5h12M2 10h12M6.5 3v10"/>',
+    image: '<rect x="2" y="3" width="12" height="10" rx="1.6"/><circle cx="5.8" cy="6.5" r="1.1"/><path d="M2.5 12l3.6-3.4 2.4 2.2 2.2-2 3 3"/>',
+    more: '<circle cx="8" cy="3.5" r="1" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="8" cy="12.5" r="1" fill="currentColor" stroke="none"/>',
+  };
+  const sep = "-";
+  const FORMAT_MENUS = {
+    heading: [["h1", "Heading 1", "⌘1"], ["h2", "Heading 2", "⌘2"], ["h3", "Heading 3", "⌘3"], ["h4", "Heading 4", "⌘4"],
+      ["h5", "Heading 5", "⌘5"], ["h6", "Heading 6", "⌘6"], sep, ["h0", "Paragraph", "⌥⌘0"]],
+    list: [["bullet", "Bullet List", "⇧⌘8"], ["numbered", "Numbered List", "⇧⌘7"], ["quote", "Quote", "⇧⌘."], sep,
+      ["callout_note", "Note"], ["callout_tip", "Tip"], ["callout_important", "Important"], ["callout_warning", "Warning"], ["callout_caution", "Caution"]],
+    table: [["table", "Insert Table", "⌥⌘T"], sep, ["table_row_above", "Add Row Above"], ["table_row", "Add Row Below"],
+      ["table_column_before", "Add Column Before"], ["table_column_after", "Add Column After"], sep,
+      ["table_row_up", "Move Row Up"], ["table_row_down", "Move Row Down"], ["table_format", "Tidy Table"], sep,
+      ["table_delete_row", "Delete Row"], ["table_delete_column", "Delete Column"]],
+    more: [["strike", "Strikethrough", "⇧⌘X"], ["code", "Inline Code", "⇧⌘C"], ["codeblock", "Code Block", "⌥⌘C"],
+      ["math", "Inline Math", "⇧⌘M"], ["math_block", "Math Block"], ["footnote", "Footnote", "⌥⌘F"],
+      ["rule", "Horizontal Rule"], ["date_iso", "Insert Date"], sep, ["format_bar", "Hide Formatting Bar", "⌥⌘B"]],
+  };
+  const FORMAT_BUTTONS = [
+    ["heading", "Heading", "menu"], ["task", "Task List", "task"], ["list", "Lists and Callouts", "menu"], sep,
+    ["bold", "Bold", "bold", "⌘B"], ["italic", "Italic", "italic", "⌘I"], ["highlight", "Highlight", "highlight", "⇧⌘H"],
+    ["link", "Link", "link", "⌘K"], sep,
+    ["table", "Table", "menu"], ["image", "Insert Local Image", "insert_image"], ["more", "More Formatting", "menu"],
+  ];
+  const keyLabel = glyphs(onMac);
+  const formatBar = $("format-bar"), formatMenu = $("format-menu");
+  function svgIcon(markup) {
+    const icon = document.createElementNS ? document.createElementNS("http://www.w3.org/2000/svg", "svg") : document.createElement("svg");
+    icon.setAttribute("viewBox", "0 0 16 16");
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML = markup;
+    return icon;
+  }
+  formatBar.replaceChildren(...FORMAT_BUTTONS.map(entry => {
+    if (entry === sep) {
+      const line = document.createElement("span");
+      line.className = "format-separator";
+      line.setAttribute("role", "separator");
+      return line;
+    }
+    const [name, label, action, keys] = entry;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.tabIndex = -1;
+    button.dataset.format = name;
+    button.setAttribute("aria-label", label);
+    button.title = keys ? `${label} (${keyLabel(keys)})` : label;
+    if (action === "menu") {
+      button.setAttribute("aria-haspopup", "menu");
+      button.setAttribute("aria-expanded", "false");
+      button.dataset.menu = name;
+    } else button.dataset.action = action;
+    button.append(svgIcon(FORMAT_ICONS[name]));
+    if (action === "menu" && name !== "more") button.classList.add("has-menu");
+    return button;
+  }));
+  // One button at a time takes part in Tab order (roving tabindex).
+  const barButtons = () => Array.from(formatBar.querySelectorAll("button"));
+  if (formatBar.firstElementChild) formatBar.firstElementChild.tabIndex = 0;
+
+  let menuOpener = null;
+  function closeFormatMenu(refocus = false) {
+    if (!menuOpener) return;
+    menuOpener.setAttribute("aria-expanded", "false");
+    formatMenu.hidden = true;
+    formatMenu.replaceChildren();
+    if (refocus) menuOpener.focus();
+    menuOpener = null;
+  }
+  function openFormatMenu(opener, focusFirst = false) {
+    const same = menuOpener === opener;
+    closeFormatMenu();
+    if (same) return;
+    menuOpener = opener;
+    opener.setAttribute("aria-expanded", "true");
+    formatMenu.setAttribute("aria-label", opener.getAttribute("aria-label"));
+    formatMenu.replaceChildren(...FORMAT_MENUS[opener.dataset.menu].map(entry => {
+      if (entry === sep) {
+        const line = document.createElement("div");
+        line.className = "format-menu-separator";
+        line.setAttribute("role", "separator");
+        return line;
+      }
+      const [action, label, keys] = entry;
+      const item = document.createElement("button");
+      item.type = "button";
+      item.tabIndex = -1;
+      item.setAttribute("role", "menuitem");
+      item.dataset.action = action;
+      const name = document.createElement("span");
+      name.textContent = action === "format_bar" ? label : label;
+      item.append(name);
+      if (keys) {
+        const hint = document.createElement("kbd");
+        hint.textContent = keyLabel(keys);
+        item.append(hint);
+      }
+      return item;
+    }));
+    formatMenu.hidden = false;
+    // Open above the button, kept inside the pane.
+    const pane = els.editorPane.getBoundingClientRect?.() || {left: 0, width: 0};
+    const at = opener.getBoundingClientRect?.() || {left: 0};
+    const width = formatMenu.offsetWidth || 0;
+    formatMenu.style.left = Math.max(8, Math.min(at.left - pane.left, pane.width - width - 8)) + "px";
+    if (focusFirst) formatMenu.querySelector("[role=menuitem]")?.focus();
+  }
+  const keepEditorFocus = event => { if (event.target.closest?.("button")) event.preventDefault(); };
+  formatBar.addEventListener("mousedown", keepEditorFocus);
+  formatMenu.addEventListener("mousedown", keepEditorFocus);
+  formatBar.addEventListener("click", event => {
+    const button = event.target.closest?.("button");
+    if (!button) return;
+    if (button.dataset.menu) return openFormatMenu(button, event.detail === 0);
+    closeFormatMenu();
+    return runAction(button.dataset.action);
+  });
+  formatBar.addEventListener("keydown", event => {
+    const buttons = barButtons();
+    const index = buttons.indexOf(document.activeElement);
+    const step = {ArrowRight: 1, ArrowLeft: -1}[event.key];
+    if (step && index >= 0) {
+      event.preventDefault();
+      const next = buttons[(index + step + buttons.length) % buttons.length];
+      buttons.forEach(b => { b.tabIndex = -1; });
+      next.tabIndex = 0;
+      next.focus();
+    } else if (event.key === "ArrowUp" && document.activeElement?.dataset?.menu) {
+      event.preventDefault();
+      openFormatMenu(document.activeElement, true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeFormatMenu();
+      editor.focus();
+    }
+  });
+  formatMenu.addEventListener("click", event => {
+    const item = event.target.closest?.("[role=menuitem]");
+    if (!item) return;
+    closeFormatMenu();
+    return runAction(item.dataset.action);
+  });
+  formatMenu.addEventListener("keydown", event => {
+    const items = Array.from(formatMenu.querySelectorAll("[role=menuitem]"));
+    const index = items.indexOf(document.activeElement);
+    const move = {ArrowDown: index + 1, ArrowUp: index - 1, Home: 0, End: items.length - 1}[event.key];
+    if (move !== undefined) {
+      event.preventDefault();
+      items[(move + items.length) % items.length]?.focus();
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      event.preventDefault();
+      closeFormatMenu(true);
+    }
+  });
+  els.app.addEventListener("pointerdown", event => {
+    if (menuOpener && !event.target.closest?.("#format-menu, #format-bar")) closeFormatMenu();
+  }, true);
+  function applyFormatBar() {
+    els.app.dataset.formatBar = String(writing.formatBar);
+    if (!writing.formatBar) closeFormatMenu();
+  }
+
   // ---------------------------------------------------------------- start screen
 
   // An empty document shows the wordmark, the ways to begin and recent files
   // where its preview would be.
-  const onMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform || "");
   const shortcut = (key, shift = false) => onMac ? (shift ? "⇧⌘" : "⌘") + key : "Ctrl+" + (shift ? "Shift+" : "") + key;
   const START_ICONS = {
     open: '<path d="M4.5 3.5h6v6M10.5 3.5l-7 7"/>',
@@ -440,6 +638,7 @@
     zoom = Math.min(1.8, Math.max(0.7, Math.round((Number.isFinite(value) ? value : 1) * 10) / 10));
     store.set("zoom", zoom);
     document.documentElement.style.setProperty("--zoom", zoom);
+    $("zoom-value").textContent = Math.round(zoom * 100) + "%";
     anchors = null;
     editor.remeasure();
   }
@@ -1538,6 +1737,87 @@
     comparisonView = window.KladjeEditor.compare($("comparison-view"), source, disk);
   }
 
+  // ---------------------------------------------------------------- rename, move and duplicate
+
+  async function moveDocument(target, verb) {
+    const before = doc.path;
+    const version = await invoke("move_document", {from: before, to: target, expected: doc.version});
+    doc.path = target;
+    doc.name = basename(target);
+    doc.version = version;
+    doc.ignoredVersion = null;
+    await updateHistory({kind: "remove", path: before});
+    await rememberPath(target);
+    if (session.isDirty()) saveRecovery();
+    refreshChrome();
+    if (dirname(before) !== dirname(target)) {
+      // Relative links and images now resolve from the new folder.
+      doc.remote = false;
+      els.preview.replaceChildren();
+      renderNow();
+    }
+    notify(`${verb} ${doc.name}`);
+    return true;
+  }
+
+  const rename = $("rename");
+  const renameName = $("rename-name");
+  let renameDone = null;
+  function renameDocument() {
+    if (!doc.path) return notify("Save this document first to give it a name.");
+    renameName.value = doc.name;
+    $("rename-error").textContent = "";
+    rename.showModal();
+    renameName.focus();
+    // Select the name without its extension, as Finder does.
+    const dot = doc.name.lastIndexOf(".");
+    renameName.setSelectionRange(0, dot > 0 ? dot : doc.name.length);
+    return new Promise(resolve => { renameDone = resolve; });
+  }
+  async function submitRename() {
+    if (!doc.path) { rename.close(); return false; }
+    const name = renameName.value.trim();
+    const show = text => { $("rename-error").textContent = text; return false; };
+    if (!name || name === "." || name === "..") return show("Enter a file name.");
+    if (/[\\/:\u0000-\u001f]/.test(name)) return show("A file name cannot contain / \\ or :.");
+    // Keep the document a Markdown or text file.
+    const finalName = MARKDOWN_EXT.includes(extension(name)) ? name : `${name}.${extension(doc.name) || "md"}`;
+    if (finalName === doc.name) { rename.close(); return true; }
+    try {
+      await moveDocument(resolvePath(dirname(doc.path), finalName), "Renamed to");
+      rename.close();
+      return true;
+    } catch (error) { return show(String(error)); }
+  }
+  $("rename-form").addEventListener("submit", event => { event.preventDefault(); return submitRename(); });
+  $("rename-cancel").addEventListener("click", () => rename.close());
+  rename.addEventListener("close", () => { renameDone?.(); renameDone = null; });
+
+  async function moveDocumentTo() {
+    if (!doc.path) return notify("Save this document first to give it a place.");
+    const target = await T.dialog.save({title: "Move To", defaultPath: doc.path,
+      filters: [{name: "Markdown", extensions: ["md", "markdown"]}]});
+    if (!target || target === doc.path) return false;
+    return moveDocument(target, "Moved to");
+  }
+
+  async function duplicateDocument() {
+    if (!doc.path) return notify("Save this document first to duplicate it.");
+    const content = editor.getText();
+    const format = {...doc.format};
+    if (format.eol === "mixed") { format.eol = "lf"; delete format.separators; }
+    if (format.encoding === "latin1" && /[^\u0000-ÿ]/u.test(content)) format.encoding = "utf8";
+    const ext = extension(doc.name) || "md", base = stem(doc.name);
+    for (let n = 1; n <= 99; n++) {
+      const path = resolvePath(dirname(doc.path), `${base} copy${n > 1 ? " " + n : ""}.${ext}`);
+      if (await invoke("file_version", {path})) continue;
+      // The copy holds the text as it is in this window, including unsaved edits.
+      await invoke("write_file", {path, content, format, expected: null});
+      return openWindow({kind: "open", path});
+    }
+    notify("There are already 99 copies of this document here.");
+  }
+
   async function chooseAndOpen() {
     const path = await T.dialog.open({
       title: "Open",
@@ -1902,20 +2182,85 @@
 
   // ---------------------------------------------------------------- menu
 
+  // ---------------------------------------------------------------- settings window
+
+  const settingTabs = ["general", "editor", "preview", "appearance"];
+  let settingsTab = "general";
+  function showSettingsTab(name, focus = false) {
+    settingsTab = name;
+    for (const tab of settingTabs) {
+      const selected = tab === name;
+      $("tab-" + tab).setAttribute("aria-selected", String(selected));
+      $("tab-" + tab).tabIndex = selected ? 0 : -1;
+      $("pane-" + tab).hidden = !selected;
+    }
+    if (focus) $("tab-" + name).focus();
+  }
+  for (const tab of settingTabs) {
+    $("tab-" + tab).addEventListener("click", () => showSettingsTab(tab));
+    $("tab-" + tab).addEventListener("keydown", event => {
+      const step = {ArrowRight: 1, ArrowLeft: -1}[event.key];
+      if (!step) return;
+      event.preventDefault();
+      showSettingsTab(settingTabs[(settingTabs.indexOf(tab) + step + settingTabs.length) % settingTabs.length], true);
+    });
+  }
+  // These mirror View menu items; each runs the menu's own toggle when it differs.
+  for (const [id, action, current] of [["pref-gutter", "gutter", () => gutter], ["pref-wrap", "wrap", () => wrap],
+    ["pref-measure", "measure", () => measure], ["pref-sync", "sync_scroll", () => syncEnabled]]) {
+    $(id).addEventListener("change", () => { if ($(id).checked !== current()) actions[action](); });
+  }
+  settings.addEventListener("change", event => {
+    const input = event.target;
+    if (input?.name === "theme") setTheme(input.value);
+    if (input?.name === "editorFont") setEditorFont(input.value);
+  });
+  $("zoom-smaller").addEventListener("click", () => setZoom(zoom - 0.1));
+  $("zoom-larger").addEventListener("click", () => setZoom(zoom + 0.1));
+  $("zoom-default").addEventListener("click", () => setZoom(1));
+
   const TABLE = "| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |";
+  // Menu id → table-edit.mjs operation.
+  const TABLE_EDITS = {
+    table_row: ["rowBelow"], table_row_above: ["rowAbove"],
+    table_column_before: ["columnBefore"], table_column_after: ["columnAfter"],
+    table_row_up: ["moveUp"], table_row_down: ["moveDown"],
+    table_delete_row: ["deleteRow"], table_delete_column: ["deleteColumn"],
+    table_align_left: ["align", "left"], table_align_center: ["align", "center"],
+    table_align_right: ["align", "right"], table_align_none: ["align", "none"],
+    table_format: ["format"],
+  };
+  function readTableHint(op) {
+    if (!editor.inTable()) return "Place the cursor inside a Markdown table.";
+    return {rowAbove: "The header row stays at the top of the table.", deleteRow: "The header row cannot be deleted.",
+      moveUp: "This row is already directly below the header.", moveDown: "This is already the last row.",
+      deleteColumn: "A table keeps at least one column."}[op] || "This change does not apply here.";
+  }
+  const isoDate = date => [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
   const actions = {
     new: () => runFileAction(() => openWindow({kind:"new"})),
     new_tab: () => runFileAction(() => invoke("open_document_window", {request:{kind:"new"}, tab:true})),
     open: () => runFileAction(chooseAndOpen),
     new_template: () => runFileAction(newFromTemplate),
     compare_disk: () => runFileAction(compareWithDisk),
+    rename: () => runFileAction(renameDocument),
+    move_to: () => runFileAction(moveDocumentTo),
+    duplicate: () => runFileAction(duplicateDocument),
     clear_recent: () => runFileAction(async () => {
       await updateHistory({kind:"clear"});
     }),
     refresh_preview: refreshPreview,
     jump_heading: jumpToHeading,
     document_outline: toggleSidebar,
-    settings: () => settings.showModal(),
+    // The window reopens on the section that was open last.
+    settings: () => { syncSettings(); showSettingsTab(settingsTab); settings.showModal(); },
+    format_bar: () => {
+      writing.formatBar = !writing.formatBar;
+      store.set("formatBar", writing.formatBar);
+      applyFormatBar();
+      syncChecks();
+      if (!writing.formatBar) editor.focus();
+    },
     close_window: () => runFileAction(() => finishClose(() => appWindow.destroy())),
     reveal: () => doc.path ? invoke("reveal_document", {path:doc.path}) : notify("Save this document first to reveal it."),
     fold: () => editor.fold(),
@@ -1976,9 +2321,28 @@
     quote: () => editor.toggleList("quote"),
     codeblock: () =>
       editor.insertBlock((selected) => ({ text: "```\n" + selected + "\n```", selectFrom: 3, selectTo: 3 })),
-    table_row: () => { if (!editor.insertTableRow()) notify("Place the cursor inside a Markdown table."); },
     table: () => editor.insertBlock(() => ({ text: TABLE, selectFrom: 2, selectTo: 10 })),
+    ...Object.fromEntries(Object.entries(TABLE_EDITS).map(([id, [op, arg]]) => [id, () => {
+      if (!editor.editTable(op, arg)) {
+        notify(readTableHint(op));
+      }
+    }])),
     rule: () => editor.insertBlock(() => ({ text: "---", selectFrom: 3, selectTo: 3 })),
+    highlight: () => editor.toggleWrap("=="),
+    math: () => editor.toggleWrap("$"),
+    math_block: () => editor.insertBlock((selected) => ({ text: "$$\n" + selected + "\n$$", selectFrom: 3, selectTo: 3 + selected.length })),
+    footnote: () => editor.insertFootnote(),
+    ...Object.fromEntries(["note", "tip", "important", "warning", "caution"].map(kind => ["callout_" + kind, () =>
+      editor.insertBlock((selected) => {
+        const head = `> [!${kind.toUpperCase()}]\n`;
+        const lines = (selected || "").split("\n").map(line => line ? "> " + line : ">");
+        const text = head + (selected ? lines.join("\n") : "> ");
+        return { text, selectFrom: text.length, selectTo: text.length };
+      })])),
+    date_iso: () => editor.insertText(isoDate(new Date())),
+    date_long: () => editor.insertText(new Date().toLocaleDateString(undefined, { dateStyle: "long" })),
+    fold_all: () => editor.foldAll(),
+    unfold_all: () => editor.unfoldAll(),
 
     view_editor: () => setView("editor"),
     view_split: () => setView("split"),
@@ -2003,11 +2367,13 @@
 
   const EDITING = new Set([
     "undo", "redo", "bold", "italic", "strike", "code", "link", "h1", "h2", "h3", "h4", "h5", "h6", "h0",
-    "find_selection", "fold", "copy_formatted", "bullet", "numbered", "task", "quote", "codeblock", "table", "table_row", "rule",
+    "find_selection", "fold", "copy_formatted", "bullet", "numbered", "task", "quote", "codeblock", "table", "rule",
+    "highlight", "math", "math_block", "footnote", "date_iso", "date_long", "fold_all", "unfold_all",
+    ...Object.keys(TABLE_EDITS), ...["note", "tip", "important", "warning", "caution"].map(kind => "callout_" + kind),
   ]);
 
   async function runAction(id) {
-    if (((outline.open && !sidebarOpen) || comparison.open || settings.open) && id !== "quit") {
+    if (((outline.open && !sidebarOpen) || comparison.open || settings.open || rename.open) && id !== "quit") {
       // Native check items toggle before the event arrives, even behind a dialog.
       syncChecks();
       return;
@@ -2035,6 +2401,8 @@
     applyEditorLayout();
     editor.setPairing(writing.pairing);
     applyWritingModes();
+    applyFormatBar();
+    els.app.dataset.editorFont = editorFont;
     setZoom(zoom);
     const split = store.get("split", 50);
     if (split !== 50) setSplit(split);

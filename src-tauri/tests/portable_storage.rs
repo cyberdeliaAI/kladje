@@ -57,6 +57,22 @@ fn documents_on_exfat() {
     assert_eq!(copied.as_deref(), Some("image-1.gif"));
     assert_eq!(fs::read(dir.path().join("image-1.gif")).unwrap(), b"GIF89a");
 
+    // Without hard links a document is still renamed, and never over another file.
+    let renamed = dir.path().join("renamed.md");
+    let seen = storage::version(&fresh).unwrap();
+    storage::move_noclobber(&fresh, &renamed, seen.as_ref()).unwrap();
+    assert_eq!(fs::read(&renamed).unwrap(), b"\xef\xbb\xbfnew\r\n");
+    let seen = storage::version(&renamed).unwrap();
+    assert!(storage::move_noclobber(&renamed, &source, seen.as_ref()).is_err());
+    storage::move_noclobber(&renamed, &fresh, seen.as_ref()).unwrap();
+    // exFAT ignores case, so a new capitalisation names the same file.
+    let capitals =
+        fresh.with_file_name(fresh.file_name().unwrap().to_string_lossy().to_uppercase());
+    let seen = storage::version(&fresh).unwrap();
+    storage::move_noclobber(&fresh, &capitals, seen.as_ref()).unwrap();
+    let seen = storage::version(&capitals).unwrap();
+    storage::move_noclobber(&capitals, &fresh, seen.as_ref()).unwrap();
+
     let names = |folder: &Path| {
         let mut names: Vec<_> = fs::read_dir(folder)
             .unwrap()

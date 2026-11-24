@@ -130,6 +130,16 @@ impl Documents {
         }))
     }
 
+    /// Whether `path` is the document this window holds.
+    pub fn owns(&self, label: &str, path: &Path) -> Result<bool, String> {
+        let target = storage::target(path).map_err(|e| e.to_string())?;
+        Ok(self
+            .windows
+            .get(label)
+            .and_then(|doc| doc.path.as_ref())
+            .is_some_and(|own| own == &target))
+    }
+
     pub fn bind(&mut self, label: &str, path: &Path) -> Result<(), String> {
         self.available(label, path)?;
         let doc = self.get(label)?;

@@ -34,6 +34,7 @@ for (const [name, pkg] of npm) {
 }
 // The notices shipped with the application must describe the locked dependencies.
 execFileSync("node", ["scripts/build-notices.mjs", "--check"], { stdio: "inherit" });
+execFileSync("node", ["scripts/build-diagrams.mjs", "--check"], { stdio: "inherit" });
 console.log(
   "License metadata present for",
   crates.length,
