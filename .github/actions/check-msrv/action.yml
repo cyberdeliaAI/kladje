@@ -1,0 +1,24 @@
+name: Check the minimum supported Rust version
+description: Restore Cargo dependencies for this host and check every native target with Rust 1.90.0.
+runs:
+  using: composite
+  steps:
+    - name: Identify compilers before restoring Cargo data
+      shell: bash
+      run: |
+        rustup toolchain install 1.90.0 --profile minimal --no-self-update
+        rustc +1.90.0 -vV
+        rustup show active-toolchain
+        rustc -vV
+        cargo -V
+    # Includes OS, architecture, installed rustc versions/commit hashes, Cargo.lock and manifests.
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      with:
+        workspaces: src-tauri
+        cache-bin: "false"
+        env-vars: ImageOS
+        # PRs can read the base cache. Keep large, PR-private target caches out of storage.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+    - name: Compile all targets on Rust 1.90.0
+      shell: bash
+      run: cargo +1.90.0 check --manifest-path src-tauri/Cargo.toml --all-targets --locked

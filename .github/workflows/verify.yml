@@ -1,10 +1,65 @@
 name: Verify macOS editor
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
 jobs:
+  frontend:
+    name: Scope and frontend checks
+    runs-on: ubuntu-24.04
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check whether runtime or verification files changed
+        id: scope
+        shell: bash
+        env:
+          # On a PR, GITHUB_SHA is the tested merge commit. For pushes use the entire push.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          full=true
+          if [[ -n "$BASE" ]] && git cat-file -e "$BASE^{commit}" 2>/dev/null &&
+             git diff --quiet --no-renames "$BASE" "$GITHUB_SHA" -- . \
+               ':(top,exclude)README.md' ':(top,exclude)docs/MACOS_PREVIEW.md' \
+               ':(top,glob,exclude)docs/planning/*.md' ':(top,glob,exclude)docs/screenshots/*.png'; then
+            full=false
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v6
+        if: steps.scope.outputs.full == 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Check the editor bundle, JavaScript tests and npm advisories
+        if: steps.scope.outputs.full == 'true'
+        run: |
+          npm ci --no-audit
+          npm run build:editor
+          git diff --exit-code -- ui/vendor/editor.js
+          npm test
+          npm audit
+
   macos:
+    needs: frontend
+    if: needs.frontend.outputs.full == 'true'
     runs-on: macos-latest
+    env:
+      # The tests, exFAT fixture and Tauri child process all use this toolchain.
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v6
         with:
@@ -12,32 +67,58 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: npm ci
-      - run: npm run build:editor
-      - run: git diff --exit-code -- ui/vendor/editor.js
-      - run: npm test
-      - run: rustup toolchain install 1.90.0 --profile minimal
-      - run: cargo +1.90.0 check --manifest-path src-tauri/Cargo.toml --all-targets --locked
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --no-audit
+      - uses: ./.github/actions/check-msrv
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-targets --locked
       - run: scripts/test-exfat.sh
       - run: npm run build -- --ci --bundles app -- --locked
-      - run: npm audit
+      # The license/OSV check selects the Cargo graph of the current host.
       - run: node scripts/check-dependencies.mjs --advisories
 
-  desktop-check:
-    name: Compile on ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+  linux:
+    name: Compile on ubuntu-24.04
+    needs: frontend
+    if: needs.frontend.outputs.full == 'true'
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - if: runner.os == 'Linux'
-        run: |
+      - run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
-      - run: rustup toolchain install 1.90.0 --profile minimal
-      - run: cargo +1.90.0 check --manifest-path src-tauri/Cargo.toml --all-targets --locked
+      - uses: ./.github/actions/check-msrv
+
+  windows:
+    name: Compile on windows-latest
+    needs: frontend
+    if: needs.frontend.outputs.full == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/check-msrv
+
+  verify:
+    name: Verify
+    needs: [frontend, macos, linux, windows]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every applicable check
+        env:
+          FRONTEND: ${{ needs.frontend.result }}
+          FULL: ${{ needs.frontend.outputs.full }}
+          MACOS: ${{ needs.macos.result }}
+          LINUX: ${{ needs.linux.result }}
+          WINDOWS: ${{ needs.windows.result }}
+        run: |
+          case "$FULL" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) exit 1 ;;
+          esac
+          [[ "$FRONTEND" == success && "$MACOS" == "$expected" && "$LINUX" == "$expected" && "$WINDOWS" == "$expected" ]]
