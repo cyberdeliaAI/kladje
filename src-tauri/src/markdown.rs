@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use comrak::adapters::{SyntaxHighlightMeta, SyntaxHighlighterAdapter};
-use comrak::nodes::NodeValue;
+use comrak::nodes::{AstNode, NodeValue};
 use comrak::{format_html_with_plugins, options, parse_document, Arena, Options};
 use syntect::html::{css_for_theme_with_class_style, ClassStyle, ClassedHTMLGenerator};
 use syntect::parsing::SyntaxSet;
@@ -51,6 +51,36 @@ pub enum Target {
 pub struct TaskMarker {
     pub offset: usize,
     pub checked: bool,
+}
+
+// Mark only the checkbox emitted for an actual Markdown list task. The sanitizer
+// consumes the per-render prefix before the HTML reaches the webview.
+fn preview_task_html<'a>(
+    context: &mut comrak::html::Context<&str>,
+    node: &'a AstNode<'a>,
+    entering: bool,
+) -> Result<comrak::html::ChildRendering, fmt::Error> {
+    let checked = match &node.data().value {
+        NodeValue::TaskItem(task)
+            if entering
+                && node
+                    .parent()
+                    .is_some_and(|p| matches!(p.data().value, NodeValue::List(_))) =>
+        {
+            task.symbol.is_some()
+        }
+        _ => return comrak::html::format_node_default(context, node, entering),
+    };
+
+    context.cr()?;
+    context.write_str("<li class=\"task-list-item\"")?;
+    comrak::html::render_block_id(context, node)?;
+    comrak::html::render_sourcepos(context, node)?;
+    let prefix = context.user;
+    let pos = node.data().sourcepos;
+    let checked = if checked { " checked" } else { "" };
+    write!(context, "><input type=\"checkbox\" class=\"task-list-item-checkbox\" data-kladje-task=\"{prefix}{pos}\"{checked} disabled /> ")?;
+    Ok(comrak::html::ChildRendering::HTML)
 }
 
 #[derive(serde::Serialize)]
@@ -213,18 +243,11 @@ impl Renderer {
             (None, None)
         };
 
-        // Only bind a source editing command when every list control was produced
-        // by our Markdown renderer. Raw HTML may supply its own classes/positions.
         let mut tasks = std::collections::HashMap::new();
         if known.is_some()
             && ["[ ]", "[x]", "[X]"]
                 .iter()
                 .any(|mark| markdown.contains(mark))
-            && !root.descendants().any(|n| match &n.data().value {
-                NodeValue::HtmlBlock(block) => block.literal.trim() != "<!-- pagebreak -->",
-                NodeValue::HtmlInline(_) => true,
-                _ => false,
-            })
         {
             let mut offset = 0;
             let lines: Vec<_> = markdown
@@ -311,8 +334,26 @@ impl Renderer {
         plugins.render.codefence_syntax_highlighter = Some(&highlighter);
 
         let mut html = String::with_capacity(markdown.len() * 2);
-        format_html_with_plugins(root, &opts, &mut html, &plugins)
-            .map_err(|_| "Could not format Markdown.")?;
+        let mut random = [0u8; 16];
+        let task_prefix = if !tasks.is_empty() && getrandom::fill(&mut random).is_ok() {
+            Some(format!("{:032x}:", u128::from_ne_bytes(random)))
+        } else {
+            tasks.clear();
+            None
+        };
+        match task_prefix.as_deref() {
+            Some(prefix) => comrak::html::format_document_with_formatter(
+                root,
+                &opts,
+                &mut html,
+                &plugins,
+                preview_task_html,
+                prefix,
+            )
+            .map(|_| ()),
+            None => format_html_with_plugins(root, &opts, &mut html, &plugins),
+        }
+        .map_err(|_| "Could not format Markdown.")?;
         let usage = Arc::new(Mutex::new(ImageUsage {
             assets: Default::default(),
             remaining: crate::images::DOCUMENT_IMAGE_LIMIT,
@@ -328,6 +369,7 @@ impl Renderer {
             usage.clone(),
             known,
             self.image_cache.clone(),
+            task_prefix,
         )
         .clean(&html)
         .to_string();
@@ -631,6 +673,7 @@ fn sanitizer(
     usage: Arc<Mutex<ImageUsage>>,
     known: Option<std::collections::HashSet<String>>,
     cache: Arc<Mutex<crate::images::RasterCache>>,
+    task_prefix: Option<String>,
 ) -> ammonia::Builder<'static> {
     let mut b = ammonia::Builder::default();
     b.add_tags([
@@ -656,6 +699,9 @@ fn sanitizer(
         "aria-hidden",
     ]);
     b.add_tag_attributes("input", ["type", "checked", "disabled"]);
+    if task_prefix.is_some() {
+        b.add_tag_attributes("input", ["data-kladje-task"]);
+    }
     b.add_tag_attributes("details", ["open"]);
     b.add_tag_attributes("a", ["name"]);
     b.add_tag_attributes("div", ["align"]);
@@ -720,6 +766,11 @@ fn sanitizer(
     b.id_prefix(id_prefix);
     b.set_tag_attribute_value("img", "referrerpolicy", "no-referrer");
     b.attribute_filter(move |element, attribute, value| {
+        if attribute == "data-kladje-task" {
+            return value
+                .strip_prefix(task_prefix.as_deref()?)
+                .map(Cow::Borrowed);
+        }
         if element == "img" && attribute == "referrerpolicy" {
             usage.lock().unwrap().images += 1;
         }

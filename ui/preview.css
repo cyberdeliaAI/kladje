@@ -211,8 +211,13 @@
   .markdown-body { font-size: 11.5pt; }
   .markdown-body pre { white-space: pre-wrap; overflow: visible; }
   .markdown-body pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
-  .markdown-body table { display: table; width: 100%; table-layout: fixed; overflow: visible; }
-  .markdown-body th, .markdown-body td { padding: 0.35em; overflow-wrap: anywhere; }
+  .markdown-body table {
+    display: table; width: 100%; table-layout: auto; overflow: visible;
+    line-height: 1.35; break-inside: avoid;
+  }
+  .markdown-body th, .markdown-body td { padding: 0.22em 0.35em; overflow-wrap: anywhere; }
+  /* Keep short headings whole when WebKit measures the minimum column widths. */
+  .markdown-body th { max-width: 16em; overflow-wrap: break-word; }
   .markdown-body pre.diagram-drawn, .markdown-body figure.diagram { overflow: visible; }
   .markdown-body tr, .markdown-body pre, .markdown-body blockquote, .markdown-body img,
   .markdown-body .markdown-alert { break-inside: avoid; }

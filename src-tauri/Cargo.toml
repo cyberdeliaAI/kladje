@@ -29,6 +29,7 @@ same-file = "1"
 tempfile = "3"
 sha2 = "0.10"
 base64 = "0.21"
+getrandom = "0.3"
 percent-encoding = "2"
 url = "2"
 

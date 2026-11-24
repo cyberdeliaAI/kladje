@@ -167,7 +167,7 @@ try {
     const proof = spawnSync("swift", [path.join(root,"scripts/macos-qa/verify-pagebreak.swift"), result+".paged.html"],
       {encoding:"utf8",timeout:60000});
     if (proof.status !== 0) throw Error("Native PDF page break: "+(proof.stderr || proof.error || proof.status));
-    report.checks.push("Both headings appeared on separate pages in a native WebKit PDF");
+    report.checks.push("Native PDF preserves the page break and gives the longer text column more space");
   }
   if (imageConnections) throw Error("A blocked document image initiated a network connection");
   report.unapprovedImageConnections = imageConnections;

@@ -212,15 +212,23 @@ window.addEventListener("load", async () => {
     await wait(() => qaEditor.selectedText() === "label", "reselect source label");
     paste("bold", "<strong>bold</strong>");
     await wait(() => text() === "**bold**", "opt-in rich paste through native converter");
-    edit("🌱 tasks\n\n- [ ] Buy milk");
+    const taskSource = "🌱 <kbd>tasks</kbd>\n\n- [ ] Buy milk\n  - [X] Crème fraîche\n\n<input type=\"checkbox\" data-kladje-task=\"3:1-4:20\">";
+    edit(taskSource);
     await menu("view_split");
-    const box = () => preview.querySelector("input.task-list-item-checkbox");
+    const box = () => preview.querySelector("input[data-kladje-task]");
     await wait(() => box() && !box().disabled, "interactive Markdown checkbox");
     check(box().getAttribute("aria-label") === "Buy milk", "named preview task");
+    const rawBox = preview.querySelector("input:not([data-kladje-task])");
+    check(rawBox?.disabled && preview.querySelectorAll("input:enabled").length === 2,
+      "only Markdown list tasks can edit an HTML-containing document");
+    rawBox.click();
+    check(text() === taskSource, "HTML checkbox leaves the source intact");
     box().click();
-    await wait(() => text().includes("- [x]"), "checkbox edits exact source marker");
+    await wait(() => text() === taskSource.replace("[ ]", "[x]"), "checkbox edits exact source marker");
     await menu("undo");
-    await wait(() => text().includes("- [ ]"), "undo preview checkbox");
+    await wait(() => text() === taskSource, "undo preview checkbox");
+    await menu("redo");
+    await wait(() => text() === taskSource.replace("[ ]", "[x]"), "redo preview checkbox");
     check(true, "task toggle round trips through editor undo");
     edit("# Heading\n\nWriting\n\n# Next");
     qaEditor.goToLine(1);
@@ -249,8 +257,11 @@ window.addEventListener("load", async () => {
     document.getElementById("focusParagraph").click();
     document.getElementById("typewriter").click();
     settings.querySelector(".dialog-actions button").click();
+    const scoreTable = "| Criteria | Pass | Fail | Skip | Notes | Owner | Due |\n| --- | --- | --- | --- | --- | --- | --- |\n| Readability of documentation for everyday writing | ✓ | – | – | – | – | – |";
+    const longTable = "| Entry | Note |\n| --- | --- |\n" +
+      Array.from({length: 100}, (_, i) => `| Row-${String(i).padStart(3, "0")} | Print across pages |`).join("\n");
     const proof = await core.invoke("export_html", {path:window.qaResultPath+".paged.html", expected:null,
-      title:"proof", source:null, markdown:"---\ntitle: Page proof\nlang: en-GB\n---\n# First proof page\n\n<!-- pagebreak -->\n\n# Second proof page"});
+      title:"proof", source:null, markdown:"---\ntitle: Page proof\nlang: en-GB\n---\n# First proof page\n\n<!-- pagebreak -->\n\n# Second proof page\n\n"+scoreTable+"\n\n<!-- pagebreak -->\n\n"+longTable});
     check(proof.confirmed, "offline export with explicit page break");
     edit("# Alpha\n\n# Beta");
     await menu("document_outline");
