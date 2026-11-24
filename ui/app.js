@@ -1052,10 +1052,14 @@
   }
 
   const comparison = $("comparison");
-  const comparisonFields = [$("comparison-editor"), $("comparison-disk")];
-  comparison.addEventListener("close", () => {
-    if (!comparison.open) for (const field of comparisonFields) field.value = "";
-  });
+  let comparisonView = null;
+  function discardComparison() {
+    comparisonView?.destroy();
+    comparisonView = null;
+  }
+  comparison.addEventListener("close", () => { if (!comparison.open) discardComparison(); });
+  $("comparison-previous").addEventListener("click", () => comparisonView?.previous());
+  $("comparison-next").addEventListener("click", () => comparisonView?.next());
   async function compareWithDisk() {
     if (!doc.path) return notify("Save the document before comparing it with disk.");
     if (editor.textLength() > 512 * 1024) return notify("Comparison supports up to 524,288 UTF-16 code units in the editor and 512 KiB on disk.", 12000);
@@ -1063,26 +1067,14 @@
     const disk = (await invoke("comparison_text", {path: doc.path})).replace(/\r\n?/g, "\n");
     if (!session.isCurrent(before)) return notify("The document changed. Open Compare with Disk again.");
     const source = before.content;
-    const equal = disk === source;
-    let line = 1, start = 0;
-    if (!equal) {
-      const length = Math.min(disk.length, source.length);
-      for (let i = 0; i < length && source.charCodeAt(i) === disk.charCodeAt(i); i++) {
-        if (source[i] === "\n") { line++; start = i + 1; }
-      }
-    }
-    $("comparison-summary").textContent = equal ? "Both versions have the same text. Line endings and encoding are ignored." :
-      `First text difference at line ${line}. Both versions are read-only snapshots.`;
-    comparisonFields[0].value = source;
-    comparisonFields[1].value = disk;
+    const sections = window.KladjeEditor.changedSections(source, disk);
+    $("comparison-summary").textContent = sections === 0 ? "Both versions have the same text. Line endings and encoding are ignored." :
+      `${sections} changed section${sections === 1 ? "" : "s"}. Both versions are read-only snapshots.`;
+    for (const id of ["comparison-previous", "comparison-next"]) $(id).disabled = sections === 0;
+    // The view measures its lines, so it is built after the dialog is on screen.
     comparison.showModal();
-    if (!equal) {
-      for (const field of comparisonFields) {
-        const end = field.value.indexOf("\n", start);
-        field.setSelectionRange(start, end === -1 ? field.value.length : end);
-        field.scrollTop = Math.max(0, line - 3) * parseFloat(getComputedStyle(field).lineHeight);
-      }
-    }
+    discardComparison();
+    comparisonView = window.KladjeEditor.compare($("comparison-view"), source, disk);
   }
 
   async function chooseAndOpen() {
