@@ -57,6 +57,19 @@ fn documents_on_exfat() {
     assert_eq!(copied.as_deref(), Some("image-1.gif"));
     assert_eq!(fs::read(dir.path().join("image-1.gif")).unwrap(), b"GIF89a");
 
+    // macOS exFAT cannot publish an exclusive rename. Both files survive a
+    // collision, and even a free name must not trigger a check-then-rename.
+    let renamed = dir.path().join("renamed.md");
+    let seen = storage::version(&fresh).unwrap();
+    let bytes = fs::read(&fresh).unwrap();
+    let original = fs::read(&source).unwrap();
+    assert!(storage::move_noclobber(&fresh, &source, seen.as_ref()).is_err());
+    assert_eq!(fs::read(&source).unwrap(), original);
+    let refusal = storage::move_noclobber(&fresh, &renamed, seen.as_ref()).unwrap_err();
+    assert!(refusal.contains("cannot safely"), "{refusal}");
+    assert!(!renamed.exists());
+    assert_eq!(fs::read(&fresh).unwrap(), bytes);
+
     let names = |folder: &Path| {
         let mut names: Vec<_> = fs::read_dir(folder)
             .unwrap()

@@ -657,6 +657,193 @@ test("the outline indents by level, numbers only repeated titles, follows the cu
   assert.equal(went, 6);
 });
 
+test("rename, move and duplicate keep the window's edits, update recent documents and never replace a file", async () => {
+  const a = await app();
+  const moves = [];
+  a.api.move_document = ({from, to, expected}) => {
+    assert.deepEqual(expected, a.disk.version, "the move is checked against the version the editor read");
+    moves.push([from, to]);
+    return {target: to, digest: "a", identity: ""};
+  };
+  a.edit("unsaved words");
+  const submit = () => a.get("rename-form").handlers.submit({preventDefault() {}});
+  const renaming = a.menu("rename");
+  await new Promise(setImmediate);
+  assert.equal(a.get("rename").open, true);
+  assert.equal(a.get("rename-name").value, "a.md");
+  assert.deepEqual(a.get("rename-name").selection, [0, 1], "the name is selected without its extension");
+  a.get("rename-name").value = "with/slash";
+  await submit();
+  assert.match(a.get("rename-error").textContent, /cannot contain/);
+  assert.equal(moves.length, 0);
+  a.get("rename-name").value = "Report";
+  await submit();
+  assert.deepEqual(moves, [["/notes/a.md", "/notes/Report.md"]], "the extension is kept");
+  assert.equal(a.get("rename").open, false);
+  a.get("rename").handlers.close();
+  await renaming;
+  assert.match(a.get("doc-name").title, /^\/notes\/Report\.md/);
+  assert.match(a.get("doc-name").title, /edited/, "unsaved edits stay unsaved");
+  assert.equal(a.text(), "unsaved words");
+  assert.ok(a.history().paths.includes("/notes/Report.md") && !a.history().paths.includes("/notes/a.md"));
+
+  // A refused rename is explained in the dialog and changes nothing.
+  a.api.move_document = () => { throw "“Taken.md” already exists. Choose another name."; };
+  const again = a.menu("rename");
+  await new Promise(setImmediate);
+  a.get("rename-name").value = "Taken.md";
+  await submit();
+  assert.match(a.get("rename-error").textContent, /already exists/);
+  assert.equal(a.get("rename").open, true);
+  a.get("rename").close();
+  a.get("rename").handlers.close();
+  await again;
+  assert.match(a.get("doc-name").title, /^\/notes\/Report\.md/);
+
+  // Move To chooses a place with the save panel.
+  a.api.move_document = ({from, to}) => { moves.push([from, to]); return {target: to, digest: "a", identity: ""}; };
+  a.dialog.save = () => "/archive/Report.md";
+  await a.menu("move_to");
+  assert.deepEqual(moves.at(-1), ["/notes/Report.md", "/archive/Report.md"]);
+
+  // Duplicate writes this window's text beside the document under a free name and opens it.
+  const written = [];
+  a.api.file_version = ({path}) => path === "/archive/Report copy.md" ? {target: path} : null;
+  a.api.write_file = args => { written.push(args); return {version: {target: args.path}, confirmed: true}; };
+  await a.menu("duplicate");
+  assert.equal(written.length, 1);
+  assert.equal(written[0].path, "/archive/Report copy 2.md");
+  assert.equal(written[0].content, "unsaved words");
+  assert.equal(written[0].expected, null);
+  assert.ok(a.calls.some(([cmd, args]) => cmd === "open_document_window" && args.request.path === "/archive/Report copy 2.md"));
+  assert.match(a.get("doc-name").title, /edited/, "the original window keeps its unsaved state");
+});
+
+test("Duplicate preserves mixed endings and requests conversion if the number of lines changes", async () => {
+  const a = await app({}, ({disk}) => {
+    disk.content = "a\r\nb\nc";
+    disk.format = {encoding: "utf8bom", eol: "mixed", separators: "wn"};
+  });
+  a.api.file_version = () => null;
+  const copies = [];
+  a.api.write_file = args => { copies.push(args); return {confirmed:false, warning:"Copy needs checking"}; };
+  await a.menu("duplicate");
+  assert.deepEqual({...copies[0].format}, {encoding:"utf8bom", eol:"mixed", separators:"wn"});
+  assert.ok(!a.calls.some(([name]) => name === "open_document_window"));
+  a.edit("one\ntwo");
+  await a.menu("duplicate");
+  assert.equal(copies.length, 1);
+  a.dialog.ask = (_, options) => options.title === "Line-ending conversion";
+  await a.menu("duplicate");
+  assert.deepEqual({...copies[1].format}, {encoding:"utf8bom", eol:"lf"});
+  await a.fire(50);
+  assert.match(a.get("doc-name").title, /edited/);
+});
+
+test("table, callout, footnote and date commands reach the editor and explain where they do not apply", async () => {
+  const a = await app();
+  const edits = [], inserted = [];
+  let inTable = false;
+  a.view.editTable = (op, arg) => { edits.push(arg ? [op, arg] : [op]); return inTable && op !== "deleteRow"; };
+  a.view.inTable = () => inTable;
+  a.view.insertText = text => inserted.push(text);
+  a.view.insertFootnote = () => inserted.push("footnote");
+  a.view.toggleWrap = marker => inserted.push("wrap " + marker);
+  a.view.insertBlock = build => inserted.push(build("line one\nline two").text);
+  await a.menu("table_column_after");
+  assert.match(a.get("notice").textContent, /inside a Markdown table/);
+  inTable = true;
+  await a.menu("table_delete_row");
+  assert.match(a.get("notice").textContent, /header row cannot be deleted/);
+  await a.menu("table_align_center");
+  await a.menu("table_row");
+  assert.deepEqual(edits, [["columnAfter"], ["deleteRow"], ["align", "center"], ["rowBelow"]]);
+  await a.menu("callout_warning");
+  await a.menu("math_block");
+  await a.menu("highlight");
+  await a.menu("footnote");
+  await a.menu("date_iso");
+  assert.deepEqual(inserted.slice(0, 5), ["> [!WARNING]\n> line one\n> line two", "$$\nline one\nline two\n$$", "wrap ==", "footnote", inserted[4]]);
+  assert.match(inserted[4], /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("the formatting bar runs menu actions, opens its menus and can be hidden", async () => {
+  const a = await app();
+  const bar = a.get("format-bar"), menu = a.get("format-menu");
+  assert.equal(bar.children.filter(b => b.dataset?.format).length, 10);
+  assert.equal(a.get("app").dataset.formatBar, "true");
+  let bold = 0;
+  a.view.toggleWrap = marker => { if (marker === "**") bold++; };
+  const press = button => bar.handlers.click({detail: 1, target: {closest: () => button}});
+  await press(bar.children.find(b => b.dataset?.action === "bold"));
+  assert.equal(bold, 1);
+  const tables = bar.children.find(b => b.dataset?.menu === "table");
+  await press(tables);
+  assert.equal(menu.hidden, false);
+  assert.equal(tables.attrs["aria-expanded"], "true");
+  const items = menu.children.filter(i => i.dataset?.action);
+  assert.deepEqual(items.slice(0, 3).map(i => i.dataset.action), ["table", "table_row_above", "table_row"]);
+  // Choosing an item closes the menu and runs the action.
+  let added;
+  a.view.editTable = op => { added = op; return true; };
+  await menu.handlers.click({target: {closest: () => items[2]}});
+  assert.equal(added, "rowBelow");
+  assert.equal(menu.hidden, true);
+  assert.equal(tables.attrs["aria-expanded"], "false");
+  // The same button closes an open menu again.
+  await press(tables);
+  await press(tables);
+  assert.equal(menu.hidden, true);
+  // The View menu item and the settings checkbox both hide the bar, and it is remembered.
+  await a.menu("format_bar");
+  assert.equal(a.get("app").dataset.formatBar, "false");
+  assert.equal(a.values.get("kladje.formatBar"), "false");
+  assert.ok(!a.calls.filter(([cmd]) => cmd === "set_menu_checks").at(-1)[1].checked.includes("format_bar"));
+  assert.equal(a.get("formatBar").checked, false);
+  a.get("formatBar").checked = true;
+  a.get("formatBar").handlers.change();
+  assert.equal(a.get("app").dataset.formatBar, "true");
+  await new Promise(setImmediate);
+  assert.ok(a.calls.filter(([cmd]) => cmd === "set_menu_checks").at(-1)[1].checked.includes("format_bar"));
+});
+
+test("the settings window switches sections and mirrors the View menu", async () => {
+  const a = await app();
+  await a.menu("settings");
+  assert.equal(a.get("settings").open, true);
+  assert.equal(a.get("pane-general").hidden, false);
+  a.get("tab-appearance").handlers.click();
+  assert.equal(a.get("pane-general").hidden, true);
+  assert.equal(a.get("pane-appearance").hidden, false);
+  assert.equal(a.get("tab-appearance").attrs["aria-selected"], "true");
+  a.get("tab-appearance").handlers.keydown({key: "ArrowRight", preventDefault() {}});
+  assert.equal(a.get("pane-general").hidden, false, "arrow keys wrap around the tabs");
+  // A checkbox that mirrors a View menu item changes the same preference.
+  a.get("pref-gutter").checked = true;
+  a.get("pref-gutter").handlers.change();
+  assert.equal(a.values.get("kladje.gutter"), "true");
+  await new Promise(setImmediate);
+  assert.ok(a.calls.filter(([cmd]) => cmd === "set_menu_checks").at(-1)[1].checked.includes("gutter"));
+  // Theme, font and text size.
+  a.get("settings").handlers.change({target: {name: "theme", value: "dark"}});
+  assert.equal(a.values.get("kladje.theme"), "\"dark\"");
+  a.get("settings").handlers.change({target: {name: "editorFont", value: "sans"}});
+  assert.equal(a.get("app").dataset.editorFont, "sans");
+  assert.equal(a.values.get("kladje.editorFont"), "\"sans\"");
+  a.get("zoom-larger").handlers.click();
+  assert.equal(a.get("zoom-value").textContent, "110%");
+  a.get("zoom-default").handlers.click();
+  assert.equal(a.get("zoom-value").textContent, "100%");
+  // Reopening shows the section that was open last.
+  a.get("settings").close();
+  await a.menu("settings");
+  assert.equal(a.get("pane-general").hidden, false);
+  a.get("tab-preview").handlers.click();
+  a.get("settings").close();
+  await a.menu("settings");
+  assert.equal(a.get("pane-preview").hidden, false);
+});
+
 test("an empty document shows the ways to begin and other recent documents in its preview", async () => {
   const a = await app({"kladje.recent": JSON.stringify(["/notes/b.md", "/notes/a.md"])});
   const start = a.get("start");

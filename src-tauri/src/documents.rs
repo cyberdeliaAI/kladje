@@ -130,6 +130,16 @@ impl Documents {
         }))
     }
 
+    /// Whether `path` is the document this window holds.
+    pub fn owns(&self, label: &str, path: &Path) -> Result<bool, String> {
+        let target = storage::target(path).map_err(|e| e.to_string())?;
+        Ok(self
+            .windows
+            .get(label)
+            .and_then(|doc| doc.path.as_ref())
+            .is_some_and(|own| own == &target))
+    }
+
     pub fn bind(&mut self, label: &str, path: &Path) -> Result<(), String> {
         self.available(label, path)?;
         let doc = self.get(label)?;
@@ -156,7 +166,7 @@ impl Documents {
             .map(|q| q.epoch)
     }
 
-    fn available(&self, label: &str, path: &Path) -> Result<(), String> {
+    pub(crate) fn available(&self, label: &str, path: &Path) -> Result<(), String> {
         if self.owner(path, Some(label))?.is_some() {
             return Err("This file is open in another Kladje window. Save there or choose another filename.".into());
         }

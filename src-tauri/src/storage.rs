@@ -506,6 +506,111 @@ fn exchange(mut staged: tempfile::TempPath, target: &Path) -> Swapped {
     Ok(backup)
 }
 
+/// Move on one volume only if the destination is available at publication.
+#[cfg(unix)]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    #[cfg(target_os = "macos")]
+    let rc = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(target_os = "linux")]
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let wide = |p: &Path| {
+        p.as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
+    let (from, to) = (wide(from), wide(to));
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) } != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Give a document a new name, here or in another folder on the same volume.
+/// An existing file at `to` is never replaced, and the file keeps its identity.
+/// `expected` is the version the editor last read, so a file that changed on
+/// disk is not carried along unseen.
+pub fn move_noclobber(
+    from: &Path,
+    to: &Path,
+    expected: Option<&Version>,
+) -> Result<Version, String> {
+    let shown = |p: &Path| {
+        p.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let meta = fs::symlink_metadata(from).map_err(|e| format!("{}: {e}", from.display()))?;
+    if meta.file_type().is_symlink() {
+        return Err(
+            "This document is opened through a link. Use Save As to keep a copy elsewhere.".into(),
+        );
+    }
+    if !meta.is_file() {
+        return Err("Only a regular file can be moved.".into());
+    }
+    if to.file_name().is_none() || to.parent().is_none_or(|p| !p.is_dir()) {
+        return Err("Choose a name in an existing folder.".into());
+    }
+    let expected = expected.ok_or("Reload the document before moving it.")?;
+    if version(from)?.as_ref() != Some(expected) {
+        return Err("The file changed on disk. Save it or reload it before moving.".into());
+    }
+    let new_target = to
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .join(to.file_name().unwrap());
+    rename_exclusive(from, to).map_err(|e| {
+        if e.kind() == io::ErrorKind::AlreadyExists {
+            format!("“{}” already exists. Choose another name.", shown(to))
+        } else if e.kind() == io::ErrorKind::CrossesDevices {
+            "Move To works within one volume. Use Save As to put a copy on another volume.".into()
+        } else if unsupported(&e) {
+            "This volume cannot safely rename or move this document. The original remains in place."
+                .into()
+        } else {
+            format!("Could not move “{}”: {e}", shown(from))
+        }
+    })?;
+    for dir in [to.parent(), from.parent()].into_iter().flatten() {
+        let _ = sync_directory(dir);
+    }
+    // Keep the revision the user saw. An edit racing the rename must still
+    // conflict on the next save, even if the new name now contains other bytes.
+    Ok(Version {
+        target: new_target,
+        ..expected.clone()
+    })
+}
+
 pub fn sync_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -623,6 +728,93 @@ mod tests {
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o640
         );
+    }
+}
+
+#[cfg(test)]
+mod moving {
+    use super::*;
+
+    #[test]
+    fn a_move_keeps_the_file_and_never_replaces_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("draft.md");
+        fs::write(&from, b"text").unwrap();
+        let before = version(&from).unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        let to = dir.path().join("sub").join("final.md");
+        let moved = move_noclobber(&from, &to, before.as_ref()).unwrap();
+        assert!(!from.exists());
+        assert_eq!(fs::read(&to).unwrap(), b"text");
+        assert_eq!(moved.digest, before.as_ref().unwrap().digest);
+        assert_eq!(moved.identity, before.as_ref().unwrap().identity);
+
+        let other = dir.path().join("other.md");
+        fs::write(&other, b"other").unwrap();
+        let error = move_noclobber(&to, &other, Some(&moved)).unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+        assert_eq!(fs::read(&other).unwrap(), b"other");
+        assert_eq!(fs::read(&to).unwrap(), b"text");
+    }
+
+    #[test]
+    fn a_destination_created_after_lookup_is_preserved_by_the_rename_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("draft.md");
+        let to = dir.path().join("renamed.md");
+        fs::write(&from, b"editor").unwrap();
+        assert!(!to.exists());
+        fs::write(&to, b"external").unwrap();
+        assert_eq!(
+            rename_exclusive(&from, &to).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&to).unwrap(), b"external");
+        assert_eq!(fs::read(&from).unwrap(), b"editor");
+    }
+
+    #[test]
+    fn only_the_capitals_of_a_name_can_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("notes.md");
+        fs::write(&from, b"text").unwrap();
+        let before = version(&from).unwrap();
+        let to = dir.path().join("Notes.md");
+        // Whether or not the volume ignores case, only the new name remains.
+        move_noclobber(&from, &to, before.as_ref()).unwrap();
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["Notes.md"]);
+        assert_eq!(fs::read(&to).unwrap(), b"text");
+    }
+
+    #[test]
+    fn a_changed_file_a_link_or_a_missing_folder_is_not_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("note.md");
+        fs::write(&from, b"one").unwrap();
+        let seen = version(&from).unwrap();
+        fs::write(&from, b"two").unwrap();
+        let to = dir.path().join("renamed.md");
+        assert!(move_noclobber(&from, &to, seen.as_ref())
+            .unwrap_err()
+            .contains("changed on disk"));
+        assert!(from.exists() && !to.exists());
+        let current = version(&from).unwrap();
+        let nowhere = dir.path().join("missing").join("x.md");
+        assert!(move_noclobber(&from, &nowhere, current.as_ref()).is_err());
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.md");
+            std::os::unix::fs::symlink(&from, &link).unwrap();
+            let linked = version(&link).unwrap();
+            assert!(move_noclobber(&link, &to, linked.as_ref())
+                .unwrap_err()
+                .contains("link"));
+            assert!(link.is_symlink() && !to.exists());
+        }
     }
 }
 

@@ -202,6 +202,27 @@ fn save_protected_copy(
     })
 }
 
+/// Rename or move the window's own document. Unsaved edits stay in the window.
+#[tauri::command(async)]
+fn move_document(
+    window: WebviewWindow,
+    docs: Windows<'_>,
+    from: String,
+    to: String,
+    expected: Option<storage::Version>,
+) -> Result<storage::Version, String> {
+    let (from, to) = (Path::new(&from), Path::new(&to));
+    fileio::markdown_path(to)?;
+    let mut docs = lock(&docs)?;
+    if !docs.owns(window.label(), from)? {
+        return Err("Save this document before moving it.".into());
+    }
+    docs.available(window.label(), to)?;
+    let moved = storage::move_noclobber(from, to, expected.as_ref())?;
+    docs.bind(window.label(), to)?;
+    Ok(moved)
+}
+
 #[tauri::command(async)]
 fn file_version(path: String) -> Result<Option<storage::Version>, String> {
     storage::version(Path::new(&path))
@@ -707,6 +728,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .separator()
         .item(&item("save", "Save", Some("CmdOrCtrl+S"))?)
         .item(&item("save_as", "Save As…", Some("CmdOrCtrl+Shift+S"))?)
+        .item(&item("duplicate", "Duplicate", None)?)
+        .item(&item("rename", "Rename…", None)?)
+        .item(&item("move_to", "Move To…", None)?)
         .item(&item("compare_disk", "Compare with Disk…", None)?)
         .separator()
         .item(&item("import", "Import…", Some("CmdOrCtrl+Shift+I"))?)
@@ -756,15 +780,62 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         .item(&item("h0", "Paragraph", Some("CmdOrCtrl+Alt+0"))?)
         .build()?;
 
+    let code = SubmenuBuilder::new(app, "Code and Math")
+        .item(&item("code", "Inline Code", Some("CmdOrCtrl+Shift+C"))?)
+        .item(&item("codeblock", "Code Block", Some("CmdOrCtrl+Alt+C"))?)
+        .separator()
+        .item(&item("math", "Inline Math", Some("CmdOrCtrl+Shift+M"))?)
+        .item(&item("math_block", "Math Block", None)?)
+        .build()?;
+
+    let callout = SubmenuBuilder::new(app, "Callout")
+        .item(&item("callout_note", "Note", None)?)
+        .item(&item("callout_tip", "Tip", None)?)
+        .item(&item("callout_important", "Important", None)?)
+        .item(&item("callout_warning", "Warning", None)?)
+        .item(&item("callout_caution", "Caution", None)?)
+        .build()?;
+
+    let align = SubmenuBuilder::new(app, "Align Column")
+        .item(&item("table_align_left", "Left", None)?)
+        .item(&item("table_align_center", "Center", None)?)
+        .item(&item("table_align_right", "Right", None)?)
+        .item(&item("table_align_none", "Default", None)?)
+        .build()?;
+
+    let table = SubmenuBuilder::new(app, "Table")
+        .item(&item("table", "Insert Table", Some("CmdOrCtrl+Alt+T"))?)
+        .separator()
+        .item(&item("table_row_above", "Add Row Above", None)?)
+        .item(&item("table_row", "Add Row Below", None)?)
+        .item(&item("table_column_before", "Add Column Before", None)?)
+        .item(&item("table_column_after", "Add Column After", None)?)
+        .separator()
+        .item(&item("table_row_up", "Move Row Up", None)?)
+        .item(&item("table_row_down", "Move Row Down", None)?)
+        .item(&align)
+        .item(&item("table_format", "Tidy Table", None)?)
+        .separator()
+        .item(&item("table_delete_row", "Delete Row", None)?)
+        .item(&item("table_delete_column", "Delete Column", None)?)
+        .build()?;
+
+    let date = SubmenuBuilder::new(app, "Insert Date")
+        .item(&item("date_iso", "Year-Month-Day", None)?)
+        .item(&item("date_long", "Written Out", None)?)
+        .build()?;
+
     let format = SubmenuBuilder::new(app, "Format")
+        .item(&heading)
+        .separator()
         .item(&item("bold", "Bold", Some("CmdOrCtrl+B"))?)
         .item(&item("italic", "Italic", Some("CmdOrCtrl+I"))?)
         .item(&item("strike", "Strikethrough", Some("CmdOrCtrl+Shift+X"))?)
-        .item(&item("code", "Inline Code", Some("CmdOrCtrl+Shift+C"))?)
+        .item(&item("highlight", "Highlight", Some("CmdOrCtrl+Shift+H"))?)
         .item(&item("link", "Link", Some("CmdOrCtrl+K"))?)
+        .item(&code)
+        .item(&item("footnote", "Footnote", Some("CmdOrCtrl+Alt+F"))?)
         .separator()
-        .item(&item("insert_image", "Insert Local Image…", None)?)
-        .item(&heading)
         .item(&item("bullet", "Bullet List", Some("CmdOrCtrl+Shift+8"))?)
         .item(&item(
             "numbered",
@@ -773,11 +844,16 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         )?)
         .item(&item("task", "Task List", Some("CmdOrCtrl+Shift+9"))?)
         .item(&item("quote", "Quote", Some("CmdOrCtrl+Shift+."))?)
+        .item(&callout)
         .separator()
-        .item(&item("codeblock", "Code Block", Some("CmdOrCtrl+Alt+C"))?)
-        .item(&item("table", "Table", Some("CmdOrCtrl+Alt+T"))?)
-        .item(&item("table_row", "Insert Table Row Below", None)?)
+        .item(&table)
+        .item(&item("insert_image", "Insert Local Image…", None)?)
         .item(&item("rule", "Horizontal Rule", None)?)
+        .item(&date)
+        .separator()
+        .item(&item("fold", "Fold or Unfold at Cursor", None)?)
+        .item(&item("fold_all", "Fold All", None)?)
+        .item(&item("unfold_all", "Unfold All", None)?)
         .build()?;
 
     let mut checks = Vec::new();
@@ -821,8 +897,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             Some("CmdOrCtrl+Alt+R"),
         )?)
         .item(&check("document_outline", "Document Outline", None)?)
+        .item(&check(
+            "format_bar",
+            "Formatting Bar",
+            Some("CmdOrCtrl+Alt+B"),
+        )?)
         .item(&check("sync_scroll", "Synchronize Scrolling", None)?)
-        .item(&item("fold", "Fold or Unfold at Cursor", None)?)
         .item(&check("gutter", "Line Numbers", None)?)
         .item(&check("wrap", "Wrap Long Lines", None)?)
         .item(&check("measure", "Limit Writing Width", None)?)
@@ -990,6 +1070,7 @@ fn main() {
             comparison_text,
             write_file,
             save_protected_copy,
+            move_document,
             file_version,
             recovery_list,
             recovery_claim,
