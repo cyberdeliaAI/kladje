@@ -281,32 +281,19 @@ window.addEventListener("load", async () => {
       const body = sample.repeat(Math.ceil((size * 1024) / sample.length)).slice(0, size * 1024);
       const data = { kib: size, sourceBytes: body.length };
       await checkpoint("starting " + size + " KiB");
-      edit(body + "\n\nSeed");
+      // Seed and marks carry the size, so the preview of the previous size cannot satisfy a wait.
+      const seed = "Seed " + size;
+      edit(body + "\n\n" + seed);
       qaEditor.goToLine(body.split("\n").length);
       await wait(() => qaEditor.scroller.scrollTop > 0, "scroll to end of " + size + " KiB");
       qaEditor.goToLine(1);
       await wait(() => qaEditor.scroller.scrollTop < 50, "return to start of " + size + " KiB");
-      if (size === 1024) {
-        await wait(() => preview.textContent.includes("Live preview is paused"), "source-only size limit");
-        qaEditor.goToLine(1);
-        qaEditor.focus();
-        const start = performance.now();
-        document.execCommand("insertText", false, "Large edit");
-        await frame();
-        await frame();
-        data.inputToSecondFrameMs = Math.round(performance.now() - start);
-        await wait(() => text().startsWith("Large edit"), "large document text insertion");
-        check(text().startsWith("Large edit") && text().includes("Seed"), "large source remains editable");
-        data.sourceOnly = true;
-        report.sizes.push(data);
-        continue;
-      }
-      await wait(() => preview.lastElementChild?.textContent === "Seed", "size " + size);
+      await wait(() => preview.lastElementChild?.textContent === seed, "size " + size);
       await checkpoint("first preview at " + size + " KiB");
       const paint = [],
         settled = [];
       for (let n = 0; n < (size === 100 ? 20 : 3); n++) {
-        const mark = "Z" + n;
+        const mark = "Z" + size + "n" + n + " ";
         // Type at the start of the viewport and measure presentation at the next frames.
         qaEditor.goToLine(1);
         qaEditor.focus();
@@ -341,7 +328,7 @@ window.addEventListener("load", async () => {
         preview.querySelector("img")?.naturalWidth > 0,
       "print fixture ready",
     );
-    check(preview.querySelector("img").src.startsWith("data:image/png;base64,"), "local image reloads after large-document preview suspension");
+    check(preview.querySelector("img").src.startsWith("data:image/png;base64,"), "local image reloads after the 1 MiB preview");
     if (external) {
       edit(text() + "\n\n[Opener check](" + external + ")");
       await wait(() => preview.querySelector('a[data-destination$="/qa-link"]'), "native link");
