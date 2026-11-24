@@ -249,7 +249,16 @@ impl TextFormat {
 
 pub fn copy_document(path: &Path, content: &str, format: &TextFormat) -> Result<Written, String> {
     markdown_path(path)?;
-    storage::protected_copy(path, &format.encode(content)?)
+    let copy = storage::protected_copy(path, &format.encode(content)?)?;
+    if !copy.confirmed {
+        return Err(copy.warning.unwrap_or_else(|| {
+            format!(
+                "Could not confirm the copy at {}. Your original document is still open.",
+                copy.version.target().display()
+            )
+        }));
+    }
+    Ok(copy)
 }
 
 pub fn write_document(

@@ -321,6 +321,11 @@ fn invoke(
                 expected.as_ref()
             )?)
         }
+        "save_protected_copy" => json!(fileio::copy_document(
+            &path("path")?,
+            &text("content"),
+            &serde_json::from_value(args["format"].clone()).map_err(|e| e.to_string())?
+        )?),
         "file_stamp" => json!(storage::disk_stamp(&path("path")?)?),
         "file_version" => json!(storage::version(&path("path")?)?),
         "move_document" => {

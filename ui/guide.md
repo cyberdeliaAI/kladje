@@ -162,3 +162,5 @@ Standalone HTML exports recognize a simple, single-line `title` and `lang` at th
 ### Changes from another application
 
 A clean document reloads when its active window notices an external edit. If you have unsaved changes, **Keep Edits** preserves your draft and pauses automatic saving. Use **File → Compare with Disk** to review the differences or **Save As** to keep a separate copy. A missing file stays open for recovery.
+
+If another program writes during an exFAT save, **Save My Version Separately…** saves your editor text in a new folder beside the file. You continue editing the copy, so relative image and link paths resolve from that folder. **Keep Editing** keeps your draft and its recovery. If autosave detects this conflict, press **Save** to see the choice.

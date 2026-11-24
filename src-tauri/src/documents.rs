@@ -190,7 +190,7 @@ impl Documents {
         self.get(label)?;
         self.available(label, path)?;
         let written = operation()?;
-        if bind {
+        if bind && !written.conflict {
             let doc = self.get(label)?;
             let target = written.version.target();
             doc.source = Some(
@@ -379,6 +379,19 @@ mod tests {
         ));
         docs.write("main", &dest, true, || {
             Ok(storage::Written {
+                conflict: true,
+                basic: true,
+                version: storage::version(&dest)?.unwrap(),
+                confirmed: false,
+                warning: Some("another writer".into()),
+            })
+        })
+        .unwrap();
+        assert!(docs.owns("main", &original).unwrap());
+        assert!(!docs.owns("main", &dest).unwrap());
+        docs.write("main", &dest, true, || {
+            Ok(storage::Written {
+                conflict: false,
                 basic: false,
                 version: storage::version(&dest)?.unwrap(),
                 confirmed: false,

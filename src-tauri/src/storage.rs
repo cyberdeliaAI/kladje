@@ -25,6 +25,9 @@ impl Version {
 pub struct Written {
     pub version: Version,
     pub confirmed: bool,
+    /// Keep the original document binding and offer a separate copy.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub conflict: bool,
     pub warning: Option<String>,
     /// The volume has no atomic exchange. The file was replaced in place by
     /// moving the previous version aside first.
@@ -77,6 +80,7 @@ pub fn protected_copy(requested: &Path, bytes: &[u8]) -> Result<Written, String>
         && version(&path).ok().flatten().as_ref() == Some(&expected);
     Ok(Written {
         basic: false,
+        conflict: false,
         version: expected,
         confirmed,
         warning: (!confirmed).then(|| {
@@ -112,32 +116,31 @@ pub(crate) fn stage_folder(
 /// overwritten or removed; they stay in place before or instead of Kladje's,
 /// and the caller's read-back reports the difference. If filling the file
 /// fails, the name is left as it is.
-pub(crate) fn claim(
-    staged: tempfile::TempPath,
-    target: &Path,
-) -> Result<(), (io::Error, tempfile::TempPath)> {
-    let bytes = match fs::read(&staged) {
-        Ok(bytes) => bytes,
-        Err(e) => return Err((e, staged)),
-    };
-    let mut file = match File::options().append(true).create_new(true).open(target) {
-        Ok(file) => file,
-        Err(e) => return Err((e, staged)),
-    };
+pub(crate) fn claim(staged: &Path, target: &Path) -> io::Result<()> {
+    let bytes = fs::read(staged)?;
+    let mut file = File::options().append(true).create_new(true).open(target)?;
     #[cfg(test)]
     conflicts::after_claim(target);
-    let filled = file
-        .write_all(&bytes)
-        .and_then(|()| copy_attributes(&staged, &file))
-        .and_then(|()| file.sync_all());
-    match filled {
-        // The staged file is no longer needed and is removed on drop.
-        Ok(()) => Ok(()),
-        Err(e) => Err((
-            io::Error::other(format!("{e}. {} may be incomplete", target.display())),
-            staged,
-        )),
+    // The check catches a writer that arrived first. Keep O_APPEND for a
+    // writer arriving between this observation and write_all.
+    let meta = file.metadata()?;
+    if meta.len() != 0 {
+        return Err(io::ErrorKind::AlreadyExists.into());
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let named = fs::symlink_metadata(target)?;
+        if (meta.dev(), meta.ino()) != (named.dev(), named.ino()) {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+    }
+    #[cfg(test)]
+    conflicts::after_empty_check(target);
+    file.write_all(&bytes)
+        .and_then(|()| copy_attributes(staged, &file))
+        .and_then(|()| file.sync_all())
+        .map_err(|e| io::Error::other(format!("{e}. {} may be incomplete", target.display())))
 }
 
 /// Give `to` the permissions, ACL and extended attributes of `from`, never its data.
@@ -167,6 +170,21 @@ fn copy_attributes(from: &Path, to: &File) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(PartialEq, Eq)]
+enum Publication {
+    Written,
+    Occupied,
+}
+
+// The occupied name belongs to another writer. Do not roll back onto it.
+fn publish_document(staged: &Path, target: &Path) -> io::Result<Publication> {
+    match claim(staged, target) {
+        Ok(()) => Ok(Publication::Written),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(Publication::Occupied),
+        Err(e) => Err(e),
+    }
+}
+
 /// Replace an existing file on a filesystem lacking an atomic exchange. Whatever
 /// is at the target is moved aside first, so a competing writer's file is
 /// captured and returned for validation, never overwritten. The new file is then
@@ -174,35 +192,31 @@ fn copy_attributes(from: &Path, to: &File) -> io::Result<()> {
 /// previous and the staged file both stay on disk if the process stops in
 /// between. When publishing fails, the previous file goes back the same way, so
 /// a file another program put there meanwhile is never replaced either.
-fn displace(staged: tempfile::TempPath, target: &Path) -> Swapped {
+fn displace(staged: &Path, target: &Path) -> io::Result<(tempfile::TempPath, Publication)> {
     let parent = target.parent().unwrap_or(Path::new("."));
-    let previous = match tempfile::Builder::new()
+    let mut previous = tempfile::Builder::new()
         .prefix(".kladje-previous-")
-        .tempfile_in(parent)
-    {
-        Ok(file) => file.into_temp_path(),
-        Err(e) => return Err((e, staged)),
-    };
-    if let Err(e) = fs::rename(target, &previous) {
-        return Err((e, staged));
-    }
-    match claim(staged, target) {
-        Ok(()) => Ok(previous),
-        Err((error, staged)) => match claim(previous, target) {
-            // The previous version is back under its name and its copy is removed.
-            Ok(()) => Err((error, staged)),
-            Err((_, mut previous)) => {
-                // `previous` is the user's file. Never let it be cleaned up.
-                previous.disable_cleanup(true);
-                Err((
-                    io::Error::other(format!(
-                        "{error}. The previous version was kept at {}",
-                        previous.display()
-                    )),
-                    staged,
-                ))
+        .tempfile_in(parent)?
+        .into_temp_path();
+    fs::rename(target, &previous)?;
+    match publish_document(staged, target) {
+        Ok(publication) => Ok((previous, publication)),
+        Err(error) => {
+            // Rollback is also a publication. A concurrent write after its
+            // empty check must not retire the only intact previous copy.
+            if claim(&previous, target).is_ok() {
+                if let (Ok((_, before)), Ok((_, after))) = (read(&previous), read(target)) {
+                    if before.digest == after.digest {
+                        return Err(error);
+                    }
+                }
             }
-        },
+            previous.disable_cleanup(true);
+            Err(io::Error::other(format!(
+                "{error}. The previous version was kept at {}",
+                previous.display()
+            )))
+        }
     }
 }
 
@@ -440,6 +454,8 @@ fn replace_using(
         }
         let mut warnings = Vec::new();
         let mut basic = false;
+        let mut publication = Publication::Written;
+        let mut conflict = false;
         // Only a filesystem that also lacks plain replacement needs a separate copy.
         let portable = |e: io::Error| {
             if unsupported(&e) {
@@ -454,7 +470,9 @@ fn replace_using(
                 Ok(old) => old,
                 Err((e, staged)) if unsupported(&e) => {
                     basic = true;
-                    displace(staged, &resolved).map_err(|(e, _)| portable(e))?
+                    let (previous, outcome) = displace(&staged, &resolved).map_err(portable)?;
+                    publication = outcome;
+                    previous
                 }
                 Err((e, _)) => return Err(e),
             };
@@ -463,6 +481,7 @@ fn replace_using(
             if !read(&old)
                 .is_ok_and(|(_, v)| v.digest == expected.digest && v.identity == expected.identity)
             {
+                conflict = basic;
                 warnings.push("Another version changed during replacement.".to_owned());
             }
             Some(old)
@@ -472,11 +491,11 @@ fn replace_using(
                     return Err(e.error);
                 }
                 basic = true;
-                claim(e.file.into_temp_path(), &resolved).map_err(|(e, _)| portable(e))?;
+                publication = publish_document(e.file.path(), &resolved).map_err(portable)?;
             }
             None
         };
-        if basic {
+        if basic && publication == Publication::Written {
             // Such a filesystem may assign the published name a new identity.
             if let Ok((_, current)) = read(&resolved) {
                 if current.digest == installed.digest {
@@ -485,17 +504,24 @@ fn replace_using(
             }
         }
         if let Err(e) = flush(parent) {
-            warnings.push(format!(
-                "The file was written, but its directory could not be flushed: {e}."
-            ));
+            warnings.push(format!("Could not flush the destination directory: {e}."));
         }
-        if version(path).ok().flatten().as_ref() != Some(&installed) {
-            warnings.push(if basic {
-                "Another program wrote to this file during the save. Its text was left in place, and the file may also contain your edits. Use Save As to keep them."
-            } else {
-                "The destination changed during the save. Use Save As to keep these edits."
+        if publication == Publication::Occupied {
+            conflict = true;
+            warnings.push("Another program wrote to the destination first. Kladje left its contents untouched.".into());
+        } else {
+            match version(path) {
+                Ok(v) if v.as_ref() != Some(&installed) => {
+                    conflict |= basic;
+                    warnings.push(if basic {
+                        "Another program changed the file during the save. It may contain both versions."
+                    } else {
+                        "The destination changed during the save. Use Save As to keep these edits."
+                    }.into());
+                }
+                Err(e) => warnings.push(format!("Could not verify the saved file: {e}")),
+                _ => {}
             }
-            .to_owned());
         }
         if let Some(mut old) = displaced {
             if !warnings.is_empty() {
@@ -506,6 +532,7 @@ fn replace_using(
         drop(original);
         Ok(Written {
             basic,
+            conflict,
             version: installed,
             confirmed: warnings.is_empty(),
             warning: if warnings.is_empty() {
@@ -957,6 +984,7 @@ mod conflicts {
 
     thread_local! {
         static CLAIMED: std::cell::RefCell<Option<Writer>> = const { std::cell::RefCell::new(None) };
+        static CHECKED: std::cell::RefCell<Option<Writer>> = const { std::cell::RefCell::new(None) };
     }
 
     /// Run `writer` once, right after the next name claim on this thread.
@@ -970,33 +998,29 @@ mod conflicts {
         }
     }
 
+    pub(super) fn after_empty_check(target: &Path) {
+        if let Some(writer) = CHECKED.with(|hook| hook.borrow_mut().take()) {
+            writer(target);
+        }
+    }
+
     /// A writer's name, its text and how it saves that text under a name.
     type Case = (&'static str, &'static [u8], fn(&Path, &[u8]));
 
-    /// Let another program save the document right after Kladje claims the name
-    /// and before its own bytes are in. Returns what went wrong: the other
-    /// program's text must stay intact on disk and the save must not be
-    /// reported as confirmed.
-    fn race_in_the_claim_interval(
-        folder: &Path,
-        swap: fn(tempfile::TempPath, &Path) -> Swapped,
-    ) -> Vec<String> {
+    fn check_claim_races(folder: &Path, swap: fn(tempfile::TempPath, &Path) -> Swapped) {
         let writers: [Case; 3] = [
-            ("writes in place, shorter", b"theirs", |target, text| {
+            ("shorter", b"theirs", |target, text| {
                 fs::write(target, text).unwrap()
             }),
-            (
-                "writes in place, longer",
-                b"their much longer text",
-                |target, text| fs::write(target, text).unwrap(),
-            ),
-            ("replaces by rename", b"theirs", |target, text| {
+            ("longer", b"their much longer text", |target, text| {
+                fs::write(target, text).unwrap()
+            }),
+            ("rename", b"theirs", |target, text| {
                 let other = target.with_file_name("other-app.tmp");
                 fs::write(&other, text).unwrap();
                 fs::rename(&other, target).unwrap();
             }),
         ];
-        let mut failures = Vec::new();
         for (name, theirs, writer) in writers {
             let dir = tempfile::tempdir_in(folder).unwrap();
             let path = dir.path().join("doc.md");
@@ -1010,44 +1034,92 @@ mod conflicts {
                 |file, bytes| file.write_all(bytes),
                 swap,
                 sync_directory,
+            )
+            .unwrap();
+            assert!(
+                result.basic && result.conflict && !result.confirmed,
+                "{name}"
             );
-            let intact = dir.path().read_dir().unwrap().any(|entry| {
-                let bytes = fs::read(entry.unwrap().path()).unwrap();
-                bytes.windows(theirs.len()).any(|w| w == theirs)
-            });
-            if !intact {
-                failures.push(format!("{name}: the other program's text was erased"));
-            }
-            match &result {
-                Ok(written) if written.confirmed => {
-                    failures.push(format!("{name}: the save was confirmed"))
-                }
-                Ok(written) if !written.basic => {
-                    failures.push(format!("{name}: the volume offered an exchange"))
-                }
-                _ => {}
-            }
-            if fs::read(&path).unwrap() == b"local edits" && result.is_ok() {
-                failures.push(format!("{name}: the document holds only Kladje's text"));
-            }
+            assert_eq!(fs::read(&path).unwrap(), theirs, "{name}");
+            let previous = dir
+                .path()
+                .read_dir()
+                .unwrap()
+                .flatten()
+                .find(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with(".kladje-previous-")
+                })
+                .unwrap();
+            assert_eq!(fs::read(previous.path()).unwrap(), b"old");
+            assert!(result
+                .warning
+                .unwrap()
+                .contains(previous.path().canonicalize().unwrap().to_str().unwrap()));
         }
-        failures
+
+        let dir = tempfile::tempdir_in(folder).unwrap();
+        let path = dir.path().join("late.md");
+        fs::write(&path, b"old").unwrap();
+        let baseline = version(&path).unwrap();
+        CHECKED
+            .with(|hook| *hook.borrow_mut() = Some(Box::new(|p| fs::write(p, b"theirs").unwrap())));
+        let result = replace_using(
+            &path,
+            b"mine",
+            baseline.as_ref(),
+            |f, b| f.write_all(b),
+            swap,
+            sync_directory,
+        )
+        .unwrap();
+        assert!(result.basic && result.conflict && !result.confirmed);
+        assert_eq!(fs::read(&path).unwrap(), b"theirsmine");
+        let copy = protected_copy(&path, b"mine").unwrap();
+        assert!(copy.confirmed);
+        assert_eq!(fs::read(copy.version.target()).unwrap(), b"mine");
+        assert_eq!(fs::read(&path).unwrap(), b"theirsmine");
     }
 
     #[test]
     fn a_writer_inside_the_claim_interval_is_never_erased() {
         let dir = tempfile::tempdir().unwrap();
-        let failures = race_in_the_claim_interval(dir.path(), no_exchange);
-        assert!(failures.is_empty(), "{failures:#?}");
+        check_claim_races(dir.path(), no_exchange);
     }
 
-    /// The same race on a real exFAT volume. Run through scripts/test-exfat.sh.
     #[test]
     #[ignore = "requires the disposable mounted exFAT fixture"]
     fn a_writer_inside_the_claim_interval_on_exfat() {
         let mount = std::env::var_os("KLADJE_EXFAT_FIXTURE").unwrap();
-        let failures = race_in_the_claim_interval(Path::new(&mount), exchange);
-        assert!(failures.is_empty(), "{failures:#?}");
+        check_claim_races(Path::new(&mount), exchange);
+
+        let dir = tempfile::tempdir_in(mount).unwrap();
+        let path = dir.path().join("new.md");
+        on_claim(|p| fs::write(p, b"theirs").unwrap());
+        let result = replace(&path, b"mine", None).unwrap();
+        assert!(result.conflict && !result.confirmed);
+        assert_eq!(fs::read(path).unwrap(), b"theirs");
+    }
+
+    #[test]
+    fn a_late_writer_during_rollback_does_not_retire_the_previous_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.md");
+        fs::write(&path, b"old").unwrap();
+        CHECKED.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(|p| fs::write(p, b"external").unwrap()))
+        });
+        assert!(displace(&dir.path().join("missing-stage"), &path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"externalold");
+        let backup = dir
+            .path()
+            .read_dir()
+            .unwrap()
+            .flatten()
+            .find(|e| e.path() != path)
+            .unwrap();
+        assert_eq!(fs::read(backup.path()).unwrap(), b"old");
     }
 
     fn no_exchange(staged: tempfile::TempPath, _: &Path) -> Swapped {
@@ -1135,20 +1207,19 @@ mod conflicts {
             file.write_all(text).unwrap();
             file.into_temp_path()
         };
-        let (error, staged) = claim(stage(b"new"), &path).err().unwrap();
+        let error = claim(&stage(b"new"), &path).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-        drop(staged);
         assert_eq!(fs::read(&path).unwrap(), b"existing");
 
         // The staged file vanished, so installing fails after the original moved aside.
         let staged = stage(b"lost");
         fs::remove_file(&staged).unwrap();
-        assert!(displace(staged, &path).is_err());
+        assert!(displace(&staged, &path).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"existing");
         assert_eq!(dir.path().read_dir().unwrap().count(), 1);
 
         let fresh = dir.path().join("fresh.md");
-        claim(stage(b"fresh"), &fresh).unwrap();
+        claim(&stage(b"fresh"), &fresh).unwrap();
         assert_eq!(fs::read(&fresh).unwrap(), b"fresh");
         assert_eq!(dir.path().read_dir().unwrap().count(), 2);
     }

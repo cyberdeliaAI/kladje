@@ -1483,6 +1483,7 @@
     if (comparison.open) comparison.close();
     clearRecovery();
     previewAssets.clear();
+    pendingConflict = null;
     observed = null;
     lastDiskError = null;
     retryDiskAfter = 0;
@@ -1571,7 +1572,7 @@
   // open question is saved unasked. Everything else waits for an explicit Save.
   function autosaveReady() {
     if (!autosave || autosavePaused || initializing || busy || comparison.open) return false;
-    if (!doc.path || !doc.version || doc.recovered || doc.ignoredVersion || !session.isDirty()) return false;
+    if (!doc.path || !doc.version || doc.recovered || doc.ignoredVersion || pendingConflict?.path === doc.path || !session.isDirty()) return false;
     const { eol, encoding, separators } = doc.format;
     const content = editor.getText();
     if (eol === "mixed" && content.split("\n").length - 1 !== separators.length) return false;
@@ -1616,6 +1617,7 @@
   }
 
   const basicVolumes = new Set();
+  let pendingConflict = null;
   async function save(saveAs = false) {
     let path = doc.path;
     if (!path || saveAs) {
@@ -1638,28 +1640,58 @@
         })) return false;
       }
     }
-    const snapshot = session.snapshot();
-    const content = snapshot.content;
-    const format = await formatForWrite(content);
+    let snapshot = session.snapshot();
+    let format = await formatForWrite(snapshot.content);
     if (!format) return false;
     let result, copied = false;
     try {
       session.beginWrite(snapshot);
       notify("Saving…", 60000);
-      try {
-        result = await invoke("write_file", { path, content, format, expected, bind:true });
-      } catch (error) {
-        if (String(error) !== "KLADJE_COPY_REQUIRED" || unattended) throw error;
+      let conflict = pendingConflict?.path === path ? pendingConflict : null;
+      if (!conflict) {
+        try {
+          result = await invoke("write_file", {path, content:snapshot.content, format, expected, bind:true});
+          if (result.conflict) conflict = {path, warning:result.warning};
+        } catch (error) {
+          if (String(error) !== "KLADJE_COPY_REQUIRED" || unattended) throw error;
+        }
+      }
+      if (conflict || !result) {
+        session.endWrite();
+        session.requireSave();
+        if (conflict) {
+          autosavePaused = true;
+          if (path === doc.path && pendingConflict !== conflict) {
+            pendingConflict = conflict;
+            // Dismissing a native Save alert refocuses the window. Recognise this
+            // disk revision without accepting it as the baseline for a write.
+            doc.ignoredVersion = await invoke("file_version", {path}).catch(() => null);
+          }
+        }
         await saveRecovery();
-        if (!await T.dialog.ask("This volume cannot safely publish this file at the chosen name. Save a complete copy inside a new folder beside it and continue editing the copy? Relative links will resolve from the new folder.", {
-          title: "Save a Protected Copy", okLabel: "Save Copy", cancelLabel: "Cancel",
-        })) {
-          session.endWrite();
-          notify("Copy cancelled · document remains open");
-          refreshChrome();
+        refreshChrome();
+        if (unattended) {
+          notify("Autosave paused · the file changed on disk · use Save to keep your version separately", 60000);
           return false;
         }
-        result = await invoke("save_protected_copy", { path, content, format });
+        const explanation = conflict
+          ? (conflict.warning || "Another program changed the file during the save.") +
+            "\n\nSave your current text in a new folder beside the file and continue editing that copy? Relative links will resolve from the new folder."
+          : "This volume cannot safely publish this file at the chosen name. Save a complete copy inside a new folder beside it and continue editing the copy? Relative links will resolve from the new folder.";
+        if (!await T.dialog.ask(explanation, conflict
+          ? {title:"Conflicting save", kind:"warning", okLabel:"Save My Version Separately…", cancelLabel:"Keep Editing"}
+          : {title:"Save a Protected Copy", okLabel:"Save Copy", cancelLabel:"Cancel"})) {
+          notify(conflict ? "Your edits are still open · recovery retained" : "Copy cancelled · document remains open");
+          return false;
+        }
+        // The user may have edited while the first write or the question was pending.
+        if (!session.isCurrent(snapshot)) {
+          snapshot = session.snapshot();
+          format = await formatForWrite(snapshot.content);
+          if (!format) return false;
+        }
+        session.beginWrite(snapshot);
+        result = await invoke("save_protected_copy", {path, content:snapshot.content, format});
         path = result.version.target;
         copied = true;
       }
@@ -1681,7 +1713,8 @@
       return false;
     }
     session.endWrite();
-    if (result.confirmed) autosavePaused = false;
+    autosavePaused = !result.confirmed;
+    if (result.confirmed) pendingConflict = null;
     const confirmed = result.confirmed;
     const moved = path !== doc.path;
     doc.version = result.version;
@@ -1709,7 +1742,7 @@
       shown = null;
       renderNow();
     }
-    if (result.warning) await showError(result.warning);
+    if (result.warning && !unattended) await showError(result.warning);
     return clean;
   }
 
@@ -2124,6 +2157,7 @@
     editor.replaceText(file.content.replace(/\r\n?/g, "\n"), true);
     doc.version = file.version;
     doc.ignoredVersion = null;
+    pendingConflict = null;
     autosavePaused = false;
     doc.format = file.format;
     session.acknowledge(session.snapshot());
