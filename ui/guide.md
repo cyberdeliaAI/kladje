@@ -4,10 +4,10 @@ Write on the left, read on the right. This page shows everything Kladje understa
 
 ## Text
 
-Press Enter once for a new line in the live preview, or twice for a new paragraph. Inside a paragraph you can use *italic*, **bold**, ***both***, ~~strikethrough~~, ==highlight==, `inline code`, H~2~O and x^2^.
+Press Enter twice for a new paragraph. A single Return inside a paragraph is ordinary Markdown: most readers, including GitHub, join the two lines with a space. To see single Returns as line breaks, turn on **Show a single Return as a line break** in **Settings**. The preview, PDF and HTML export then all show them. Inside a paragraph you can use *italic*, **bold**, ***both***, ~~strikethrough~~, ==highlight==, `inline code`, H~2~O and x^2^.
 
 A line ending in a backslash\
-keeps its line break in exported HTML and other Markdown readers too.
+always keeps its line break, in Kladje and in other Markdown readers.
 
 ## Links and images
 
@@ -98,7 +98,7 @@ Hidden until opened.
 
 ## Returning to your writing
 
-**File → New** and **File → Open** each open a separate document window. Opening a file that is already open brings its window forward. On macOS, **File → New Tab** (⌘T) opens a document in the current native tab group. **Window → Move Tab to New Window** detaches it.
+**File → New** and **File → Open** each open a separate document window, placed a little below and to the right of the others. Opening a file that is already open brings its window forward. On macOS, **File → New Tab** (⌘T) opens a document in the current native tab group. **Window → Move Tab to New Window** detaches it.
 
 **Close Window** (⌘W on macOS) asks about changes in that window. **Quit** asks about each unsaved document. Cancel keeps all windows and their edits available. A Save you already approved stays on disk. After an unexpected exit, choose **Restore** for each draft you want to reopen.
 
@@ -112,13 +112,19 @@ Use **View** to toggle line numbers, wrapping or a narrower writing width. The f
 
 Kladje times each preview update. While an update stays short, the preview follows your typing. In a larger document it updates when you pause typing, and in a very large one when you choose **View → Refresh Preview** (⌘⌥R, or Ctrl+Alt+R). A note in the corner of the preview says which applies and offers the same refresh. On an Apple M4 the preview stays live up to about 2 MiB of mixed Markdown and updates on a pause up to about 10 MiB. **Export → PDF / Print** renders the whole document first at any size that opens, and says so while it prepares.
 
+## Saving automatically
+
+Kladje saves when you press **⌘S**. To have it save for you, turn on **Save automatically** in **Settings**. A document that already has a file is then saved two seconds after you stop typing, when you switch to another window, and when you close it. A new document still needs a first Save to give it a name.
+
+Autosave never asks a question. If the file changed on disk, or a save would need a decision about encoding or line endings, it pauses and says so at the bottom of the window. Use **Save**, **Save As** or **File → Compare with Disk** to settle it, and autosave resumes after the next successful save.
+
 ## Reusing writing and images
 
 **File → New from Template** copies the text of a local Markdown or plain-text file into a new, unsaved draft. Save it where you want the new document. Relative image links resolve beside the saved draft.
 
 Paste a clipboard image into the source editor and confirm **Save Image**. For an untitled draft, first choose where to save the document. Kladje stores a new PNG, JPEG, GIF or WebP of up to 4 MiB in the adjacent `assets/` folder and selects the image description. Undo removes the link. The image remains in the folder, so other documents can still use it. Move that folder with the document.
 
-Choose **File → Compare with Disk** to see both text snapshots and the first differing line. You can select and copy from either pane. Closing the comparison returns to your edits. Save As keeps a separate copy if you want to keep both versions. Comparison ignores line-ending and encoding differences and supports up to 512 KiB on disk and 524,288 UTF-16 code units in the editor.
+Choose **File → Compare with Disk** to see your text and the saved file side by side. Changed lines are tinted, the changed words inside them are marked, and long unchanged stretches fold away. **Next Change** and **Previous Change** step through the differences. You can select and copy from either side, and neither side can be edited. Closing the comparison returns to your edits. Save As keeps a separate copy if you want to keep both versions. Comparison ignores line-ending and encoding differences and supports up to 512 KiB on disk and 524,288 UTF-16 code units in the editor.
 
 
 ## Writing shortcuts
@@ -129,7 +135,7 @@ Use Tab and Shift-Tab to select adjacent GFM table cells. Choose **View → Fold
 
 Click a standard list checkbox in the preview or focus it and press Space to change its Markdown marker. Undo restores it. Checkboxes stay read-only in exports, tables and documents containing raw HTML. The status bar shows the encoding and line endings of the current document. Optional reading time uses 200 words per minute.
 
-Choose **View → Document Outline** to keep headings beside your document. Filter or select a heading and press Enter to jump. Hide or Escape returns the space to the document. Windows 800 pixels wide or smaller use the compact heading picker. Tab in the final table cell adds a blank row.
+Choose **View → Document Outline** to keep headings beside your document. They are indented by level, and the section that holds the cursor is marked. Click a heading to go there, or filter and press Enter. Hide or Escape returns the space to the document. Windows 800 pixels wide or smaller use the compact heading picker. Tab in the final table cell adds a blank row.
 
 Writing Settings can emphasize the current paragraph or keep the caret centered while you type. Both options start off. You can still scroll through the document and use Find.
 

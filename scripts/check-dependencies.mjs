@@ -30,6 +30,8 @@ for (const pkg of crates) {
 for (const [name, pkg] of npm) {
   if (!pkg.license) throw Error("Missing npm dependency license for " + name);
 }
+// The notices shipped with the application must describe the locked dependencies.
+execFileSync("node", ["scripts/build-notices.mjs", "--check"], { stdio: "inherit" });
 console.log(
   "License metadata present for",
   crates.length,

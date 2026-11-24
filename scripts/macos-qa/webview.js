@@ -81,9 +81,11 @@ window.addEventListener("load", async () => {
       await menu("compare_disk");
       const dialog = document.getElementById("comparison");
       await wait(() => dialog.open, "read-only disk comparison");
-      check(document.getElementById("comparison-editor").value === text() &&
-        document.getElementById("comparison-disk").value === before, "compare current edits with intact disk source");
-      dialog.querySelector("button").click();
+      await wait(() => dialog.querySelectorAll("#comparison-view .cm-content").length === 2, "side-by-side comparison");
+      check(/changed section/.test(document.getElementById("comparison-summary").textContent) &&
+        dialog.querySelector("#comparison-view .cm-merge-a .cm-changedLine") &&
+        !dialog.querySelector('#comparison-view [contenteditable="true"]'), "compare current edits with intact disk source");
+      dialog.querySelector("button[autofocus]").click();
       await wait(() => !dialog.open, "close comparison");
       await menu("undo");
       await wait(() => text() === before, "undo pasted link");
@@ -99,6 +101,10 @@ window.addEventListener("load", async () => {
     check(sibling?.content.includes("# Café") && text().includes("# Start"), "sibling fragment opens in its own window and retains the original source");
     const fourLines = "Dit\nis\neen\ntest";
     edit(fourLines);
+    await wait(() => preview.querySelector("p")?.innerText === fourLines.replaceAll("\n", " "), "standard Markdown joins single Returns by default");
+    const lineBreaks = document.getElementById("lineBreaks");
+    lineBreaks.checked = true;
+    lineBreaks.dispatchEvent(new Event("change"));
     await wait(() => preview.querySelector("p")?.innerText === fourLines, "four visible lines in one preview paragraph");
     check(text() === fourLines && preview.children.length === 1, "single Returns stay visible without inserting blank lines into the source");
     edit(sibling.content);

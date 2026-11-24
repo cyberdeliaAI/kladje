@@ -19,9 +19,9 @@ Kladje is being qualified for a first Apple silicon macOS preview. Windows and L
 - Preview tables, task lists, footnotes, strikethrough, fenced code with syntax highlighting, and math. Switch between editor, preview and split views in light or dark mode.
 - Open Markdown and plain text, import HTML or Word documents as editable Markdown, export HTML, and print or save a PDF through the system print dialog.
 - Use **Format → Insert Local Image** or drop a PNG, JPEG, GIF or WebP into the document. Edit the selected description to supply alt text.
-- Save explicitly with **⌘S**. If you keep typing during a save, newer edits stay marked as unsaved. When another program changes the file, you can keep your edits, reload from disk, or save a separate copy.
+- Save explicitly with **⌘S**, or turn on **Save automatically** in **Settings**. Autosave is off by default. It writes a document that already has a file after a two-second pause in typing, when you switch away, and when you close the window. It never asks a question: a new or recovered draft, a pending encoding or line-ending choice, or a file that changed on disk is left for an explicit Save, and the status bar says when autosave has paused. If you keep typing during a save, newer edits stay marked as unsaved. When another program changes the file, you can keep your edits, reload from disk, or save a separate copy.
 - Paste a clipboard PNG, JPEG, GIF or WebP into the source editor. On confirmation, Kladje saves a new numbered file in `assets/` beside the document. Undo removes the link and keeps the image file.
-- Use **File → Compare with Disk** to inspect the current text alongside the saved version. **File → New from Template** opens a local Markdown or text file as a fresh, unsaved draft.
+- Use **File → Compare with Disk** for a read-only, side-by-side diff of the current text and the saved version, with changed lines and words marked. **File → New from Template** opens a local Markdown or text file as a fresh, unsaved draft.
 - Restore private drafts after an unexpected exit. Kladje keeps up to three recovery generations per document. On macOS, saving through a symlink preserves the link.
 
 ## Build the macOS app
@@ -58,7 +58,7 @@ The Rust suite exercises rendering, import, export, file formats, atomic saves a
 
 - Preview reads supported local rasters within the saved document folder. HTTPS images stay blocked until you allow them in **View → Remote Images for This Document**. Permission belongs to that document window. A newly opened document starts with remote images blocked. Local and embedded images are limited to 4 MiB each, 12 MiB total and 128 source references per render.
 - Files are limited to 64 MiB. Supported encodings include UTF-8, BOM-marked UTF-16 and printable Latin-1. Format changes such as converting edited Latin-1 text to UTF-8 require confirmation.
-- Recovery is periodic. Edits made since the last completed snapshot can be lost on a crash. A mounted exFAT disk image has been tested. On an incompatible filesystem Kladje can offer a protected copy at a new path. Network shares, physical removal and power loss remain unqualified.
+- Recovery is periodic. Edits made since the last completed snapshot can be lost on a crash. A mounted exFAT disk image has been tested. A volume without atomic file exchange is saved in place: Kladje moves the previous version aside, installs the new file under the same name and removes the previous version once the result is confirmed. The file name is absent for a moment during that step, and the status bar mentions the reduced protection once per folder. A protected copy at a new path remains the last resort when a filesystem also lacks ordinary renaming. Network shares, physical removal and power loss remain unqualified.
 - Standalone HTML embeds permitted local raster images and reports omissions. Word import preserves supported text, headings, lists and tables. Embedded media, page layout and review annotations are omitted.
 - Native PDF printing on macOS requires macOS 11 or later.
 - The preview follows your typing while one update keeps the window busy for at most 50 ms. On an Apple M4 that is about 2 MiB of mixed Markdown. Larger documents update the preview when you pause typing, and very large ones (above about 10 MiB on that hardware) only when you choose **View → Refresh Preview**. Until Kladje has timed a large update on a machine it assumes twice the M4 cost, which halves both sizes. The first preview of a very large document can hold the window for several seconds. Print and PDF render the whole document on demand at any size that opens. Editing, saving and recovery do not depend on the preview.
@@ -75,4 +75,6 @@ The [development roadmap](docs/planning/DEVELOPMENT_ROADMAP.md) records the veri
 
 ## Licensing
 
-The project license for Kladje's own code is pending. The bundled editor and MathML stylesheet carry their upstream licenses. [Third-party frontend notices](ui/vendor/THIRD-PARTY-NOTICES.txt)
+Kladje's own code is available under the [MIT License](LICENSE). The licence covers the source code. The name Kladje, the application icon and the wordmark are not licensed for use by other products.
+
+The application includes third-party software under its own licences. Their notices ship inside the app under `Resources/licenses`: the [Rust packages, syntax definitions and themes](src-tauri/THIRD-PARTY-NOTICES.txt) and the [bundled editor and MathML stylesheet](ui/vendor/THIRD-PARTY-NOTICES.txt). After changing `src-tauri/Cargo.lock`, regenerate the first file with `npm run build:notices`. `node scripts/check-dependencies.mjs` fails when it is out of date.

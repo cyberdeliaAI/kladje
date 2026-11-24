@@ -36,10 +36,10 @@ fn main() {
         let markdown = std::fs::read_to_string(&path).expect("readable UTF-8 fixture");
         let runs = if markdown.len() > 8 << 20 { 3 } else { 7 };
         // The first render also warms syntect's lazily compiled grammars.
-        let _ = renderer.preview_update(&markdown, None, false, Vec::new());
+        let _ = renderer.preview_update(&markdown, None, false, Vec::new(), true);
         let (preview, html) = timed(runs, || {
             renderer
-                .preview_update(&markdown, None, false, Vec::new())
+                .preview_update(&markdown, None, false, Vec::new(), true)
                 .expect("preview")
                 .html
         });

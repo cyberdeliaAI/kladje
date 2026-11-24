@@ -140,19 +140,32 @@ impl Renderer {
         source: Option<&Path>,
         remote: bool,
     ) -> Result<Rendered, String> {
+        self.render_with_breaks(markdown, target, source, remote, false)
+    }
+
+    /// `line_breaks` shows a single Return inside a paragraph as a line break.
+    /// Callers pass the same choice for preview, print and export.
+    pub fn render_with_breaks(
+        &self,
+        markdown: &str,
+        target: Target,
+        source: Option<&Path>,
+        remote: bool,
+        line_breaks: bool,
+    ) -> Result<Rendered, String> {
         catch_unwind(AssertUnwindSafe(|| {
-            self.render_inner(markdown, target, source, remote, None)
+            self.render_inner(markdown, target, source, remote, None, line_breaks)
         }))
         .map_err(|_| "Preview unavailable. Your source is still open.".to_owned())?
     }
 
     /// Clean standalone HTML for a selection that is put on the clipboard.
-    pub fn formatted(&self, markdown: &str) -> Result<String, String> {
+    pub fn formatted(&self, markdown: &str, line_breaks: bool) -> Result<String, String> {
         if markdown.len() > MAX_FORMATTED_BYTES {
             return Err("Select up to 4 MiB to copy formatted text.".into());
         }
         Ok(self
-            .render_document(markdown, Target::Export, None, false)?
+            .render_with_breaks(markdown, Target::Export, None, false, line_breaks)?
             .html)
     }
 
@@ -162,10 +175,18 @@ impl Renderer {
         source: Option<&Path>,
         remote: bool,
         known: Vec<String>,
+        line_breaks: bool,
     ) -> Result<Rendered, String> {
         let known = known.into_iter().take(128).collect();
         catch_unwind(AssertUnwindSafe(|| {
-            self.render_inner(markdown, Target::Preview, source, remote, Some(known))
+            self.render_inner(
+                markdown,
+                Target::Preview,
+                source,
+                remote,
+                Some(known),
+                line_breaks,
+            )
         }))
         .map_err(|_| "Preview unavailable. Your source is still open.".to_owned())?
     }
@@ -177,8 +198,10 @@ impl Renderer {
         source: Option<&Path>,
         remote: bool,
         known: Option<std::collections::HashSet<String>>,
+        line_breaks: bool,
     ) -> Result<Rendered, String> {
-        let opts = comrak_options(target);
+        let mut opts = comrak_options(target);
+        opts.render.hardbreaks = line_breaks;
         let arena = Arena::new();
         let root = parse_document(&arena, markdown, &opts);
 
@@ -383,7 +406,6 @@ fn comrak_options(target: Target) -> Options<'static> {
     o.render.r#unsafe = true;
     o.render.tasklist_classes = true;
     o.render.sourcepos = target == Target::Preview;
-    o.render.hardbreaks = target == Target::Preview;
     o
 }
 
@@ -663,24 +685,57 @@ mod tests {
     }
 
     #[test]
-    fn single_returns_are_visible_in_preview_and_keep_markdown_export_semantics() {
+    fn single_returns_follow_one_choice_in_preview_and_export() {
         let source = "Dit\nis\neen\ntest\n\nVolgende alinea";
-        let html = preview(source);
-        assert_eq!(html.matches("<p ").count(), 2, "{html}");
-        assert_eq!(html.matches("<br").count(), 3, "{html}");
+        let r = Renderer::new();
+        let render = |target, line_breaks| {
+            r.render_with_breaks(source, target, None, false, line_breaks)
+                .unwrap()
+                .html
+        };
+        // Standard Markdown by default: a single Return is a space in every output.
+        for target in [Target::Preview, Target::Export] {
+            let html = render(target, false);
+            assert_eq!(html.matches("<p").count(), 2, "{html}");
+            assert_eq!(html.matches("<br").count(), 0, "{html}");
+            let html = render(target, true);
+            assert_eq!(html.matches("<p").count(), 2, "{html}");
+            assert_eq!(html.matches("<br").count(), 3, "{html}");
+        }
         assert_eq!(
             export(source).trim(),
             "<p>Dit\nis\neen\ntest</p>\n<p>Volgende alinea</p>"
         );
+        let update = |line_breaks| {
+            r.preview_update(source, None, false, vec![], line_breaks)
+                .unwrap()
+                .html
+        };
+        assert_eq!(update(false).matches("<br").count(), 0);
+        assert_eq!(update(true).matches("<br").count(), 3);
+        let page = |line_breaks| {
+            crate::export::standalone_html(&r, source, "t", None, line_breaks)
+                .unwrap()
+                .0
+        };
+        assert_eq!(page(false).matches("<br").count(), 0);
+        assert_eq!(page(true).matches("<br").count(), 3);
     }
 
     #[test]
-    fn preview_line_breaks_respect_lists_code_and_explicit_markdown_breaks() {
+    fn line_breaks_respect_lists_code_and_explicit_markdown_breaks() {
         let source = "- first\n- second\n\n```\none\ntwo\n```\n\na  \nb\\\nc";
-        for html in [preview(source), export(source)] {
-            assert_eq!(html.matches("<li").count(), 2, "{html}");
-            assert!(html.contains("one\ntwo\n"), "{html}");
-            assert_eq!(html.matches("<br").count(), 2, "{html}");
+        let r = Renderer::new();
+        for target in [Target::Preview, Target::Export] {
+            for line_breaks in [false, true] {
+                let html = r
+                    .render_with_breaks(source, target, None, false, line_breaks)
+                    .unwrap()
+                    .html;
+                assert_eq!(html.matches("<li").count(), 2, "{html}");
+                assert!(html.contains("one\ntwo\n"), "{html}");
+                assert_eq!(html.matches("<br").count(), 2, "{html}");
+            }
         }
     }
 
@@ -849,12 +904,14 @@ mod tests {
         let r = Renderer::new();
         let paragraph = "Some **bold** text.\n\n";
         let megabyte = paragraph.repeat(1024 * 1024 / paragraph.len() + 1);
-        let html = r.formatted(&megabyte).unwrap();
+        let html = r.formatted(&megabyte, false).unwrap();
         assert!(html.contains("<strong>bold</strong>") && !html.contains("data-sourcepos"));
+        assert!(!r.formatted("one\ntwo", false).unwrap().contains("<br"));
+        assert!(r.formatted("one\ntwo", true).unwrap().contains("<br"));
         let limit = "a".repeat(MAX_FORMATTED_BYTES);
-        assert!(r.formatted(&limit).is_ok());
+        assert!(r.formatted(&limit, false).is_ok());
         assert_eq!(
-            r.formatted(&(limit + "a")).unwrap_err(),
+            r.formatted(&(limit + "a"), false).unwrap_err(),
             "Select up to 4 MiB to copy formatted text."
         );
     }
