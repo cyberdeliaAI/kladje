@@ -21,4 +21,6 @@ The first macOS preview is being tested on Macs with Apple silicon.
 
 Explore the [start screen](docs/screenshots/start.png) and [settings](docs/screenshots/settings.png), or read the [Markdown Guide](ui/guide.md) for tips and shortcuts.
 
+Try the [Markdown compatibility test](tests/compatibility/) to see how tables, images and diagrams appear in the preview and in exports.
+
 Kladje’s source code is available under the [MIT License](LICENSE). The Kladje name, icon and wordmark are reserved for Kladje.
