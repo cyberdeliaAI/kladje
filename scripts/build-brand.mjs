@@ -3,6 +3,7 @@ import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { darkWordmark } from "./wordmarks.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const icons = path.join(root, "src-tauri/icons");
@@ -27,3 +28,5 @@ writeFileSync(path.join(root, "docs/kladje-wordmark-panel.svg"),
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300">\n' +
   '  <rect width="800" height="300" rx="20" fill="#FFFCF7"/>\n' +
   '  <svg x="43" y="30" width="714" height="240">' + wordmark + '</svg>\n</svg>\n');
+// The dark theme shows the same drawing in light colours, without a panel.
+writeFileSync(path.join(root, "ui/brand/kladje-wordmark-dark.svg"), darkWordmark(wordmark) + "\n");

@@ -21,7 +21,10 @@ async function app(initial = {}, configure = () => {}) {
   disk.format = format;
   let text = "", change;
   const element = () => ({
-    scrollTop: 0, scrollHeight: 100, clientHeight: 100, children: [], childNodes: [], dataset: {}, style: { setProperty() {} }, classList: { add() {}, remove() {}, toggle() {} },
+    scrollTop: 0, scrollHeight: 100, clientHeight: 100, children: [], childNodes: [], dataset: {}, style: { setProperty() {} },
+    classList: (() => { const set = new Set(); return { add: (...c) => c.forEach(x => set.add(x)), remove: (...c) => c.forEach(x => set.delete(x)),
+      toggle(c, on = !set.has(c)) { if (on) set.add(c); else set.delete(c); return on; }, contains: c => set.has(c) }; })(),
+    removeAttribute(k) { delete this.attrs[k]; },
     firstElementChild: {}, content: { childNodes: [], querySelectorAll: () => [] }, append() {}, replaceChildren(...nodes) { this.children = nodes; }, show() { this.open = true; }, showModal() { this.open = true; }, close() { this.open = false; },
     attrs: {}, handlers: {}, setSelectionRange(from, to) { this.selection = [from, to]; }, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {},
     addEventListener(k,f) { this.handlers[k]=f; }, querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
@@ -574,10 +577,10 @@ test("heading search pages through repeated titles and filtering resets the page
   await a.menu("jump_heading");
   assert.equal(a.get("heading-list").children.length, 100);
   a.get("heading-next").handlers.click();
-  assert.equal(a.get("heading-list").children[0].value, 101);
+  assert.equal(a.get("heading-list").children[0].dataset.line, "101");
   a.get("heading-filter").value = "last";
   a.get("heading-filter").handlers.input();
-  assert.equal(a.get("heading-list").children[0].value, 120);
+  assert.equal(a.get("heading-list").children[0].dataset.line, "120");
   assert.equal(a.get("heading-pages").hidden, true);
 });
 
@@ -591,30 +594,92 @@ test("the outline indents by level, numbers only repeated titles, follows the cu
     {level: 2, line: 6, text: "Notes"}, {level: 3, line: 8, text: "Detail"},
   ];
   await a.menu("document_outline");
+  assert.equal(a.get("outline-toggle").attrs["aria-pressed"], "true");
   const list = a.get("heading-list");
-  assert.deepEqual(list.children.map(o => o.textContent), ["Intro", "\u00a0\u00a0\u00a0Detail · line 4", "Notes", "\u00a0\u00a0\u00a0Detail · line 8"]);
-  assert.equal(list.children[1].title, "Heading level 3 · line 4");
-  // Above the first heading nothing is marked. Further down the enclosing section is.
-  assert.equal(list.selectedIndex, -1);
+  const rows = () => list.children;
+  const key = (k, extra = {}) => list.handlers.keydown({key: k, preventDefault() {}, ...extra});
+  const on = (row, part) => ({target: {closest: selector => selector === ".heading-row" ? row : selector === ".heading-toggle" && part === "toggle" ? {} : null}});
+  assert.deepEqual(rows().map(o => o.attrs["aria-label"]), ["Intro", "Detail, line 4", "Notes", "Detail, line 8"]);
+  assert.deepEqual(rows().map(o => o.attrs["aria-level"]), ["1", "2", "1", "2"]);
+  assert.equal(rows()[1].title, "Heading level 3 · line 4");
+  assert.equal(rows()[0].attrs["aria-expanded"], "true");
+  assert.equal(rows()[1].attrs["aria-expanded"], undefined);
+  // Above the first heading nothing is marked or selected, so Enter goes nowhere.
+  assert.equal(list.attrs["aria-activedescendant"], undefined);
+  assert.ok(!rows().some(o => o.classList.contains("current")));
+  await key("Enter");
+  assert.equal(went, undefined);
+  // Further down, the enclosing section is marked and selected.
   line = 7;
-  a.view.cursor = () => ({line, column: 1, lines: 9});
   a.get("heading-filter").value = "";
   a.get("heading-filter").handlers.input();
-  assert.equal(list.selectedIndex, 2);
-  // A filter keeps its first match selected for Enter.
+  assert.ok(rows()[2].classList.contains("current"));
+  assert.equal(rows()[2].attrs["aria-selected"], "true");
+  assert.equal(list.attrs["aria-activedescendant"], rows()[2].id);
+  // Arrow keys move the selection and Enter jumps to it.
+  await key("ArrowDown");
+  await key("Enter");
+  assert.equal(went, 8);
+  // Collapsing a heading hides its subheadings, with the mouse or the keyboard.
+  await list.handlers.click(on(rows()[0], "toggle"));
+  assert.deepEqual(rows().map(o => o.attrs["aria-label"]), ["Intro", "Notes", "Detail, line 8"]);
+  assert.equal(rows()[0].attrs["aria-expanded"], "false");
+  assert.equal(list.attrs["aria-activedescendant"], rows()[0].id);
+  await key("ArrowRight");
+  assert.equal(rows().length, 4);
+  await key("ArrowRight");
+  assert.equal(list.attrs["aria-activedescendant"], rows()[1].id);
+  await key("ArrowLeft");
+  assert.equal(list.attrs["aria-activedescendant"], rows()[0].id);
+  await key("ArrowLeft");
+  assert.equal(rows().length, 3);
+  // A filter lists every match flat, without collapsing, and selects the first.
   a.get("heading-filter").value = "detail";
   a.get("heading-filter").handlers.input();
-  assert.equal(list.selectedIndex, 0);
-  list.value = "8";
-  await list.handlers.click();
+  assert.deepEqual(rows().map(o => o.attrs["aria-label"]), ["Detail, line 4", "Detail, line 8"]);
+  assert.ok(rows().every(o => o.attrs["aria-expanded"] === undefined));
+  assert.equal(rows()[0].attrs["aria-selected"], "true");
+  // In the side panel one click jumps.
+  went = undefined;
+  await list.handlers.click(on(rows()[1]));
   assert.equal(went, 8);
-  // The modal picker still needs a double click or Enter.
-  await a.menu("document_outline");
+  // The close button hides the panel and releases the toolbar toggle.
+  a.get("outline-close").handlers.click();
+  assert.equal(a.get("outline").open, false);
+  assert.equal(a.get("outline-toggle").attrs["aria-pressed"], "false");
+  // The modal picker selects on a click and jumps on a double click.
   await a.menu("jump_heading");
   went = undefined;
-  list.value = "2";
-  await list.handlers.click();
+  await list.handlers.click(on(rows()[1]));
   assert.equal(went, undefined);
+  assert.equal(rows()[1].attrs["aria-selected"], "true");
+  await list.handlers.dblclick(on(rows()[1]));
+  assert.equal(went, 6);
+});
+
+test("an empty document shows the ways to begin and other recent documents in its preview", async () => {
+  const a = await app({"kladje.recent": JSON.stringify(["/notes/b.md", "/notes/a.md"])});
+  const start = a.get("start");
+  assert.equal(a.get("app").dataset.empty, "false");
+  assert.equal(start.hidden, true);
+  a.edit("");
+  await a.fire(50);
+  assert.equal(a.get("app").dataset.empty, "true");
+  assert.equal(start.hidden, false);
+  assert.equal(a.get("start-actions").children.length, 4);
+  // The open document itself is not offered again.
+  assert.equal(a.get("start-recent").children.length, 1);
+  assert.equal(a.get("start-recent-group").hidden, false);
+  const press = action => start.handlers.click({target: {closest: () => ({dataset: {action}})}});
+  await press("recent:/notes/b.md");
+  assert.equal(a.children.length, 1);
+  assert.ok(a.calls.some(([cmd, args]) => cmd === "open_document_window" && args.request.path === "/notes/b.md"));
+  await press("guide");
+  assert.equal(a.children.length, 2);
+  a.edit("typing hides it");
+  await a.fire(50);
+  assert.equal(start.hidden, true);
+  assert.equal(a.get("app").dataset.empty, "false");
 });
 
 function imagePaste(a, file = {type:"image/png", size:8, encoded:"iVBORw0KGgo="}, text = "", inSource = true) {
@@ -991,7 +1056,7 @@ test("a delayed sidebar outline cannot replace the headings of a newer revision"
   a.edit("# Current"); await a.fire(500);
   finish.resolve(); await opening; await new Promise(setImmediate);
   assert.equal(a.get("heading-list").children.length,1);
-  assert.match(a.get("heading-list").children[0].textContent,/Current/);
+  assert.match(a.get("heading-list").children[0].attrs["aria-label"],/Current/);
   await a.menu("document_outline");
   assert.equal(a.get("outline").open,false);
 });

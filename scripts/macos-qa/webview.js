@@ -112,14 +112,15 @@ window.addEventListener("load", async () => {
     const outline = document.getElementById("outline");
     const filter = document.getElementById("heading-filter");
     const list = document.getElementById("heading-list");
+    const rows = () => Array.from(list.querySelectorAll(".heading-row"));
     for (const mode of ["editor", "preview"]) {
       await menu("view_" + mode);
       await menu("jump_heading");
       await wait(() => outline.open && document.activeElement === filter, "heading search in " + mode);
       filter.value = "café";
       filter.dispatchEvent(new Event("input"));
-      check(Array.from(list.options, o => o.value).join(",") === "1,3", "duplicate Unicode headings in " + mode);
-      list.selectedIndex = 1;
+      check(rows().map(o => o.dataset.line).join(",") === "1,3", "duplicate Unicode headings in " + mode);
+      list.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowDown", cancelable: true}));
       list.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", cancelable: true}));
       await wait(() => !outline.open && (mode === "editor" ? qaEditor.cursor().line === 3 :
         document.activeElement.id === "uc-café-1"), "jump to second heading in " + mode);
@@ -253,12 +254,11 @@ window.addEventListener("load", async () => {
     check(proof.confirmed, "offline export with explicit page break");
     edit("# Alpha\n\n# Beta");
     await menu("document_outline");
-    await wait(() => outline.open && list.options.length === 2, "open nonmodal document outline");
+    await wait(() => outline.open && rows().length === 2, "open nonmodal document outline");
     check(!outline.matches(":modal") && document.getElementById("panes").getBoundingClientRect().left >= outline.getBoundingClientRect().right-1,
       "outline occupies its own column beside the document");
-    list.selectedIndex = 1;
-    list.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter",cancelable:true}));
-    await wait(() => qaEditor.cursor().line === 3, "jump from sidebar");
+    rows()[1].querySelector(".heading-text").click();
+    await wait(() => qaEditor.cursor().line === 3, "jump from sidebar with one click");
     check(outline.open, "outline stays open while navigating");
     filter.value = "Beta";
     filter.dispatchEvent(new Event("input"));
@@ -266,11 +266,11 @@ window.addEventListener("load", async () => {
     await menu("jump_heading");
     await wait(() => document.activeElement === filter && filter.selectionStart === 0 && filter.selectionEnd === 4,
       "Jump to Heading selects the previous sidebar query");
-    check(list.options.length === 1, "existing outline query stays filtered and is selected for replacement");
+    check(rows().length === 1, "existing outline query stays filtered and is selected for replacement");
     filter.value = "";
     filter.dispatchEvent(new Event("input"));
     edit("# One");
-    await wait(() => list.options.length === 1 && list.options[0].textContent.includes("One"), "refresh open outline after editing");
+    await wait(() => rows().length === 1 && rows()[0].textContent.includes("One"), "refresh open outline after editing");
     await menu("document_outline");
     await wait(() => !outline.open, "hide outline");
     await checkpoint("native workflow passed");

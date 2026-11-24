@@ -14,7 +14,7 @@ Kladje is being qualified for a first Apple silicon macOS preview. Windows and L
 - Open several documents side by side. On macOS, **⌘T** opens a new document in a native tab. Opening the same file again brings its window forward. Each document has its own undo history, save status and recovery draft.
 - Pair brackets and quotes, paste a URL over selected text, and use **Writing Settings** to enable rich-text paste or estimated reading time. Copy selected Markdown as formatted text from **Edit**.
 - Edit Markdown with native menu shortcuts, heading and list commands, undo and redo, and Find and Replace. Open **Help → Markdown Guide** for an editable guide.
-- Reopen any of the last ten files from **File → Open Recent**. Search headings with **⌘⇧J** on macOS or keep **View → Document Outline** open beside the source.
+- Reopen any of the last ten files from **File → Open Recent**. Search headings with **⌘⇧J** on macOS or keep **View → Document Outline** open beside the source. An empty document shows ways to begin and your recent files in its preview.
 - Toggle line numbers, wrapping and writing width in **View**. Writing Settings also offers paragraph focus and typewriter scrolling. Use **Format → Insert Table Row Below** to extend an existing Markdown table.
 - Preview tables, task lists, footnotes, strikethrough, fenced code with syntax highlighting, math and [Mermaid](https://mermaid.js.org) diagrams. Diagrams also appear in PDF and exported HTML. Switch between editor, preview and split views in light or dark mode.
 - Open Markdown and plain text, import HTML or Word documents as editable Markdown, export HTML, and print or save a PDF through the system print dialog.

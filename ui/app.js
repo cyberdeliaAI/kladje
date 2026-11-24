@@ -111,6 +111,7 @@
     for (const [id, enabled] of Object.entries({sync_scroll:syncEnabled, gutter, wrap, measure, document_outline:sidebarOpen})) {
       if (enabled) checked.push(id);
     }
+    $("outline-toggle").setAttribute("aria-pressed", String(sidebarOpen));
     checkUpdate = checkUpdate.then(() => invoke("set_menu_checks", {checked})).catch(report);
   }
   function applyEditorLayout() {
@@ -167,6 +168,7 @@
         typeof p.digest === "string" && Number.isSafeInteger(p.offset) && Number.isFinite(p.top)) : []};
     try {
       history = await invoke("update_history", {change, seed});
+      renderStart();
       store.remove("recent");
       store.remove("places");
       store.remove("lastPath");
@@ -288,8 +290,73 @@
 
   // ---------------------------------------------------------------- chrome
 
+  // ---------------------------------------------------------------- start screen
+
+  // An empty document shows the wordmark, the ways to begin and recent files
+  // where its preview would be.
+  const onMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform || "");
+  const shortcut = (key, shift = false) => onMac ? (shift ? "⇧⌘" : "⌘") + key : "Ctrl+" + (shift ? "Shift+" : "") + key;
+  const START_ICONS = {
+    open: '<path d="M4.5 3.5h6v6M10.5 3.5l-7 7"/>',
+    new_template: '<path d="M3.5 1.5h5l3 3v8h-8z"/><path d="M8.5 1.5v3h3M7.5 7v4M5.5 9h4"/>',
+    import: '<path d="M7 1.5v7M4 5.5l3 3 3-3M2.5 9.5v3h9v-3"/>',
+    guide: '<path d="M2.5 2.5h3.5a1.5 1.5 0 0 1 1 .5 1.5 1.5 0 0 1 1-.5h3.5v9H8a1 1 0 0 0-1 1 1 1 0 0 0-1-1H2.5zM7 3v9"/>',
+    recent: '<path d="M3.5 1.5h5l3 3v8h-8z"/><path d="M8.5 1.5v3h3"/>',
+  };
+  function startButton(action, label, detail, icon) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.action = action;
+    const mark = document.createElementNS ? document.createElementNS("http://www.w3.org/2000/svg", "svg") : document.createElement("svg");
+    mark.setAttribute("viewBox", "0 0 14 14");
+    mark.setAttribute("aria-hidden", "true");
+    mark.innerHTML = START_ICONS[icon];
+    const name = document.createElement("span");
+    name.className = "start-label";
+    name.textContent = label;
+    button.append(mark, name);
+    if (detail) {
+      const side = document.createElement("span");
+      side.className = "start-detail";
+      side.textContent = detail;
+      button.append(side);
+    }
+    item.append(button);
+    return item;
+  }
+  $("start-actions").replaceChildren(
+    startButton("open", "Open…", shortcut("O"), "open"),
+    startButton("new_template", "New from Template…", "", "new_template"),
+    startButton("import", "Import…", shortcut("I", true), "import"),
+    startButton("guide", "Markdown Guide", "", "guide"),
+  );
+  let shownRecent = null;
+  function renderStart() {
+    const empty = editor.textLength() === 0;
+    els.app.dataset.empty = String(empty);
+    $("start").hidden = !empty;
+    if (!empty) return;
+    const recent = recentPaths().filter(path => path !== doc.path).slice(0, 5);
+    const key = recent.join("\n");
+    if (key === shownRecent) return;
+    shownRecent = key;
+    $("start-recent").replaceChildren(...recent.map(path => {
+      // The folder name tells same-named files apart. The tooltip has the full path.
+      const item = startButton("recent:" + path, basename(path), basename(dirname(path)), "recent");
+      item.firstElementChild.title = path;
+      return item;
+    }));
+    $("start-recent-group").hidden = !recent.length;
+  }
+  $("start").addEventListener("click", event => {
+    const button = event.target.closest?.("button[data-action]");
+    if (button) return runAction(button.dataset.action);
+  });
+
   let shownTitle = null;
   function refreshChrome() {
+    renderStart();
     const dirty = session.isDirty();
     els.docName.classList.toggle("dirty", dirty);
     const label = doc.recovered ? `${doc.name} (recovered)` : doc.name;
@@ -804,43 +871,130 @@
   const headingFilter = $("heading-filter");
   const headingList = $("heading-list");
   let headingRows = [], outlineSnapshot, headingPage = 0;
+  // The rows drawn in the list, the row the keyboard is on, and the section
+  // that holds the cursor. Collapsed headings are keyed by level, text and
+  // occurrence, so the state survives edits elsewhere in the document.
+  let headingShown = [], headingActive = -1, headingCurrent = -1;
+  const collapsedHeadings = new Set();
+  const headingKey = (h, occurrence) => `${h.level}\u0000${h.text}\u0000${occurrence}`;
+
+  function headingTree() {
+    const occurrences = new Map();
+    return headingRows.map((h, index) => {
+      const seen = occurrences.get(h.text) || 0;
+      occurrences.set(h.text, seen + 1);
+      const next = headingRows[index + 1];
+      return {...h, key: headingKey(h, seen), parent: !!next && next.level > h.level};
+    });
+  }
+
   function filterHeadings() {
     const needle = headingFilter.value.normalize().toLocaleLowerCase().trim();
-    const matches = headingRows.filter(h => h.text.normalize().toLocaleLowerCase().includes(needle));
+    const tree = headingTree();
+    let matches;
+    if (needle) {
+      matches = tree.filter(h => h.text.normalize().toLocaleLowerCase().includes(needle));
+    } else {
+      // Leave out everything below a collapsed heading.
+      matches = [];
+      let hiddenBelow = 7;
+      for (const h of tree) {
+        if (h.level > hiddenBelow) continue;
+        hiddenBelow = 7;
+        matches.push(h);
+        if (h.parent && collapsedHeadings.has(h.key)) hiddenBelow = h.level;
+      }
+    }
     const start = headingPage * 100;
     // Indent by level from the shallowest heading. A line number is only
     // needed to tell headings with the same text apart.
     const top = headingRows.reduce((least, h) => Math.min(least, h.level), 6);
     const repeated = new Map();
     for (const h of headingRows) repeated.set(h.text, (repeated.get(h.text) || 0) + 1);
-    const options = matches.slice(start, start + 100).map(h => {
-      const option = document.createElement("option");
-      option.value = h.line;
-      option.textContent = "\u00a0\u00a0\u00a0".repeat(h.level - top) + (h.text || "(untitled heading)") +
-        (repeated.get(h.text) > 1 ? ` · line ${h.line}` : "");
+    headingShown = matches.slice(start, start + 100).map((h, index) => {
+      const option = document.createElement("div");
+      const name = h.text || "(untitled heading)";
+      const numbered = repeated.get(h.text) > 1;
+      option.id = "heading-row-" + index;
+      option.className = "heading-row";
+      option.dataset.line = String(h.line);
+      option.style.setProperty("--depth", String(h.level - top));
+      option.setAttribute("role", "treeitem");
+      option.setAttribute("aria-level", String(h.level - top + 1));
+      option.setAttribute("aria-selected", "false");
+      option.setAttribute("aria-label", numbered ? `${name}, line ${h.line}` : name);
       option.title = `Heading level ${h.level} · line ${h.line}`;
-      return option;
+      const toggle = document.createElement("span");
+      toggle.className = "heading-toggle";
+      toggle.setAttribute("aria-hidden", "true");
+      if (h.parent && !needle) {
+        const open = !collapsedHeadings.has(h.key);
+        option.setAttribute("aria-expanded", String(open));
+        toggle.dataset.open = String(open);
+      }
+      const label = document.createElement("span");
+      label.className = "heading-text";
+      label.textContent = name;
+      option.append(toggle, label);
+      if (numbered) {
+        const where = document.createElement("span");
+        where.className = "heading-line";
+        where.textContent = String(h.line);
+        option.append(where);
+      }
+      return {...h, option};
     });
-    headingList.replaceChildren(...options);
-    headingList.selectedIndex = options.length ? 0 : -1;
-    if (!needle) followOutline();
-    $("heading-go").disabled = !options.length;
+    headingList.replaceChildren(...headingShown.map(row => row.option));
+    headingCurrent = -1;
+    setActiveHeading(headingShown.length ? 0 : -1, false);
+    if (!needle) followOutline(true);
+    $("heading-go").disabled = !headingShown.length;
     $("heading-pages").hidden = matches.length <= 100;
     $("heading-prev").disabled = headingPage === 0;
     $("heading-next").disabled = start + 100 >= matches.length;
-    $("heading-count").textContent = matches.length > 100 ? `Headings ${start + 1}–${start + options.length} of ${matches.length}` :
+    $("heading-count").textContent = matches.length > 100 ? `Headings ${start + 1}–${start + headingShown.length} of ${matches.length}` :
       matches.length ? `${matches.length} heading${matches.length === 1 ? "" : "s"}` : "No matching headings";
   }
-  // The side panel marks the section that holds the cursor, unless its list
-  // is being browsed or shows filtered or outdated headings.
-  function followOutline() {
+
+  function setActiveHeading(index, reveal = true) {
+    headingShown[headingActive]?.option.classList.remove("active");
+    headingShown[headingActive]?.option.setAttribute("aria-selected", "false");
+    headingActive = index;
+    const row = headingShown[index];
+    if (!row) { headingList.removeAttribute?.("aria-activedescendant"); return; }
+    row.option.classList.add("active");
+    row.option.setAttribute("aria-selected", "true");
+    headingList.setAttribute("aria-activedescendant", row.option.id);
+    if (reveal) row.option.scrollIntoView?.({block: "nearest"});
+  }
+
+  // The side panel marks the section that holds the cursor. While the list is
+  // being browsed, or shows filtered or outdated headings, it stays put.
+  function followOutline(force = false) {
     if (!sidebarOpen || headingFilter.value.trim() || !outlineSnapshot || !session.isCurrent(outlineSnapshot)) return;
-    if (document.activeElement === headingList) return;
     const line = editor.cursor().line;
     let current = -1;
-    Array.from(headingList.children).forEach((option, index) => { if (Number(option.value) <= line) current = index; });
-    if (headingList.selectedIndex !== current) headingList.selectedIndex = current;
+    headingShown.forEach((row, index) => { if (row.line <= line) current = index; });
+    if (current !== headingCurrent) {
+      headingShown[headingCurrent]?.option.classList.remove("current");
+      headingShown[current]?.option.classList.add("current");
+      headingCurrent = current;
+    }
+    if (force || document.activeElement !== headingList) setActiveHeading(current, !force);
   }
+
+  function toggleHeading(index, open) {
+    const row = headingShown[index];
+    if (!row?.parent || headingFilter.value.trim()) return false;
+    const isOpen = !collapsedHeadings.has(row.key);
+    if (open === isOpen) return false;
+    if (isOpen) collapsedHeadings.add(row.key); else collapsedHeadings.delete(row.key);
+    const line = row.line;
+    filterHeadings();
+    setActiveHeading(headingShown.findIndex(r => r.line === line));
+    return true;
+  }
+
   async function jumpToHeading() {
     if (sidebarOpen) { headingFilter.focus(); headingFilter.select(); return; }
     if (initializing || outline.open) return;
@@ -888,7 +1042,6 @@
       clearTimeout(timers.sidebar);
       els.app.dataset.outline = "false";
       $("outline-title").textContent = "Jump to Heading";
-      $("heading-cancel").textContent = "Cancel";
       syncChecks();
       editor.remeasure();
     }
@@ -903,8 +1056,7 @@
     if (narrowOutline.matches) { syncChecks(); return jumpToHeading(); }
     sidebarOpen = true;
     els.app.dataset.outline = "true";
-    $("outline-title").textContent = "Document Outline";
-    $("heading-cancel").textContent = "Hide";
+    $("outline-title").textContent = "Outline";
     headingFilter.value = "";
     headingRows = [];
     outlineSnapshot = null;
@@ -915,9 +1067,10 @@
     editor.remeasure();
     await refreshSidebar();
   }
+  $("outline-toggle").addEventListener("click", () => runAction("document_outline"));
   narrowOutline.addEventListener("change", () => { if (narrowOutline.matches && sidebarOpen) hideOutline(); });
   async function chooseHeading() {
-    const line = Number(headingList.value);
+    const line = headingShown[headingActive]?.line;
     if (!line || !outlineSnapshot) return;
     const snapshot = outlineSnapshot;
     if (!sidebarOpen) outline.close();
@@ -941,27 +1094,61 @@
     $(id).addEventListener("click", () => { headingPage += step; filterHeadings(); headingList.focus(); });
   }
   headingFilter.addEventListener("keydown", event => {
-    if (event.key === "ArrowDown") { event.preventDefault(); headingList.focus(); }
-  });
-  headingList.addEventListener("keydown", event => {
-    if (event.key === "Enter") {
+    if (event.key === "ArrowDown" && headingShown.length) {
       event.preventDefault();
-      chooseHeading().catch(showError);
+      headingList.focus();
+      setActiveHeading(Math.max(headingActive, 0));
     }
   });
-  headingList.addEventListener("dblclick", () => chooseHeading().catch(showError));
-  // In the side panel one click on a heading goes there.
-  headingList.addEventListener("click", () => { if (sidebarOpen) chooseHeading().catch(showError); });
-  $("heading-form").addEventListener("submit", event => { event.preventDefault(); chooseHeading().catch(showError); });
-  $("heading-cancel").addEventListener("click", () => {
-    const pinned = sidebarOpen;
-    hideOutline();
-    if (pinned) focusDocument();
+  headingList.addEventListener("keydown", event => {
+    const last = headingShown.length - 1;
+    const row = headingShown[headingActive];
+    const move = {ArrowDown: headingActive + 1, ArrowUp: headingActive - 1, Home: 0, End: last,
+      PageDown: headingActive + 10, PageUp: headingActive - 10}[event.key];
+    if (move !== undefined) {
+      event.preventDefault();
+      if (last >= 0) setActiveHeading(Math.min(last, Math.max(0, move)));
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      chooseHeading().catch(showError);
+    } else if (event.key === "ArrowRight" && row) {
+      event.preventDefault();
+      // Open a collapsed heading, or step to its first subheading.
+      if (!toggleHeading(headingActive, true) && row.parent && headingShown[headingActive + 1]) setActiveHeading(headingActive + 1);
+    } else if (event.key === "ArrowLeft" && row) {
+      event.preventDefault();
+      // Close an open heading, or step to the heading it belongs to.
+      if (!toggleHeading(headingActive, false)) {
+        for (let i = headingActive - 1; i >= 0; i--) if (headingShown[i].level < row.level) { setActiveHeading(i); break; }
+      }
+    }
   });
+  const headingRowAt = event => event.target?.closest?.(".heading-row");
+  headingList.addEventListener("click", event => {
+    const option = headingRowAt(event);
+    const index = headingShown.findIndex(row => row.option === option);
+    if (index < 0) return;
+    if (event.target.closest?.(".heading-toggle") && headingShown[index].parent) {
+      toggleHeading(index, collapsedHeadings.has(headingShown[index].key));
+      return;
+    }
+    setActiveHeading(index, false);
+    // In the side panel one click on a heading goes there. The modal picker
+    // selects first and jumps on a double click or Enter.
+    if (sidebarOpen) chooseHeading().catch(showError);
+  });
+  headingList.addEventListener("dblclick", event => {
+    if (!sidebarOpen && headingRowAt(event)) chooseHeading().catch(showError);
+  });
+  $("heading-form").addEventListener("submit", event => { event.preventDefault(); chooseHeading().catch(showError); });
+  $("heading-cancel").addEventListener("click", () => hideOutline());
   outline.addEventListener("keydown", event => {
     if (sidebarOpen && event.key === "Escape") { event.preventDefault(); hideOutline(); focusDocument(); }
   });
-  outline.addEventListener("close", () => { if (!outline.open) { headingRows = []; outlineSnapshot = null; headingList.replaceChildren(); } });
+  $("outline-close").addEventListener("click", () => { hideOutline(); focusDocument(); });
+  outline.addEventListener("close", () => {
+    if (!outline.open) { headingRows = []; headingShown = []; headingActive = headingCurrent = -1; outlineSnapshot = null; headingList.replaceChildren(); }
+  });
 
   function jumpFragment(fragment) {
     let id;

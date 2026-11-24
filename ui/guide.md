@@ -148,7 +148,7 @@ Use Tab and Shift-Tab to select adjacent GFM table cells. Choose **View → Fold
 
 Click a standard list checkbox in the preview or focus it and press Space to change its Markdown marker. Undo restores it. Checkboxes stay read-only in exports, tables and documents containing raw HTML. The status bar shows the encoding and line endings of the current document. Optional reading time uses 200 words per minute.
 
-Choose **View → Document Outline** to keep headings beside your document. They are indented by level, and the section that holds the cursor is marked. Click a heading to go there, or filter and press Enter. Hide or Escape returns the space to the document. Windows 800 pixels wide or smaller use the compact heading picker. Tab in the final table cell adds a blank row.
+Choose **View → Document Outline**, or the outline button at the bottom right, to keep headings beside your document. They are indented by level, and the section that holds the cursor is marked. Click a heading to go there, or filter and press Enter. The arrow next to a heading folds its subheadings away; with the keyboard, Left and Right do the same. The close button or Escape returns the space to the document. Windows 800 pixels wide or smaller use the compact heading picker. Tab in the final table cell adds a blank row.
 
 Writing Settings can emphasize the current paragraph or keep the caret centered while you type. Both options start off. You can still scroll through the document and use Find.
 
