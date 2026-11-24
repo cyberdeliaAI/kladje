@@ -109,6 +109,33 @@ html, body {
   -webkit-user-select: text;
 }
 
+/* A note in the corner of the preview while it trails the source; it never moves the text. */
+#preview-status {
+  position: sticky;
+  top: 10px;
+  z-index: 2;
+  height: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 12px;
+  font: 12px/1.4 var(--sans);
+}
+#preview-status[hidden] { display: none; }
+#preview-status > div {
+  align-self: flex-start;
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-chrome);
+  color: var(--text-muted);
+}
+#preview-status span { padding: 4px 9px; }
+#preview-status button { padding: 4px 9px; border: 0; border-left: 1px solid var(--border); background: none; font: inherit; color: var(--accent); cursor: default; }
+#preview-status button[hidden] { display: none; }
+#preview-status button:hover { background: var(--accent-soft); }
+#preview-status button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
 .empty-wordmark { display: none; }
 @media screen {
   #preview-pane { position: relative; }
@@ -339,7 +366,7 @@ html, body {
   html, body { height: auto; overflow: visible; background: #fff; }
   #app { display: block; height: auto; }
   #panes { display: block; }
-  #editor-pane, #divider, #statusbar { display: none !important; }
+  #editor-pane, #divider, #statusbar, #preview-status { display: none !important; }
   #preview-pane { display: block !important; overflow: visible; background: #fff; }
   #preview { max-width: none; padding: 0; font-size: 11.5pt; }
   :root[data-theme="dark"] .markdown-body {

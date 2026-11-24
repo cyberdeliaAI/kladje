@@ -119,7 +119,11 @@ Hidden until opened.
 
 Press **⌘⇧J** on macOS (Ctrl+Shift+J elsewhere) to search headings. Type part of a heading, press the down arrow to select a match, and press Enter to jump. Escape returns to the document.
 
-Use **View** to toggle line numbers, wrapping or a narrower writing width. The footer counts Unicode code points and word-like segments of Markdown source. **Format → Insert Table Row Below** adds an empty row with the same number of columns.
+Use **View** to toggle line numbers, wrapping or a narrower writing width. The footer counts Unicode code points and word-like segments of Markdown source. A document above 262,144 UTF-16 code units shows its line count first and its totals once a background count finishes. **Format → Insert Table Row Below** adds an empty row with the same number of columns.
+
+## Large documents
+
+Kladje times each preview update. While an update stays short, the preview follows your typing. In a larger document it updates when you pause typing, and in a very large one when you choose **View → Refresh Preview** (⌘⌥R, or Ctrl+Alt+R). A note in the corner of the preview says which applies and offers the same refresh. On an Apple M4 the preview stays live up to about 2 MiB of mixed Markdown and updates on a pause up to about 10 MiB. **Export → PDF / Print** renders the whole document first at any size that opens, and says so while it prepares.
 
 ## Saving automatically
 
@@ -138,7 +142,7 @@ Choose **File → Compare with Disk** to see your text and the saved file side b
 
 ## Writing shortcuts
 
-Use **Kladje → Settings…** (⌘,) on macOS or **File → Settings…** on other desktops to change automatic pairing, URL paste, rich-text conversion, reading time or image confirmation. Normal paste keeps plain text by default. With URL paste enabled, select a label and paste an HTTP or HTTPS address. With rich-text conversion enabled, paste formatted content to insert Markdown. Shift with the platform’s plain-paste shortcut bypasses these conversions. **Edit → Copy as Formatted Text** puts both Markdown source and formatted HTML on the clipboard.
+Use **Kladje → Settings…** (⌘,) on macOS or **File → Settings…** on other desktops to change automatic pairing, URL paste, rich-text conversion, reading time or image confirmation. Normal paste keeps plain text by default. With URL paste enabled, select a label and paste an HTTP or HTTPS address. With rich-text conversion enabled, paste formatted content to insert Markdown. Shift with the platform’s plain-paste shortcut bypasses these conversions. **Edit → Copy as Formatted Text** puts both Markdown source and formatted HTML on the clipboard, for a selection of up to 4 MiB.
 
 Use Tab and Shift-Tab to select adjacent GFM table cells. Choose **View → Fold or Unfold at Cursor** on a heading. **⌘E** opens Find with the current selection; **⌘⇧C** toggles inline code. Fenced JavaScript, TypeScript, HTML and CSS have editor syntax colors. A closed initial frontmatter block stays in the file and is excluded from the prose word total.
 

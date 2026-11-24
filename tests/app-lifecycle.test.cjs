@@ -27,6 +27,8 @@ async function app(initial = {}, configure = () => {}) {
     addEventListener(k,f) { this.handlers[k]=f; }, querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
   });
   const rendered = [], comparisons = [];
+  // A test can make a preview update cost main-thread time and supply the parsed blocks.
+  const clock = { skew: 0 }, hooks = { patchMs: () => 0, parse: () => [] };
   const elements = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const view = {
@@ -97,11 +99,16 @@ async function app(initial = {}, configure = () => {}) {
   };
   const context = vm.createContext({ window: win, document: { getElementById: get, documentElement: element(), createElement(tag) {
     const node = element();
-    if (tag === "template") Object.defineProperty(node, "innerHTML", {set(html) { rendered.push(html); }});
+    if (tag === "template") Object.defineProperty(node, "innerHTML", {set(html) {
+      rendered.push(html);
+      clock.skew += hooks.patchMs(html);
+      node.content.childNodes = hooks.parse(html);
+    }});
     return node;
-  } },
+  }, fonts: { ready: Promise.resolve() } },
     FileReader: class { readAsDataURL(file) { this.result = "data:" + file.type + ";base64," + file.encoded; this.onload(); } },
-    getComputedStyle: () => ({lineHeight:"18px"}), performance, Intl, crypto: require("node:crypto").webcrypto, console, clearTimeout: id => pendingTimers.delete(id),
+    getComputedStyle: () => ({lineHeight:"18px"}), performance: { now: () => performance.now() + clock.skew }, Intl,
+    requestAnimationFrame: fn => setImmediate(fn), crypto: require("node:crypto").webcrypto, console, clearTimeout: id => pendingTimers.delete(id),
     setTimeout(fn, delay) { pendingTimers.set(++nextTimer, {fn, delay}); return nextTimer; },
     localStorage: { getItem: k => values.get(k), setItem: (k,v) => values.set(k,v), removeItem: k => values.delete(k) } });
   vm.runInContext(source("document-session.js"),context);
@@ -109,12 +116,13 @@ async function app(initial = {}, configure = () => {}) {
   vm.runInContext(source("app.js"),context);
   await ready.promise;
   async function fire(delay) {
-    const entry = [...pendingTimers].find(([, timer]) => timer.delay === delay);
+    const entry = [...pendingTimers].find(([, timer]) => typeof delay === "function" ? delay(timer.delay) : timer.delay === delay);
     assert.ok(entry, `no pending timer at ${delay} ms`);
     pendingTimers.delete(entry[0]);
     return entry[1].fn();
   }
-  return { comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
+  const pending = delay => [...pendingTimers.values()].some(timer => timer.delay === delay);
+  return { comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, pending, hooks, clock, rendered, view, menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
 }
 
 test("actual Save and Quit wait for outstanding I/O and retain later edits", async () => {
@@ -1080,18 +1088,328 @@ test("an untitled Close prompt gives a bounded identifying line and Cancel keeps
   assert.equal(a.text(), note);
 });
 
-test("paused preview skips reading the full document and resumes below its limit", async () => {
+const KIB = 1024, MIB = 1024 * KIB;
+const settle = () => new Promise(resolve => setImmediate(resolve));
+const status = a => a.get("preview-status").hidden ? "" : a.get("preview-status-text").textContent;
+// The stub DOM patches in no time. Charge each update what the release build measured on an Apple M4.
+const measuredCost = a => { a.hooks.patchMs = html => Number(html) / MIB * 22; };
+
+test("a megabyte of text keeps its live preview and a larger document waits for a typing pause", async () => {
+  const a = await app();
+  measuredCost(a);
+  a.api.render = ({markdown}) => String(markdown.length);
+  a.edit("a".repeat(256 * KIB + 1));
+  await a.fire(70);
+  assert.equal(a.rendered.at(-1), String(256 * KIB + 1), "the former fixed pause is gone");
+  a.edit("a".repeat(900 * KIB));
+  assert.ok(a.pending(70) && !a.pending(1500));
+  await a.fire(70);
+  assert.equal(a.rendered.at(-1), String(900 * KIB));
+  assert.equal(status(a), "");
+
+  a.edit("a".repeat(4 * MIB));
+  assert.ok(!a.pending(70), "no render while typing continues");
+  assert.equal(status(a), "Preview updates when you pause typing");
+  assert.match(a.get("notice").textContent, /pause typing/);
+  await a.fire(1500);
+  assert.equal(a.rendered.at(-1), String(4 * MIB));
+  assert.equal(status(a), "");
+  a.edit("short draft");
+  await a.fire(delay => delay > 70 && delay < 700); // the delay follows the cost of the previous update
+  assert.equal(a.rendered.at(-1), "11");
+});
+
+test("a very large document renders on request only and never shows an obsolete result", async () => {
   const a = await app();
   await a.menu("view_editor");
-  a.edit("a".repeat(256 * 1024 + 1));
+  a.edit("a".repeat(16 * MIB));
   let reads = 0;
-  a.view.getText = () => { reads++; return a.text(); };
+  const read = a.view.getText;
+  a.view.getText = () => { reads++; return read(); };
   await a.menu("view_split");
-  await new Promise(setImmediate);
-  assert.match(a.get("preview").textContent, /Live preview is paused/);
-  assert.equal(reads, 0);
-  a.api.render = ({markdown}) => markdown;
-  a.edit("short draft");
-  await a.fire(70);
-  assert.equal(a.rendered.at(-1), "short draft");
+  await settle();
+  assert.equal(reads, 0, "an unrendered preview does not copy the document");
+  assert.ok(!a.calls.some(([name, args]) => name === "render" && args.markdown.length === 16 * MIB));
+  assert.equal(status(a), "Preview is out of date");
+  assert.match(a.get("notice").textContent, /Refresh Preview/);
+  assert.equal(a.get("preview-refresh").hidden, false);
+
+  const started = gate(), finish = gate();
+  measuredCost(a);
+  a.api.render = async ({markdown}) => {
+    if (markdown.length === 16 * MIB) { started.resolve(); await finish.promise; }
+    return String(markdown.length);
+  };
+  const refresh = a.menu("refresh_preview");
+  await started.promise;
+  assert.equal(status(a), "Rendering preview…");
+  assert.equal(a.get("preview-refresh").hidden, true);
+  a.edit("b".repeat(16 * MIB + 1));
+  finish.resolve();
+  assert.equal(await refresh, false);
+  assert.ok(!a.rendered.includes(String(16 * MIB)), "the result for the replaced text is dropped");
+  assert.equal(status(a), "Preview is out of date");
+  assert.ok(!a.pending(70), "and a large render is not repeated while typing continues");
+  a.edit("b".repeat(16 * MIB + 2));
+  assert.equal(await a.fire(1500), true);
+  assert.equal(a.rendered.at(-1), String(16 * MIB + 2), "the request is honoured at the next pause in typing");
+  assert.equal(status(a), "");
+
+  a.edit("c".repeat(16 * MIB + 3));
+  assert.ok(!a.pending(70) && !a.pending(1500), "later edits wait for another request");
+  assert.equal(status(a), "Preview is out of date");
+  a.get("preview-refresh").handlers.click();
+  await settle();
+  assert.equal(a.rendered.at(-1), String(16 * MIB + 3));
+  assert.equal(status(a), "");
+
+  const opened = await app({}, ({disk}) => { disk.content = "a".repeat(16 * MIB); });
+  assert.match(status(opened), /not rendered automatically/);
+  assert.ok(!opened.calls.some(([name, args]) => name === "render" && args.markdown.length));
 });
+
+test("ticking a task in the preview of a very large document refreshes it for the next tick", async () => {
+  const a = await app();
+  const item = {getAttribute: () => "1:1-1:9", textContent: "Buy milk"};
+  const box = {parentElement: item, setAttribute() {}, removeAttribute() {}};
+  a.get("preview").querySelectorAll = selector => selector.includes("task-list-item") ? [box] : [];
+  let checked = false;
+  a.api.render = ({markdown}) => ({html: String(markdown.length), assets: {}, tasks: {"1:1-1:9": {offset: 3, checked}}});
+  a.view.toggleTask = () => { checked = !checked; a.edit((checked ? "- [x] " : "- [ ] ") + "a".repeat(16 * MIB)); return true; };
+  a.edit("- [ ] " + "a".repeat(16 * MIB));
+  await a.menu("refresh_preview");
+  const renders = () => a.calls.filter(([name]) => name === "render").length;
+  for (const expected of [true, false]) {
+    const before = renders();
+    box.checked = expected;
+    a.get("preview").handlers.change({target: box});
+    await settle();
+    assert.equal(renders(), before + 1, "each tick renders once, on request of the click");
+    assert.equal(box.checked, expected);
+    assert.equal(a.text().startsWith(expected ? "- [x]" : "- [ ]"), true);
+    assert.equal(status(a), "");
+  }
+});
+
+test("an edit during a pause-tier render waits for the next pause instead of rendering again at once", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  measuredCost(a);
+  a.api.render = async ({markdown}) => {
+    if (markdown.length === 4 * MIB) { started.resolve(); await finish.promise; }
+    return String(markdown.length);
+  };
+  a.edit("a".repeat(4 * MIB));
+  const first = a.fire(1500);
+  await started.promise;
+  a.edit("a".repeat(4 * MIB + 1));
+  finish.resolve();
+  assert.equal(await first, false);
+  const renders = () => a.calls.filter(([name]) => name === "render").length;
+  const before = renders();
+  await settle();
+  assert.equal(renders(), before);
+  assert.ok(!a.rendered.includes(String(4 * MIB)));
+  assert.equal(status(a), "Preview updates when you pause typing");
+  assert.equal(await a.fire(1500), true);
+  assert.equal(a.rendered.at(-1), String(4 * MIB + 1));
+});
+
+test("a slow render that typing overtakes is dropped and the next one waits for its own delay", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  a.api.render = async ({markdown}) => {
+    if (markdown === "earlier") {
+      started.resolve();
+      await finish.promise;
+      a.clock.skew += 300;
+    }
+    return markdown;
+  };
+  a.edit("earlier");
+  const first = a.fire(70);
+  await started.promise;
+  a.edit("latest");
+  finish.resolve();
+  assert.equal(await first, false);
+  await settle();
+  assert.deepEqual(a.calls.filter(([name]) => name === "render").map(([, args]) => args.markdown).slice(-1), ["earlier"],
+    "a render slower than the typing delay is not repeated back to back");
+  assert.ok(!a.rendered.includes("earlier"));
+  assert.equal(await a.fire(70), true);
+  assert.equal(a.rendered.at(-1), "latest");
+});
+
+test("the measured cost of an update, not only the size, decides how live the preview stays", async () => {
+  const a = await app();
+  a.api.render = ({markdown}) => String(markdown.length);
+  // A small document says little about the cost per megabyte and is not used as a sample.
+  a.hooks.patchMs = () => 40;
+  a.edit("tiny");
+  await a.fire(70);
+  const text = n => "a".repeat(600 * KIB + n);
+  a.edit(text(0));
+  assert.ok(a.pending(70), "600 KiB starts out live");
+  let perMib = 300;
+  a.hooks.patchMs = html => Number(html) / MIB * perMib;
+  await a.fire(70);
+  a.edit(text(1));
+  assert.ok(a.pending(1500) && !a.pending(70), "a slow machine waits for a pause at 600 KiB");
+  perMib = 5;
+  await a.fire(1500);
+  a.edit("a".repeat(3 * MIB));
+  assert.ok(!a.pending(1500), "a fast machine follows 3 MiB live");
+  assert.equal(status(a), "");
+});
+
+test("a window starts from the update cost an earlier window measured on this machine", async () => {
+  const first = await app();
+  first.api.render = ({markdown}) => String(markdown.length);
+  first.hooks.patchMs = html => Number(html) / MIB * 10;
+  first.edit("a".repeat(MIB));
+  await first.fire(70);
+  const remembered = JSON.parse(first.values.get("kladje.previewRate"));
+  assert.ok(Math.abs(remembered * MIB - 10) < 1);
+
+  const next = await app({"kladje.previewRate": JSON.stringify(remembered)}, ({disk}) => { disk.content = "a".repeat(8 * MIB); });
+  assert.equal(status(next), "", "8 MiB is within the pause budget at the remembered cost and renders on opening");
+  assert.ok(next.calls.some(([name, args]) => name === "render" && args.markdown.length === 8 * MIB));
+  const unknown = await app({"kladje.previewRate": JSON.stringify("fast")}, ({disk}) => { disk.content = "a".repeat(8 * MIB); });
+  assert.match(status(unknown), /not rendered automatically/, "an invalid stored value falls back to the cautious default");
+});
+
+test("print renders a document that is too large for the live preview and shows that it is preparing", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  a.api.print_document = () => {};
+  a.api.render = async ({markdown}) => { started.resolve(); await finish.promise; return String(markdown.length); };
+  a.edit("a".repeat(16 * MIB));
+  assert.equal(status(a), "Preview is out of date");
+  const printing = a.menu("export_pdf");
+  await started.promise;
+  assert.equal(a.get("notice").textContent, "Preparing the document for printing…");
+  assert.equal(status(a), "Rendering preview…");
+  assert.ok(!a.calls.some(([name]) => name === "print_document"));
+  finish.resolve();
+  await printing;
+  const order = a.calls.map(([name]) => name).filter(name => name === "render" || name === "print_document");
+  assert.deepEqual(order.slice(-2), ["render", "print_document"]);
+  assert.equal(a.rendered.at(-1), String(16 * MIB));
+  assert.equal(status(a), "");
+
+  // From the editor-only view the preview is hidden, and print still renders it.
+  await a.menu("view_editor");
+  a.edit("b".repeat(16 * MIB + 1));
+  await a.menu("export_pdf");
+  assert.equal(a.rendered.at(-1), String(16 * MIB + 1));
+  assert.equal(a.calls.filter(([name]) => name === "print_document").length, 2);
+});
+
+test("diagrams follow an on-request render, print on white and return to the screen theme", async () => {
+  const a = await app();
+  a.api.render = ({markdown}) => String(markdown.length);
+  const block = {dataset: {}, isConnected: true, getAttribute: () => "1:1-3:3", querySelector: () => null, append() {}, classList: {add() {}, remove() {}}};
+  const code = {parentElement: block, textContent: "graph TD"};
+  let missing = null;
+  a.get("preview").querySelectorAll = selector => selector.includes("language-mermaid") ? [code] : [];
+  a.get("preview").querySelector = selector => selector === ".asset-missing" ? missing : null;
+  await a.menu("theme_dark");
+  a.edit("a".repeat(16 * MIB));
+  delete block.dataset.diagram;
+  await settle();
+  assert.equal(block.dataset.diagram, undefined, "an unrendered preview draws nothing");
+  await a.menu("refresh_preview");
+  assert.equal(block.dataset.diagram, "dark");
+
+  let printedAs;
+  a.api.print_document = () => { printedAs = block.dataset.diagram; };
+  await a.menu("export_pdf");
+  assert.equal(printedAs, "light", "paper is white");
+  assert.equal(block.dataset.diagram, "light", "the page stays as printed until the print ends");
+  a.events.afterprint();
+  assert.equal(block.dataset.diagram, "dark");
+
+  // A print that stops before the dialog puts the screen theme back itself.
+  missing = {};
+  printedAs = undefined;
+  await a.menu("export_pdf");
+  assert.equal(printedAs, undefined);
+  assert.equal(block.dataset.diagram, "dark");
+});
+
+test("print stops when the text changes while it prepares or when rendering fails", async () => {
+  const a = await app(), started = gate(), finish = gate();
+  a.api.print_document = () => {};
+  a.api.render = async ({markdown}) => {
+    if (markdown === "first") { started.resolve(); await finish.promise; }
+    return markdown;
+  };
+  a.edit("first");
+  const printing = a.menu("export_pdf");
+  await started.promise;
+  a.edit("second");
+  finish.resolve();
+  await printing;
+  assert.ok(!a.rendered.includes("first"));
+  assert.equal(a.rendered.at(-1), "second");
+  assert.match(a.get("notice").textContent, /changed while preparing print/);
+  assert.ok(!a.calls.some(([name]) => name === "print_document"));
+
+  // A large document is not rendered again while typing continues, and print still stops.
+  const slow = gate(), release = gate();
+  a.api.render = async ({markdown}) => { slow.resolve(); await release.promise; return String(markdown.length); };
+  a.edit("a".repeat(16 * MIB));
+  const large = a.menu("export_pdf");
+  await slow.promise;
+  a.edit("a".repeat(16 * MIB + 1));
+  release.resolve();
+  await large;
+  assert.match(a.get("notice").textContent, /changed while preparing print/);
+  assert.ok(!a.calls.some(([name]) => name === "print_document"));
+  assert.ok(!a.rendered.includes(String(16 * MIB)));
+  a.edit("second");
+
+  const errors = [];
+  a.dialog.message = message => { errors.push(message); };
+  a.api.render = () => { throw Error("Renderer unavailable"); };
+  await a.menu("export_pdf");
+  assert.match(errors.at(-1), /could not be rendered for printing/);
+  assert.ok(!a.calls.some(([name]) => name === "print_document"));
+  assert.equal(a.text(), "second");
+});
+
+test("an update keeps untouched preview blocks without serialising them", async () => {
+  const a = await app();
+  const preview = a.get("preview"), serialised = [];
+  preview.childNodes = [];
+  preview.insertBefore = (node, before) => {
+    const at = before ? preview.childNodes.indexOf(before) : preview.childNodes.length;
+    preview.childNodes.splice(at, 0, node);
+  };
+  // One block per line: "text@line".
+  a.hooks.parse = html => html.split("\n").map(row => {
+    const [text, line] = row.split("@");
+    return {
+      nodeType: 1, text, attrs: {"data-sourcepos": line + ":1-" + line + ":9"},
+      get outerHTML() { serialised.push(text); return `<p data-sourcepos="${this.attrs["data-sourcepos"]}">${text}</p>`; },
+      isEqualNode(other) { return other.text === text && other.attrs["data-sourcepos"] === this.attrs["data-sourcepos"]; },
+      getAttribute(name) { return this.attrs[name] ?? null; }, setAttribute(name, value) { this.attrs[name] = value; },
+      querySelectorAll: () => [], matches: () => false,
+      remove() { preview.childNodes.splice(preview.childNodes.indexOf(this), 1); },
+    };
+  });
+  a.api.render = ({markdown}) => markdown;
+  const show = async html => { a.edit(html); await a.fire(70); return [...preview.childNodes]; };
+  const lines = nodes => nodes.map(node => parseInt(node.attrs["data-sourcepos"], 10));
+
+  const first = await show("A@1\nB@3\nC@5\nD@7");
+  assert.deepEqual(first.map(node => node.text), ["A", "B", "C", "D"]);
+  serialised.length = 0;
+  const typed = await show("A@1\nB2@3\nC@5\nD@7");
+  assert.deepEqual(serialised, ["B2"], "only the edited block is serialised");
+  assert.ok(typed[0] === first[0] && typed[2] === first[2] && typed[3] === first[3] && typed[1] !== first[1]);
+
+  serialised.length = 0;
+  const shifted = await show("A@1\nNew@3\nB2@5\nC@7\nD@9");
+  assert.ok(shifted[0] === typed[0] && shifted[2] === typed[1] && shifted[4] === typed[3], "moved blocks keep their nodes");
+  assert.deepEqual(lines(shifted), [1, 3, 5, 7, 9], "and take over their new source lines");
+  assert.deepEqual(serialised.sort(), ["B2", "C", "D", "New"], "blocks above the new line are compared as they stand");
+});
+

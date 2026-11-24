@@ -15,7 +15,7 @@ use tauri::menu::{
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
-use kladje::markdown::{Renderer, Target, PREVIEW_ID_PREFIX};
+use kladje::markdown::{Renderer, PREVIEW_ID_PREFIX};
 use kladje::recovery::{Candidate, Draft};
 use kladje::{export, fileio, history, storage};
 
@@ -116,19 +116,9 @@ fn formatted_selection(
     markdown: String,
     line_breaks: Option<bool>,
 ) -> Result<String, String> {
-    if markdown.len() > 256 * 1024 {
-        return Err("Select up to 256 KiB to copy formatted text.".into());
-    }
     let html = state
         .renderer
-        .render_with_breaks(
-            &markdown,
-            Target::Export,
-            None,
-            false,
-            line_breaks.unwrap_or(false),
-        )?
-        .html;
+        .formatted(&markdown, line_breaks.unwrap_or(false))?;
     #[cfg(target_os = "macos")]
     {
         clipboard::write(
@@ -823,6 +813,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             "remote_images",
             "Remote Images for This Document…",
             None,
+        )?)
+        // Not CmdOrCtrl+R: a webview may treat that as reloading the page.
+        .item(&item(
+            "refresh_preview",
+            "Refresh Preview",
+            Some("CmdOrCtrl+Alt+R"),
         )?)
         .item(&check("document_outline", "Document Outline", None)?)
         .item(&check("sync_scroll", "Synchronize Scrolling", None)?)

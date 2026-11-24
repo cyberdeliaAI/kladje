@@ -56,3 +56,18 @@ test("failed writes stay dirty, undo compares to disk and other identities canno
   assert.equal(session.acknowledge(stale), false);
   assert.equal(session.isDirty(), true);
 });
+
+test("a changed length marks the document dirty without reading its text", () => {
+  let text = "original", reads = 0;
+  const session = new DocumentSession(() => { reads++; return text; }, () => text.length);
+  session.reset(text);
+  const edit = value => { text = value; session.changed(); };
+  edit("original and more");
+  assert.equal(session.isDirty(), true);
+  assert.equal(reads, 0);
+  edit("ORIGINAL");
+  assert.equal(session.isDirty(), true, "the same length still compares the text");
+  edit("original");
+  assert.equal(session.isDirty(), false);
+  assert.equal(reads, 2);
+});
