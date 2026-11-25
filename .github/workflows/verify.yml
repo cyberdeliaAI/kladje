@@ -143,7 +143,6 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v6
-        if: inputs.windows_artifact_run == ''
         with:
           persist-credentials: false
       - uses: actions/setup-node@v6
@@ -237,20 +236,8 @@ jobs:
           }
 
           Write-Output 'Verified silent installation and matching x64 executable.'
-          $app = Start-Process -FilePath $installed -WorkingDirectory $installDir -PassThru
-          try {
-            $deadline = (Get-Date).AddSeconds(30)
-            do {
-              Start-Sleep -Milliseconds 500
-              $app.Refresh()
-              if ($app.HasExited) { throw "Kladje exited during startup with code $($app.ExitCode)." }
-            } until ($app.MainWindowHandle -ne [IntPtr]::Zero -or (Get-Date) -ge $deadline)
-            if ($app.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Kladje did not open an editor window within 30 seconds.' }
-            Write-Output "Verified editor window: $($app.MainWindowTitle)"
-          } finally {
-            if (!$app.HasExited) { $app.Kill() }
-          }
-          "Verified silent installation, x64 payload and editor startup. SHA-256: $checksum" >> $env:GITHUB_STEP_SUMMARY
+          & ./.github/workflows/windows-menu-smoke.ps1 -Editor $installed
+          "Verified silent installation, x64 payload, editor startup and the Windows menu actions. SHA-256: $checksum" >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         with:
