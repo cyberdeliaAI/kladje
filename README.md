@@ -1,6 +1,6 @@
 <h1><img src="docs/kladje-wordmark-panel.svg" alt="Kladje" width="240"></h1>
 
-Kladje is a lightweight Markdown editor for Mac. Open a note, start writing, and see the finished page beside your text. When a draft grows, use the outline to jump between sections. Your documents stay in the folders you choose, as ordinary Markdown files you can open in any editor.
+Kladje is a lightweight Markdown editor for macOS, with a Windows preview. Open a note, start writing, and see the finished page beside your text. When a draft grows, use the outline to jump between sections. Your documents stay in the folders you choose, as ordinary Markdown files you can open in any editor.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/outline-dark.png">
@@ -17,7 +17,7 @@ Kladje works offline. Save with **⌘S** or turn on automatic saving. If another
 
 ## Availability
 
-The first macOS preview is being tested on Macs with Apple silicon.
+The preview targets Apple silicon and Intel Macs, and Windows PCs with an x64 processor. See [Releases](https://github.com/cyberdeliaAI/kladje/releases) for installers.
 
 Explore the [start screen](docs/screenshots/start.png) and [settings](docs/screenshots/settings.png), or read the [Markdown Guide](ui/guide.md) for tips and shortcuts.
 

@@ -142,7 +142,50 @@ fn reveal_document(path: String) -> Result<(), String> {
     if !path.is_absolute() || !path.is_file() {
         return Err("The document is no longer at its saved location.".into());
     }
+    #[cfg(windows)]
+    return reveal_in_explorer(path);
+
+    #[cfg(not(windows))]
     tauri_plugin_opener::reveal_item_in_dir(path).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn reveal_in_explorer(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use windows_sys::Win32::{
+        System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+        UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems},
+    };
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // A fresh thread guarantees the shell call can initialize a COM STA.
+    let selected = std::thread::spawn(move || unsafe {
+        if CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED as u32) < 0 {
+            return false;
+        }
+        let item = ILCreateFromPathW(wide.as_ptr());
+        let selected = if item.is_null() {
+            false
+        } else {
+            // With zero child items, the absolute ID selects this file in its parent.
+            let result = SHOpenFolderAndSelectItems(item, 0, ptr::null(), 0);
+            ILFree(item);
+            result >= 0
+        };
+        CoUninitialize();
+        selected
+    })
+    .join()
+    .unwrap_or(false);
+
+    if selected {
+        return Ok(());
+    }
+    let folder = path
+        .parent()
+        .ok_or("The document has no containing folder.")?;
+    tauri_plugin_opener::open_path(folder, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -1104,10 +1147,18 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             .build()?;
         menu = menu.item(&window);
     }
-    let help = SubmenuBuilder::new(app, "Help")
-        .item(&item("guide", "Markdown Guide", None)?)
-        .build()?;
-    let menu = menu.item(&help);
+    let help = SubmenuBuilder::new(app, "Help").item(&item("guide", "Markdown Guide", None)?);
+    #[cfg(windows)]
+    let help = {
+        let about = tauri::menu::AboutMetadataBuilder::new()
+            .name(Some("Kladje"))
+            .version(Some(app.package_info().version.to_string()))
+            .license(app.config().bundle.license.as_deref())
+            .build();
+        help.separator()
+            .about_with_text("About Kladje", Some(about))
+    };
+    let menu = menu.item(&help.build()?);
     app.set_menu(menu.build()?)?;
     #[cfg(target_os = "macos")]
     app.run_on_main_thread(|| {
