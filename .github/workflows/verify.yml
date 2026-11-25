@@ -180,7 +180,7 @@ jobs:
           $installers = @(Get-ChildItem "$release/bundle/nsis" -File -Filter '*-setup.exe')
           if ($installers.Count -ne 1) { throw "Expected one NSIS installer, got $($installers.Count)." }
           New-Item -ItemType Directory -Path windows-test-output | Out-Null
-          $output = 'windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe'
+          $output = 'windows-test-output/Kladje-Windows-Test-0.1.0-r2-x64-setup.exe'
           Copy-Item -LiteralPath $installers[0].FullName -Destination $output
           $checksum = (Get-FileHash $output -Algorithm SHA256).Hash.ToLowerInvariant()
           Write-Output "Windows x64 installer SHA256: $checksum"
@@ -199,11 +199,11 @@ jobs:
               $source.event -ne 'workflow_dispatch' -or $source.workflowName -ne $env:GITHUB_WORKFLOW) {
             throw 'The artifact must come from this workflow and test branch.'
           }
-          gh run download $run --repo $env:GITHUB_REPOSITORY --name Kladje-Windows-Test-x64 --dir windows-test-output
+          gh run download $run --repo $env:GITHUB_REPOSITORY --name Kladje-Windows-Test-r2-x64 --dir windows-test-output
       - name: Install and launch Kladje
         shell: pwsh
         run: |
-          $installer = Get-Item -LiteralPath 'windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe'
+          $installer = Get-Item -LiteralPath 'windows-test-output/Kladje-Windows-Test-0.1.0-r2-x64-setup.exe'
           $checksum = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           Write-Output "Testing Windows x64 installer SHA256: $checksum"
           $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', '/NS' -PassThru
@@ -254,7 +254,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         with:
-          name: Kladje-Windows-Test-x64
-          path: windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe
+          name: Kladje-Windows-Test-r2-x64
+          path: windows-test-output/Kladje-Windows-Test-0.1.0-r2-x64-setup.exe
           if-no-files-found: error
           retention-days: 7
