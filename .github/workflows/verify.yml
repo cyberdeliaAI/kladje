@@ -160,27 +160,42 @@ jobs:
             }
           } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $config
           npm run build -- --ci --target x86_64-pc-windows-msvc --bundles nsis --config $config -- --locked
-      - name: Install and verify the installer payload
+      - name: Prepare the test installer
+        id: stage
         shell: pwsh
         run: |
           $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
           $installers = @(Get-ChildItem "$release/bundle/nsis" -File -Filter '*-setup.exe')
           if ($installers.Count -ne 1) { throw "Expected one NSIS installer, got $($installers.Count)." }
-          $installer = $installers[0]
-          $installDir = Join-Path $env:RUNNER_TEMP 'kladje-install-check'
-          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S',"/D=$installDir" -PassThru
+          New-Item -ItemType Directory -Path windows-test-output | Out-Null
+          $output = 'windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe'
+          Copy-Item -LiteralPath $installers[0].FullName -Destination $output
+          $checksum = (Get-FileHash $output -Algorithm SHA256).Hash.ToLowerInvariant()
+          "path=$output" >> $env:GITHUB_OUTPUT
+          Write-Output "Windows x64 installer SHA256: $checksum"
+          "Windows x64 installer SHA-256: $checksum" >> $env:GITHUB_STEP_SUMMARY
+      - name: Install and verify the installer payload
+        shell: pwsh
+        env:
+          INSTALLER_PATH: ${{ steps.stage.outputs.path }}
+        run: |
+          $installer = Get-Item -LiteralPath $env:INSTALLER_PATH
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', '/NS' -PassThru
           if (!$process.WaitForExit(120000)) {
             $process.Kill()
             throw 'The silent installer did not finish within two minutes.'
           }
           if ($process.ExitCode -ne 0) { throw "The installer returned $($process.ExitCode)." }
 
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Kladje Windows Test'
+          $registration = Get-ItemProperty -LiteralPath $uninstallKey
+          $installDir = $registration.InstallLocation.Trim('"')
+          $installed = Join-Path $installDir $registration.MainBinaryName
+          $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
           $originalHash = (Get-FileHash "$release/kladje.exe" -Algorithm SHA256).Hash
-          $installed = @(Get-ChildItem -LiteralPath $installDir -File -Filter '*.exe' | Where-Object {
-            (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash -eq $originalHash
-          })
-          if ($installed.Count -ne 1) { throw 'The installed executable did not match the compiled app.' }
-          $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($installed[0].FullName))
+          $installedHash = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
+          if ($installedHash -ne $originalHash) { throw 'The installed executable did not match the compiled app.' }
+          $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($installed))
           try {
             if ($reader.ReadUInt16() -ne 0x5A4D) { throw 'Missing DOS header.' }
             $reader.BaseStream.Position = 0x3C
@@ -192,13 +207,9 @@ jobs:
             $reader.Dispose()
           }
 
-          New-Item -ItemType Directory -Path windows-test-output | Out-Null
-          $output = 'windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe'
-          Copy-Item -LiteralPath $installer.FullName -Destination $output
-          $checksum = (Get-FileHash $output -Algorithm SHA256).Hash.ToLowerInvariant()
-          Write-Output "Verified Windows x64 installer SHA256: $checksum"
-          "Verified silent installation and matching x64 executable. SHA-256: $checksum" >> $env:GITHUB_STEP_SUMMARY
+          'Verified silent installation and matching x64 executable.' >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         with:
           name: Kladje-Windows-Test-x64
           path: windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe
