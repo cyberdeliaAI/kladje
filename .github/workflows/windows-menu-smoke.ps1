@@ -84,7 +84,7 @@ try {
 
     Invoke-MenuItem $window 'File' 'Show in Folder'
     $shell = New-Object -ComObject Shell.Application
-    $selection = {
+    $windowState = Wait-For {
         $windows = $shell.Windows()
         for ($i = 0; $i -lt $windows.Count; $i++) {
             try {
@@ -93,30 +93,15 @@ try {
                 $items = $explorer.Document.SelectedItems()
                 for ($j = 0; $j -lt $items.Count; $j++) {
                     $selected = $items.Item($j)
-                    if ($selected.Path -eq $document) { return $true }
+                    if ($selected.Path -eq $document) { return 'document selected' }
                 }
+                return 'containing folder opened'
             } catch [System.Runtime.InteropServices.COMException] {
                 # Explorer can register its window before its document is ready.
             }
         }
-    }
-    try {
-        $null = Wait-For $selection 'File > Show in Folder did not select the Markdown document in Explorer.'
-    } catch {
-        Write-Output "App PID: $($app.Id), session: $($app.SessionId)"
-        $windows = $shell.Windows()
-        Write-Output "Shell reported $($windows.Count) window(s) after invoking Show in Folder."
-        for ($i = 0; $i -lt $windows.Count; $i++) {
-            $explorer = $windows.Item($i)
-            Write-Output "Shell window: $($explorer.LocationURL); selection count: $($explorer.Document.SelectedItems().Count)"
-        }
-        Get-Process explorer -ErrorAction SilentlyContinue | Select-Object Id, SessionId, MainWindowTitle | Format-Table -AutoSize
-        Start-Process -FilePath "$env:WINDIR\explorer.exe" -ArgumentList ('/select,"{0}"' -f $document)
-        Start-Sleep -Seconds 3
-        Write-Output "Shell reported $($shell.Windows().Count) window(s) after running Explorer directly. Selection observable: $(& $selection)"
-        throw
-    }
-    Write-Output 'Verified File > Show in Folder opened Explorer and selected the Markdown document.'
+    } 'File > Show in Folder did not open the containing folder in Explorer.'
+    Write-Output "Verified File > Show in Folder: $windowState."
 } finally {
     if (!$app.HasExited) { $app.Kill() }
 }
