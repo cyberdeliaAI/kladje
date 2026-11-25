@@ -860,7 +860,7 @@ mod tests {
                 .unwrap()
                 .html
         };
-        // Standard Markdown by default: a single Return is a space in every output.
+        // The setting controls single Returns in both rendering targets.
         for target in [Target::Preview, Target::Export] {
             let html = render(target, false);
             assert_eq!(html.matches("<p").count(), 2, "{html}");

@@ -4,7 +4,7 @@ Write on the left, read on the right. This page shows everything Kladje understa
 
 ## Text
 
-Press Enter twice for a new paragraph. A single Return inside a paragraph is ordinary Markdown: most readers, including GitHub, join the two lines with a space. To see single Returns as line breaks, turn on **Show a single Return as a line break** in **Settings**. The preview, PDF and HTML export then all show them. Inside a paragraph you can use *italic*, **bold**, ***both***, ~~strikethrough~~, ==highlight==, `inline code`, H~2~O and x^2^.
+Press Enter twice for a new paragraph. By default, Kladje shows a single Return inside a paragraph as a line break in the preview, PDF, HTML export, and formatted copies. Turn off **Show a single Return as a line break** in **Settings → Preview** to let the lines flow together, as they do in GitHub’s Markdown files. Inside a paragraph you can use *italic*, **bold**, ***both***, ~~strikethrough~~, ==highlight==, `inline code`, H~2~O and x^2^.
 
 A line ending in a backslash\
 always keeps its line break, in Kladje and in other Markdown readers.

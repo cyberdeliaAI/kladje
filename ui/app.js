@@ -83,7 +83,7 @@
   let syncEnabled = storedFlag("sync", true);
   let gutter = storedFlag("gutter", false), wrap = storedFlag("wrap", true), measure = storedFlag("measure", true);
   const settings = $("settings");
-  const writing = {pairing:true, linkPaste:true, htmlPaste:false, tablePaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:false, darkExport:false, pageNumbers:false, formatBar:true};
+  const writing = {pairing:true, linkPaste:true, htmlPaste:false, tablePaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:true, darkExport:false, pageNumbers:false, formatBar:true};
   for (const [key, fallback] of Object.entries(writing)) {
     writing[key] = storedFlag(key, fallback);
     const control = $(key);

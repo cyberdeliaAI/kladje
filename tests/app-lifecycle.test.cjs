@@ -483,25 +483,32 @@ test("remote image consent expires when another document opens", async () => {
 test("one line-break preference reaches the preview, HTML export and formatted copy", async () => {
   const a = await app();
   const last = name => a.calls.filter(([cmd]) => cmd === name).at(-1)[1];
-  assert.equal(last("render").lineBreaks, false);
+  assert.equal(a.get("lineBreaks").checked, true);
+  assert.equal(last("render").lineBreaks, true);
   const renders = a.calls.filter(([cmd]) => cmd === "render").length;
   await a.menu("settings");
-  a.get("lineBreaks").checked = true;
+  a.get("lineBreaks").checked = false;
   await a.get("lineBreaks").handlers.change();
   a.get("settings").close();
   await new Promise(setImmediate);
-  assert.equal(JSON.stringify(a.settings().lineBreaks), "true");
+  assert.equal(a.settings().lineBreaks, false);
   assert.equal(a.calls.filter(([cmd]) => cmd === "render").length, renders + 1);
-  assert.equal(last("render").lineBreaks, true);
+  assert.equal(last("render").lineBreaks, false);
   a.dialog.save = () => "/notes/a.html";
   a.api.file_version = () => null;
   a.api.export_html = () => ({confirmed: true});
   await a.menu("export_html");
-  assert.equal(last("export_html").lineBreaks, true);
+  assert.equal(last("export_html").lineBreaks, false);
   a.view.selectedText = () => "one\ntwo";
   a.api.formatted_selection = () => "";
   await a.menu("copy_formatted");
-  assert.equal(last("formatted_selection").lineBreaks, true);
+  assert.equal(last("formatted_selection").lineBreaks, false);
+  const reopened = await app({}, ({api}) => {
+    api.read_preferences = () => ({revision: 1, values: a.settings()});
+  });
+  assert.equal(reopened.get("lineBreaks").checked, false);
+  const render = reopened.calls.find(([cmd]) => cmd === "render");
+  assert.equal(render[1].lineBreaks, false);
 });
 
 test("a preview failure leaves edited text available for Save", async () => {

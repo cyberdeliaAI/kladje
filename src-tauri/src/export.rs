@@ -408,7 +408,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(!own.0.contains("image/svg+xml"), "{}", own.0);
+        assert!(!own.0.contains("src=\"data:image/svg+xml"), "{}", own.0);
         assert_eq!(own.1, 2);
     }
 

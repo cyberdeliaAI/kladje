@@ -1,5 +1,5 @@
-/* Document styles for rendered Markdown. Used by the live preview and embedded
-   verbatim in exported HTML, so this file must stand on its own. */
+/* Document styles for rendered Markdown. Used by the live preview, print and
+   standalone HTML export, so this file must stand on its own. */
 
 .markdown-body {
   --md-text: #1f2328;
@@ -57,8 +57,8 @@
   letter-spacing: -0.011em;
   text-wrap: balance;
 }
-.markdown-body h1 { font-size: 2em; letter-spacing: -0.022em; padding-bottom: 0.25em; border-bottom: 1px solid var(--md-border-soft); }
-.markdown-body h2 { font-size: 1.5em; letter-spacing: -0.017em; padding-bottom: 0.25em; border-bottom: 1px solid var(--md-border-soft); }
+.markdown-body h1 { font-size: 2em; letter-spacing: -0.022em; }
+.markdown-body h2 { font-size: 1.5em; letter-spacing: -0.017em; }
 .markdown-body h3 { font-size: 1.25em; }
 .markdown-body h4 { font-size: 1.05em; }
 .markdown-body h5 { font-size: 0.95em; }
@@ -141,6 +141,8 @@
 .markdown-body blockquote > :last-child { margin-bottom: 0; }
 .markdown-body .markdown-alert {
   --alert: var(--md-note);
+  --alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%23717680' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E\
+%3Ccircle cx='8' cy='8' r='6.25'/%3E%3Cpath d='M8 7.2v3.7M8 4.9v.1'/%3E%3C/svg%3E");
   padding: 0.7em 1em;
   border-left: 3px solid var(--alert);
   border-radius: 0 6px 6px 0;
@@ -148,10 +150,52 @@
 }
 .markdown-body .markdown-alert > :last-child { margin-bottom: 0; }
 .markdown-body .markdown-alert-title { margin-bottom: 0.3em; font-weight: 650; color: var(--alert); }
-.markdown-body .markdown-alert-tip { --alert: var(--md-tip); }
-.markdown-body .markdown-alert-important { --alert: var(--md-important); }
-.markdown-body .markdown-alert-warning { --alert: var(--md-warning); }
-.markdown-body .markdown-alert-caution { --alert: var(--md-caution); }
+
+.markdown-body .markdown-alert > .markdown-alert-title::before {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-inline-end: 0.45em;
+  vertical-align: -0.16em;
+}
+
+/* Use the SVG directly in print, where WebKit can flatten masked backgrounds. */
+@supports (mask-image: none) or (-webkit-mask-image: none) {
+  @media screen {
+    .markdown-body .markdown-alert > .markdown-alert-title::before {
+      content: "";
+      background-color: currentColor;
+      -webkit-mask: var(--alert-icon) center / contain no-repeat;
+      mask: var(--alert-icon) center / contain no-repeat;
+    }
+  }
+}
+@media print {
+  .markdown-body .markdown-alert > .markdown-alert-title::before {
+    content: var(--alert-icon);
+  }
+}
+
+.markdown-body .markdown-alert-tip {
+  --alert: var(--md-tip);
+  --alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%23717680' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E\
+%3Cpath d='M6 11.3v-.6c0-.9-.5-1.4-1.2-2.1a4.2 4.2 0 1 1 6.4 0c-.7.7-1.2 1.2-1.2 2.1v.6H6ZM6.8 13.6h2.4'/%3E%3C/svg%3E");
+}
+.markdown-body .markdown-alert-important {
+  --alert: var(--md-important);
+  --alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%23717680' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E\
+%3Cpath d='M3.3 2.4h9.4a1.5 1.5 0 0 1 1.5 1.5v6.2a1.5 1.5 0 0 1-1.5 1.5H7.5l-3.2 2.2v-2.2h-1a1.5 1.5 0 0 1-1.5-1.5V3.9a1.5 1.5 0 0 1 1.5-1.5ZM8 4.8v2.4m0 2v.1'/%3E%3C/svg%3E");
+}
+.markdown-body .markdown-alert-warning {
+  --alert: var(--md-warning);
+  --alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%23717680' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E\
+%3Cpath d='m7.1 2.8-5.7 9.5a1 1 0 0 0 .9 1.5h11.4a1 1 0 0 0 .9-1.5L8.9 2.8a1 1 0 0 0-1.8 0ZM8 6.1v3m0 2v.1'/%3E%3C/svg%3E");
+}
+.markdown-body .markdown-alert-caution {
+  --alert: var(--md-caution);
+  --alert-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%23717680' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E\
+%3Cpath d='M5.4 1.7h5.2l3.7 3.7v5.2l-3.7 3.7H5.4l-3.7-3.7V5.4l3.7-3.7ZM8 4.7v3.6m0 2.8v.1'/%3E%3C/svg%3E");
+}
 
 /* Tables */
 .markdown-body table {
