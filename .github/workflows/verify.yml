@@ -9,6 +9,10 @@ on:
         description: Build and verify a private Windows x64 test installer
         type: boolean
         default: false
+      windows_artifact_run:
+        description: Verify the installer from an earlier Windows test run without rebuilding
+        type: string
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -134,18 +138,25 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.windows_test && github.event.repository.private && github.ref == 'refs/heads/codex/windows-test-preview'
     runs-on: windows-latest
     timeout-minutes: 18
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v6
+        if: inputs.windows_artifact_run == ''
         with:
           persist-credentials: false
       - uses: actions/setup-node@v6
+        if: inputs.windows_artifact_run == ''
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install locked dependencies
+        if: inputs.windows_artifact_run == ''
         run: npm ci --no-audit
       - name: Build the x64 NSIS installer
+        if: inputs.windows_artifact_run == ''
         shell: pwsh
         run: |
           $config = Join-Path $env:RUNNER_TEMP 'kladje-windows-test.json'
@@ -162,6 +173,7 @@ jobs:
           npm run build -- --ci --target x86_64-pc-windows-msvc --bundles nsis --config $config -- --locked
       - name: Prepare the test installer
         id: stage
+        if: inputs.windows_artifact_run == ''
         shell: pwsh
         run: |
           $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
@@ -171,15 +183,29 @@ jobs:
           $output = 'windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe'
           Copy-Item -LiteralPath $installers[0].FullName -Destination $output
           $checksum = (Get-FileHash $output -Algorithm SHA256).Hash.ToLowerInvariant()
-          "path=$output" >> $env:GITHUB_OUTPUT
           Write-Output "Windows x64 installer SHA256: $checksum"
           "Windows x64 installer SHA-256: $checksum" >> $env:GITHUB_STEP_SUMMARY
-      - name: Install and verify the installer payload
+      - name: Download the existing test installer
+        if: inputs.windows_artifact_run != ''
         shell: pwsh
         env:
-          INSTALLER_PATH: ${{ steps.stage.outputs.path }}
+          GH_TOKEN: ${{ github.token }}
+          WINDOWS_ARTIFACT_RUN: ${{ inputs.windows_artifact_run }}
         run: |
-          $installer = Get-Item -LiteralPath $env:INSTALLER_PATH
+          $run = $env:WINDOWS_ARTIFACT_RUN
+          if ($run -notmatch '^\d+$') { throw 'Expected a numeric GitHub Actions run ID.' }
+          $source = gh run view $run --repo $env:GITHUB_REPOSITORY --json headBranch,event,workflowName | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $source.headBranch -ne $env:GITHUB_REF_NAME -or
+              $source.event -ne 'workflow_dispatch' -or $source.workflowName -ne $env:GITHUB_WORKFLOW) {
+            throw 'The artifact must come from this workflow and test branch.'
+          }
+          gh run download $run --repo $env:GITHUB_REPOSITORY --name Kladje-Windows-Test-x64 --dir windows-test-output
+      - name: Install and launch Kladje
+        shell: pwsh
+        run: |
+          $installer = Get-Item -LiteralPath 'windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe'
+          $checksum = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Output "Testing Windows x64 installer SHA256: $checksum"
           $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', '/NS' -PassThru
           if (!$process.WaitForExit(120000)) {
             $process.Kill()
@@ -191,10 +217,13 @@ jobs:
           $registration = Get-ItemProperty -LiteralPath $uninstallKey
           $installDir = $registration.InstallLocation.Trim('"')
           $installed = Join-Path $installDir $registration.MainBinaryName
-          $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
-          $originalHash = (Get-FileHash "$release/kladje.exe" -Algorithm SHA256).Hash
+          $extracted = Join-Path $env:RUNNER_TEMP 'kladje-embedded-executable'
+          & 'C:\Program Files\7-Zip\7z.exe' e $installer.FullName "-o$extracted" $registration.MainBinaryName -y
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract the bundled executable.' }
+          $bundled = Join-Path $extracted $registration.MainBinaryName
+          $bundledHash = (Get-FileHash -LiteralPath $bundled -Algorithm SHA256).Hash
           $installedHash = (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
-          if ($installedHash -ne $originalHash) { throw 'The installed executable did not match the compiled app.' }
+          if ($installedHash -ne $bundledHash) { throw 'The installed executable did not match the bundled app.' }
           $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($installed))
           try {
             if ($reader.ReadUInt16() -ne 0x5A4D) { throw 'Missing DOS header.' }
@@ -207,7 +236,21 @@ jobs:
             $reader.Dispose()
           }
 
-          'Verified silent installation and matching x64 executable.' >> $env:GITHUB_STEP_SUMMARY
+          Write-Output 'Verified silent installation and matching x64 executable.'
+          $app = Start-Process -FilePath $installed -WorkingDirectory $installDir -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Milliseconds 500
+              $app.Refresh()
+              if ($app.HasExited) { throw "Kladje exited during startup with code $($app.ExitCode)." }
+            } until ($app.MainWindowHandle -ne [IntPtr]::Zero -or (Get-Date) -ge $deadline)
+            if ($app.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Kladje did not open an editor window within 30 seconds.' }
+            Write-Output "Verified editor window: $($app.MainWindowTitle)"
+          } finally {
+            if (!$app.HasExited) { $app.Kill() }
+          }
+          "Verified silent installation, x64 payload and editor startup. SHA-256: $checksum" >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         with:
