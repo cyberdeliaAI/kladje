@@ -84,18 +84,38 @@ try {
 
     Invoke-MenuItem $window 'File' 'Show in Folder'
     $shell = New-Object -ComObject Shell.Application
-    $null = Wait-For {
-        foreach ($explorer in $shell.Windows()) {
+    $selection = {
+        $windows = $shell.Windows()
+        for ($i = 0; $i -lt $windows.Count; $i++) {
             try {
+                $explorer = $windows.Item($i)
                 if ($explorer.Document.Folder.Self.Path -ne $folder) { continue }
-                foreach ($selected in $explorer.Document.SelectedItems()) {
+                $items = $explorer.Document.SelectedItems()
+                for ($j = 0; $j -lt $items.Count; $j++) {
+                    $selected = $items.Item($j)
                     if ($selected.Path -eq $document) { return $true }
                 }
             } catch [System.Runtime.InteropServices.COMException] {
                 # Explorer can register its window before its document is ready.
             }
         }
-    } 'File > Show in Folder did not select the Markdown document in Explorer.'
+    }
+    try {
+        $null = Wait-For $selection 'File > Show in Folder did not select the Markdown document in Explorer.'
+    } catch {
+        Write-Output "App PID: $($app.Id), session: $($app.SessionId)"
+        $windows = $shell.Windows()
+        Write-Output "Shell reported $($windows.Count) window(s) after invoking Show in Folder."
+        for ($i = 0; $i -lt $windows.Count; $i++) {
+            $explorer = $windows.Item($i)
+            Write-Output "Shell window: $($explorer.LocationURL); selection count: $($explorer.Document.SelectedItems().Count)"
+        }
+        Get-Process explorer -ErrorAction SilentlyContinue | Select-Object Id, SessionId, MainWindowTitle | Format-Table -AutoSize
+        Start-Process -FilePath "$env:WINDIR\explorer.exe" -ArgumentList ('/select,"{0}"' -f $document)
+        Start-Sleep -Seconds 3
+        Write-Output "Shell reported $($shell.Windows().Count) window(s) after running Explorer directly. Selection observable: $(& $selection)"
+        throw
+    }
     Write-Output 'Verified File > Show in Folder opened Explorer and selected the Markdown document.'
 } finally {
     if (!$app.HasExited) { $app.Kill() }

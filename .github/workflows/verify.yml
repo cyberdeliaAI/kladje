@@ -236,7 +236,8 @@ jobs:
           }
 
           Write-Output 'Verified silent installation and matching x64 executable.'
-          & ./.github/workflows/windows-menu-smoke.ps1 -Editor $installed
+          powershell.exe -NoProfile -NonInteractive -STA -File ./.github/workflows/windows-menu-smoke.ps1 -Editor $installed
+          if ($LASTEXITCODE -ne 0) { throw 'Windows menu verification failed.' }
           "Verified silent installation, x64 payload, editor startup and the Windows menu actions. SHA-256: $checksum" >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
