@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      windows_test:
+        description: Build and verify a private Windows x64 test installer
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -14,6 +19,7 @@ permissions:
 
 jobs:
   frontend:
+    if: ${{ !inputs.windows_test }}
     name: Scope and frontend checks
     runs-on: ubuntu-24.04
     outputs:
@@ -105,7 +111,7 @@ jobs:
   verify:
     name: Verify
     needs: [frontend, macos, linux, windows]
-    if: always()
+    if: always() && !inputs.windows_test
     runs-on: ubuntu-24.04
     steps:
       - name: Require every applicable check
@@ -122,3 +128,79 @@ jobs:
             *) exit 1 ;;
           esac
           [[ "$FRONTEND" == success && "$MACOS" == "$expected" && "$LINUX" == "$expected" && "$WINDOWS" == "$expected" ]]
+
+  windows-test-installer:
+    name: Windows x64 test installer
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_test && github.event.repository.private && github.ref == 'refs/heads/codex/windows-test-preview'
+    runs-on: windows-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies
+        run: npm ci --no-audit
+      - name: Build the x64 NSIS installer
+        shell: pwsh
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP 'kladje-windows-test.json'
+          @{
+            productName = 'Kladje Windows Test'
+            identifier = 'app.kladje.editor.windowstest'
+            bundle = @{
+              fileAssociations = @()
+              windows = @{
+                nsis = @{ installMode = 'currentUser' }
+              }
+            }
+          } | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $config
+          npm run build -- --ci --target x86_64-pc-windows-msvc --bundles nsis --config $config -- --locked
+      - name: Install and verify the installer payload
+        shell: pwsh
+        run: |
+          $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
+          $installers = @(Get-ChildItem "$release/bundle/nsis" -File -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, got $($installers.Count)." }
+          $installer = $installers[0]
+          $installDir = Join-Path $env:RUNNER_TEMP 'kladje-install-check'
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S',"/D=$installDir" -PassThru
+          if (!$process.WaitForExit(120000)) {
+            $process.Kill()
+            throw 'The silent installer did not finish within two minutes.'
+          }
+          if ($process.ExitCode -ne 0) { throw "The installer returned $($process.ExitCode)." }
+
+          $originalHash = (Get-FileHash "$release/kladje.exe" -Algorithm SHA256).Hash
+          $installed = @(Get-ChildItem -LiteralPath $installDir -File -Filter '*.exe' | Where-Object {
+            (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash -eq $originalHash
+          })
+          if ($installed.Count -ne 1) { throw 'The installed executable did not match the compiled app.' }
+          $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($installed[0].FullName))
+          try {
+            if ($reader.ReadUInt16() -ne 0x5A4D) { throw 'Missing DOS header.' }
+            $reader.BaseStream.Position = 0x3C
+            $reader.BaseStream.Position = $reader.ReadInt32()
+            if ($reader.ReadUInt32() -ne 0x4550 -or $reader.ReadUInt16() -ne 0x8664) {
+              throw 'The installed payload is not a Windows AMD64 executable.'
+            }
+          } finally {
+            $reader.Dispose()
+          }
+
+          New-Item -ItemType Directory -Path windows-test-output | Out-Null
+          $output = 'windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe'
+          Copy-Item -LiteralPath $installer.FullName -Destination $output
+          $checksum = (Get-FileHash $output -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Output "Verified Windows x64 installer SHA256: $checksum"
+          "Verified silent installation and matching x64 executable. SHA-256: $checksum" >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Kladje-Windows-Test-x64
+          path: windows-test-output/Kladje-Windows-Test-0.1.0-x64-setup.exe
+          if-no-files-found: error
+          retention-days: 7
