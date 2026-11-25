@@ -4,7 +4,7 @@ Kladje is a lightweight Markdown editor for macOS, with a Windows preview. Open 
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/outline-dark.png">
-  <img src="docs/screenshots/writing-light.png" alt="A tide journal open in Kladje. The outline lists its sections, the editor shows the Markdown, and the preview shows the field notes and checklist." width="100%">
+  <img src="docs/screenshots/writing-light.png" alt="A tide journal open in Kladje. The outline lists its sections, the editor shows the Markdown, and the preview shows the field notes with a tip and a checklist." width="100%">
 </picture>
 
 ## Writing in Kladje
