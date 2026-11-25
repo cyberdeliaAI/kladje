@@ -418,6 +418,63 @@ dialog select { max-height: 35vh; }
 dialog button { font: inherit; padding: .3rem .65rem; }
 @media print { dialog { display: none !important; } }
 
+#quick-open { width: min(45rem, 90vw); }
+#quick-open-filter { padding: .45rem .6rem; }
+.quick-open-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: .75rem; margin: .6rem 0; }
+#quick-open-results {
+  max-height: min(19rem, 43vh);
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.quick-open-result {
+  padding: .4rem .55rem;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.quick-open-result:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.quick-open-result[aria-selected="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--focus);
+}
+.quick-open-result-name { display: block; font-weight: 600; }
+.quick-open-result-detail, #quick-open-status { color: var(--text-muted); font-size: 12px; }
+#quick-open-status:not(.sr-only) { margin: .75rem 0; }
+#quick-open-preview {
+  min-width: 0;
+  align-self: start;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-editor);
+}
+#quick-open-preview h3 {
+  margin: 0;
+  padding: .45rem .65rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+#quick-open-excerpt {
+  min-height: 4rem;
+  max-height: min(15rem, 34vh);
+  overflow: auto;
+  margin: 0;
+  padding: .6rem .65rem;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+#quick-open-excerpt img { max-height: 8rem; object-fit: contain; }
+#quick-open-excerpt .quick-open-truncated { margin: .5rem 0 0; color: var(--md-muted); }
+@media (max-width: 620px) {
+  .quick-open-body { grid-template-columns: minmax(0, 1fr); gap: .45rem; }
+  #quick-open-results { max-height: 26vh; }
+  #quick-open-excerpt { min-height: 0; max-height: 18vh; }
+}
+
 #heading-pages { margin-bottom: .5rem; }
 
 /* Outline: one list for the modal picker and the side panel. */

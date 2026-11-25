@@ -297,18 +297,7 @@ pub fn read(path: &Path) -> Result<(Vec<u8>, Version), String> {
 }
 
 pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<(Vec<u8>, Version), String> {
-    let resolved = target(path).map_err(|e| file_error("read", path, e))?;
-    let mut options = File::options();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    let mut file = options
-        .open(&resolved)
-        .map_err(|e| file_error("read", path, e))?;
-    let meta = file.metadata().map_err(|e| file_error("read", path, e))?;
+    let (file, resolved, meta) = open_for_read(path)?;
     if !meta.is_file() || meta.len() > limit {
         return Err(format!(
             "{} is not a regular file within the {} KiB limit.",
@@ -317,8 +306,7 @@ pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<(Vec<u8>, Version)
         ));
     }
     let mut bytes = Vec::new();
-    (&mut file)
-        .take(limit + 1)
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| file_error("read", path, e))?;
     if bytes.len() as u64 > limit {
@@ -326,6 +314,36 @@ pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<(Vec<u8>, Version)
     }
     let version = stamp(&resolved, &meta, &bytes);
     Ok((bytes, version))
+}
+
+pub(crate) fn read_prefix(path: &Path, limit: usize) -> Result<(Vec<u8>, PathBuf, bool), String> {
+    let (file, resolved, meta) = open_for_read(path)?;
+    if !meta.is_file() {
+        return Err(format!("“{}” is not a regular file.", document_name(path)));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| file_error("read", path, e))?;
+    let truncated = bytes.len() > limit;
+    bytes.truncate(limit);
+    Ok((bytes, resolved, truncated))
+}
+
+fn open_for_read(path: &Path) -> Result<(File, PathBuf, fs::Metadata), String> {
+    let resolved = target(path).map_err(|e| file_error("read", path, e))?;
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(&resolved)
+        .map_err(|e| file_error("read", path, e))?;
+    let meta = file.metadata().map_err(|e| file_error("read", path, e))?;
+    Ok((file, resolved, meta))
 }
 
 /// An inexpensive wake-up hint. The content digest remains authoritative on

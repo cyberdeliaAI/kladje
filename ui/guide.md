@@ -123,6 +123,8 @@ Hidden until opened.
 
 **File → Open Recent** remembers ten documents on this device. Choose **Clear Recent Documents** to forget their paths and saved places. If a file moved, choose **Locate…** when you reopen it. An unchanged document restores its last saved editing position.
 
+Choose **File → Quick Open** (⌘⇧O on macOS, Ctrl+Shift+O elsewhere) to find open and recent documents by name or folder path. Select a result with the arrow keys or a click to see a formatted preview of the start of the saved document. Press Enter or double-click to open it. An open document is brought forward with its edits.
+
 Press **⌘⇧J** on macOS (Ctrl+Shift+J elsewhere) to search headings. Type part of a heading, press the down arrow to select a match, and press Enter to jump. Escape returns to the document.
 
 Use **View** or **Settings** to toggle line numbers, wrapping or a narrower writing width. The footer counts Unicode code points and word-like segments of Markdown source. A document above 262,144 UTF-16 code units shows its line count first and its totals once a background count finishes. **Format → Table → Add Row Below** adds an empty row with the same number of columns.
@@ -160,7 +162,7 @@ Click a standard list checkbox in the preview or focus it and press Space to cha
 
 Choose **View → Document Outline**, or the outline button at the bottom right, to keep headings beside your document. They are indented by level, and the section that holds the cursor is marked. Click a heading to go there, or filter and press Enter. The arrow next to a heading folds its subheadings away; with the keyboard, Left and Right do the same. The close button or Escape returns the space to the document. Windows 800 pixels wide or smaller use the compact heading picker. Tab in the final table cell adds a blank row.
 
-Settings can emphasize the current paragraph or keep the caret centered while you type. Both options start off. You can still scroll through the document and use Find.
+Choose **View → Focus Mode** (⌥⌘P on macOS, Ctrl+Alt+P elsewhere) to emphasize the current paragraph. **Settings → Editor** also lets you keep the caret centered while you type. Both options start off. You can still scroll through the document and use Find.
 
 Standalone HTML exports recognize a simple, single-line `title` and `lang` at the top level of initial frontmatter. For example, `lang: nl-BE` sets the document language. An omitted or unsupported title uses the first level-one heading, then the filename. Put `<!-- pagebreak -->` on a line between paragraphs to start a new printed page.
 

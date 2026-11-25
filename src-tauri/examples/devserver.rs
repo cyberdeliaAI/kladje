@@ -47,6 +47,7 @@ const SHIM: &str = r#"
   window.__TAURI__ = {
     core: {
       invoke: async (cmd, args) => {
+        if (cmd === "open_documents") return [];
         if (cmd === "set_preference") { const result = await call(cmd,args); settings.postMessage(result); return result; }
         if (cmd === "open_document_window") {
           // Browser preview uses fixture files. Exercise native ownership and Quit in the desktop build.
@@ -329,6 +330,10 @@ fn invoke(
             Value::Null
         }
         "comparison_text" => json!(fileio::comparison_text(&path("path")?)?),
+        "quick_open_preview" => json!(renderer.quick_open_preview(
+            &path("path")?,
+            args["lineBreaks"].as_bool().unwrap_or(false),
+        )?),
         "read_file" => json!(fileio::open_document(&path("path")?)?),
         "write_file" => {
             let expected: Option<storage::Version> =

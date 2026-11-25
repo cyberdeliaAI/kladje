@@ -82,6 +82,50 @@ pub fn comparison_text(path: &Path) -> Result<String, String> {
     open_bounded(path, 512 * 1024).map(|file| file.content)
 }
 
+pub(crate) struct DocumentExcerpt {
+    pub markdown: String,
+    pub truncated: bool,
+}
+
+pub(crate) fn document_excerpt(path: &Path) -> Result<DocumentExcerpt, String> {
+    const PREFIX_BYTES: usize = 8 * 1024;
+    const EXCERPT_CHARS: usize = 1200;
+    markdown_path(path)?;
+    let (mut bytes, target, truncated) = storage::read_prefix(path, PREFIX_BYTES)?;
+    markdown_path(&target)?;
+    if truncated {
+        // Ignore a character cut by the preview boundary. Full reads still
+        // validate the complete document using the same decoder.
+        if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+            let end = bytes.len();
+            let unit = [bytes[end - 2], bytes[end - 1]];
+            let value = if bytes[0] == 0xff {
+                u16::from_le_bytes(unit)
+            } else {
+                u16::from_be_bytes(unit)
+            };
+            if (0xd800..=0xdbff).contains(&value) {
+                bytes.truncate(end - 2);
+            }
+        } else if let Err(error) = std::str::from_utf8(&bytes) {
+            if error.error_len().is_none() {
+                bytes.truncate(error.valid_up_to());
+            }
+        }
+    }
+    let decoded = decode(bytes)?;
+    let normalized = decoded.text.replace("\r\n", "\n").replace('\r', "\n");
+    let text = normalized.trim();
+    let end = text
+        .char_indices()
+        .nth(EXCERPT_CHARS)
+        .map_or(text.len(), |(index, _)| index);
+    Ok(DocumentExcerpt {
+        markdown: text[..end].trim_end().to_owned(),
+        truncated: end < text.len() || truncated,
+    })
+}
+
 pub fn read_text(path: &Path) -> Result<Decoded, String> {
     let (bytes, _) = storage::read(path)?;
     decode(bytes)
@@ -279,6 +323,30 @@ pub fn write_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_open_reads_an_excerpt_when_the_byte_limit_cuts_unicode() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("notes.md");
+        let utf8 = format!("\u{feff}{}📝", "a".repeat(8188));
+        std::fs::write(&path, utf8).unwrap();
+        let excerpt = document_excerpt(&path).unwrap();
+        assert_eq!(excerpt.markdown, "a".repeat(1200));
+        assert!(excerpt.truncated);
+
+        let text = format!("{}📝", "b".repeat(4094));
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        std::fs::write(&path, utf16).unwrap();
+        let excerpt = document_excerpt(&path).unwrap();
+        assert_eq!(excerpt.markdown, "b".repeat(1200));
+        assert!(excerpt.truncated);
+
+        std::fs::write(&path, "# Café\r\n\r\nFirst paragraph.").unwrap();
+        let excerpt = document_excerpt(&path).unwrap();
+        assert_eq!(excerpt.markdown, "# Café\n\nFirst paragraph.");
+        assert!(!excerpt.truncated);
+    }
     #[test]
     fn comparison_reads_supported_text_with_a_separate_small_limit() {
         let tmp = tempfile::tempdir().unwrap();

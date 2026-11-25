@@ -26,7 +26,7 @@ async function app(initial = {}, configure = () => {}, drawImage) {
       toggle(c, on = !set.has(c)) { if (on) set.add(c); else set.delete(c); return on; }, contains: c => set.has(c) }; })(),
     removeAttribute(k) { delete this.attrs[k]; },
     firstElementChild: {}, content: { childNodes: [], querySelectorAll: () => [] }, append() {}, replaceChildren(...nodes) { this.children = nodes; }, show() { this.open = true; }, showModal() { this.open = true; }, close() { this.open = false; },
-    attrs: {}, handlers: {}, setSelectionRange(from, to) { this.selection = [from, to]; }, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {},
+    attrs: {}, handlers: {}, setSelectionRange(from, to) { this.selection = [from, to]; }, setAttribute(k,v) { this.attrs[k]=v; }, getAttribute(k) { return this.attrs[k]; }, focus() {}, scrollIntoView() {},
     addEventListener(k,f) { this.handlers[k]=f; }, querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }),
   });
   const rendered = [], comparisons = [];
@@ -81,7 +81,7 @@ async function app(initial = {}, configure = () => {}, drawImage) {
   configure({ api, dialog, disk });
   const pendingTimers = new Map();
   let nextTimer = 0;
-  const nativeWindow = { setTitle: async () => {}, onCloseRequested: cb => { events.close = cb; }, destroy: async () => { calls.push(["destroy"]); } };
+  const nativeWindow = { label:"main", setTitle: async () => {}, onCloseRequested: cb => { events.close = cb; }, destroy: async () => { calls.push(["destroy"]); } };
   const win = {
     KladjeEditor: { create(_, options) { change = options.onChange; return view; },
       // Stands in for the bundled comparison. Line-based, which is enough for these flows.
@@ -634,6 +634,79 @@ test("recent documents deduplicate, cap at ten, and clear paths and saved positi
   const restarted = await app(Object.fromEntries(a.values), ({api}) => { api.setup = () => ({}); });
   assert.equal(restarted.text(), "");
   assert.equal(restarted.values.has("kladje.recent"), false);
+});
+
+test("Quick Open deduplicates and filters saved documents and focuses open drafts", async () => {
+  const a = await app({"kladje.recent": JSON.stringify(["/drafts/notes.md", "/work/notes.md"])}, ({api}) => {
+    api.open_documents = () => [
+      {label:"document-1", path:"/work/notes.md", title:"notes.md — Kladje"},
+      {label:"document-2", path:null, title:"• Untitled — Kladje"},
+      {label:"main", path:"/notes/a.md", title:"a.md — Kladje"},
+    ];
+  });
+  a.api.open_document_window = () => {};
+  await a.menu("quick_open");
+  const results = a.get("quick-open-results");
+  const filter = a.get("quick-open-filter");
+  const submit = () => a.get("quick-open-form").handlers.submit({preventDefault() {}});
+  assert.equal(results.children.length, 4);
+
+  filter.value = "NOTES WORK";
+  filter.handlers.input();
+  assert.equal(results.children.length, 1);
+  await submit();
+  assert.equal(a.calls.findLast(([cmd]) => cmd === "open_document_window")[1].request.label, "document-1");
+
+  await a.menu("quick_open");
+  filter.handlers.keydown({key:"ArrowDown", preventDefault() {}});
+  filter.handlers.keydown({key:"ArrowDown", preventDefault() {}});
+  assert.equal(filter.getAttribute("aria-activedescendant"), "quick-open-result-2");
+  await submit();
+  assert.equal(a.calls.findLast(([cmd]) => cmd === "open_document_window")[1].request.label, "document-2");
+
+  await a.menu("quick_open");
+  filter.value = "drafts";
+  filter.handlers.input();
+  await submit();
+  assert.equal(a.calls.findLast(([cmd]) => cmd === "open_document_window")[1].request.path, "/drafts/notes.md");
+});
+
+test("the Focus Mode menu and settings share the same preference and keep typewriter independent", async () => {
+  const a = await app({"kladje.typewriter":"true"});
+  await a.menu("focus_mode");
+  assert.equal(a.get("focusParagraph").checked, true);
+  assert.equal(a.get("editor-pane").dataset.focusParagraph, "true");
+  assert.equal(a.settings().focusParagraph, true);
+  assert.ok(a.calls.some(([cmd, args]) => cmd === "set_menu_checks" && args.checked.includes("focus_mode")));
+  a.get("focusParagraph").checked = false;
+  a.get("focusParagraph").handlers.change();
+  await a.menu("settings");
+  assert.equal(a.settings().focusParagraph, false);
+  assert.equal(a.get("editor-pane").dataset.focusParagraph, "false");
+  assert.equal(a.get("editor-pane").dataset.typewriter, "true");
+  assert.ok(!a.calls.findLast(([cmd]) => cmd === "set_menu_checks")[1].checked.includes("focus_mode"));
+});
+
+test("Quick Open previews the selected file and ignores a slower previous response", async () => {
+  const older = gate();
+  const second = "<h1>Second document</h1>";
+  const a = await app({"kladje.recent": JSON.stringify(["/notes/b.md"])}, ({api}) => {
+    api.open_documents = () => [{label:"main", path:"/notes/a.md", title:"a.md — Kladje"}];
+    api.quick_open_preview = ({path}) => path === "/notes/a.md" ? older.promise : {html:second,truncated:false};
+  });
+  await a.menu("quick_open");
+  const firstPreview = a.fire(100);
+  a.get("quick-open-results").children[1].handlers.click();
+  await a.fire(100);
+  const count = a.rendered.length;
+  assert.equal(a.rendered.at(-1), second);
+  assert.ok(a.get("quick-open").open);
+  assert.ok(!a.calls.some(([cmd]) => cmd === "open_document_window"));
+
+  older.resolve({html:"<h1>First document</h1>",truncated:false});
+  await firstPreview;
+  assert.equal(a.rendered.length, count);
+  assert.equal(a.rendered.at(-1), second);
 });
 
 test("a missing recent file and a cancelled Locate keep dirty work and recovery", async () => {

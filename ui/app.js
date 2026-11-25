@@ -89,9 +89,10 @@
     const control = $(key);
     control.checked = writing[key];
     control.addEventListener("change", () => {
+      if (key === "focusParagraph") return setFocusMode(control.checked);
       writing[key] = control.checked;
       store.set(key, control.checked);
-      if (key === "focusParagraph" || key === "typewriter") applyWritingModes();
+      if (key === "typewriter") applyWritingModes();
       if (key === "pairing") editor.setPairing(control.checked);
       if (key === "readingTime") updateStats();
       if (key === "lineBreaks" && viewMode !== "editor") renderNow();
@@ -111,6 +112,13 @@
     els.editorPane.dataset.focusParagraph = String(writing.focusParagraph);
     els.editorPane.dataset.typewriter = String(writing.typewriter);
   }
+  function setFocusMode(enabled) {
+    writing.focusParagraph = enabled;
+    $("focusParagraph").checked = enabled;
+    store.set("focusParagraph", enabled);
+    applyWritingModes();
+    syncChecks();
+  }
   let sidebarOpen = false;
   // Writing to the original file without being asked is opt-in. A save that
   // fails or needs a decision pauses it until an explicit Save settles things.
@@ -126,7 +134,7 @@
   let checkUpdate = Promise.resolve();
   function syncChecks() {
     const checked = ["view_" + viewMode, "theme_" + themeSetting];
-    for (const [id, enabled] of Object.entries({sync_scroll:syncEnabled, gutter, wrap, measure, document_outline:sidebarOpen, format_bar:writing.formatBar})) {
+    for (const [id, enabled] of Object.entries({sync_scroll:syncEnabled, gutter, wrap, measure, document_outline:sidebarOpen, format_bar:writing.formatBar, focus_mode:writing.focusParagraph})) {
       if (enabled) checked.push(id);
     }
     $("outline-toggle").setAttribute("aria-pressed", String(sidebarOpen));
@@ -218,6 +226,7 @@
         if (key === "readingTime") updateStats();
         if (key === "lineBreaks" && viewMode !== "editor") renderNow();
         if (key === "focusParagraph" || key === "typewriter") applyWritingModes();
+        if (key === "focusParagraph") syncChecks();
         if (key === "formatBar") { applyFormatBar(); syncChecks(); }
       } else if (key === "editorFont") setEditorFont(store.get(key, "mono"));
       else if (key === "theme") setTheme(store.get(key, "auto"));
@@ -258,6 +267,157 @@
     await updateHistory({kind:"remove", path});
 
   }
+
+  const quickOpen = $("quick-open"), quickOpenFilter = $("quick-open-filter");
+  const quickOpenResults = $("quick-open-results"), quickOpenStatus = $("quick-open-status");
+  const quickOpenPreview = $("quick-open-preview"), quickOpenExcerpt = $("quick-open-excerpt");
+  let quickOpenEntries = [], quickOpenShown = [], quickOpenActive = -1;
+  let quickOpenPreviewTimer = 0, quickOpenPreviewRequest = 0;
+
+  function previewQuickOpen(entry) {
+    clearTimeout(quickOpenPreviewTimer);
+    const request = ++quickOpenPreviewRequest;
+    quickOpenPreview.hidden = !entry;
+    quickOpenExcerpt.textContent = "";
+    quickOpenExcerpt.scrollTop = 0;
+    if (!entry) return;
+    if (!entry.path) {
+      quickOpenExcerpt.textContent = "This document has no saved preview.";
+      return;
+    }
+    quickOpenExcerpt.textContent = "Loading preview…";
+    quickOpenPreviewTimer = setTimeout(async () => {
+      let rendered;
+      try {
+        rendered = await invoke("quick_open_preview", {path:entry.path, lineBreaks:writing.lineBreaks});
+      } catch {
+        if (request === quickOpenPreviewRequest && quickOpen.open) quickOpenExcerpt.textContent = "Preview unavailable.";
+        return;
+      }
+      if (request !== quickOpenPreviewRequest || !quickOpen.open) return;
+      if (!rendered.html.trim()) {
+        quickOpenExcerpt.textContent = "No text to preview.";
+        return;
+      }
+
+      // The same native sanitizer as the main preview has already run.
+      const template = document.createElement("template");
+      template.innerHTML = rendered.html;
+      for (const img of template.content.querySelectorAll("img:not([src])")) {
+        markMissing(img, "Open the document to see the full image.");
+      }
+      if (rendered.truncated) {
+        const more = document.createElement("p");
+        more.className = "quick-open-truncated";
+        more.setAttribute("aria-label", "End of excerpt");
+        more.textContent = "…";
+        template.content.append(more);
+      }
+      quickOpenExcerpt.replaceChildren(template.content);
+    }, 100);
+  }
+
+  function selectQuickOpen(index, scroll = true) {
+    const previous = quickOpenResults.children[quickOpenActive];
+    if (previous) previous.setAttribute("aria-selected", "false");
+    quickOpenActive = index;
+    const option = quickOpenResults.children[index];
+    previewQuickOpen(quickOpenShown[index]);
+    if (!option) {
+      quickOpenFilter.removeAttribute("aria-activedescendant");
+      return;
+    }
+    option.setAttribute("aria-selected", "true");
+    quickOpenFilter.setAttribute("aria-activedescendant", option.id);
+    if (scroll) option.scrollIntoView({block:"nearest"});
+  }
+
+  function filterQuickOpen() {
+    const words = quickOpenFilter.value.normalize().toLocaleLowerCase().trim().split(/\s+/u);
+    quickOpenShown = quickOpenEntries.filter(entry => {
+      const haystack = `${entry.name} ${entry.path || ""}`.normalize().toLocaleLowerCase();
+      return words.every(word => haystack.includes(word));
+    });
+    quickOpenResults.replaceChildren(...quickOpenShown.map((entry, index) => {
+      const option = document.createElement("div");
+      option.id = "quick-open-result-" + index;
+      option.className = "quick-open-result";
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", "false");
+
+      const name = document.createElement("span");
+      name.className = "quick-open-result-name";
+      name.textContent = entry.name;
+      const detail = document.createElement("span");
+      detail.className = "quick-open-result-detail";
+      const location = entry.path ? dirname(entry.path) : "";
+      const status = !entry.label ? "" : entry.label === appWindow.label ? "Current document" : "Open";
+      detail.textContent = [location, status].filter(Boolean).join(" · ");
+      option.append(name, detail);
+      option.addEventListener("click", () => {
+        selectQuickOpen(index, false);
+        quickOpenFilter.focus({preventScroll:true});
+      });
+      option.addEventListener("dblclick", () => chooseQuickOpen(index).catch(showError));
+      return option;
+    }));
+    const count = quickOpenShown.length;
+    quickOpenResults.hidden = !count;
+    quickOpenFilter.setAttribute("aria-expanded", String(Boolean(count)));
+    $("quick-open-go").disabled = !count;
+    quickOpenStatus.classList.toggle("sr-only", Boolean(count));
+    quickOpenStatus.textContent = count ? `${count} document${count === 1 ? "" : "s"}`
+      : quickOpenEntries.length ? "No matching documents." : "No open or recent documents.";
+    quickOpenResults.scrollTop = 0;
+    selectQuickOpen(count ? 0 : -1, false);
+  }
+
+  async function showQuickOpen() {
+    if (initializing || busy || quickOpen.open) return;
+    const [open] = await Promise.all([invoke("open_documents"), updateHistory({kind:"read"})]);
+    if (closing || modalOpen()) return;
+    open.sort((a, b) => Number(b.label === appWindow.label) - Number(a.label === appWindow.label));
+    const openPaths = new Set(open.map(entry => entry.path));
+    quickOpenEntries = [
+      ...open.map(entry => ({...entry, name:entry.path ? basename(entry.path)
+        : entry.title.replace(/ — Kladje$/u, "").replace(/^• /u, "") || "Untitled"})),
+      ...recentPaths().filter(path => !openPaths.has(path)).map(path => ({path, name:basename(path)})),
+    ];
+    quickOpenFilter.value = "";
+    filterQuickOpen();
+    quickOpen.showModal();
+    quickOpenFilter.focus();
+  }
+
+  async function chooseQuickOpen(index) {
+    const entry = quickOpenShown[index];
+    if (!quickOpen.open || !entry) return;
+    quickOpen.close();
+    if (entry.label && entry.label === appWindow.label) return;
+    await runFileAction(() => entry.label
+      ? openWindow({kind:"focus", label:entry.label})
+      : openRecent(entry.path));
+  }
+
+  quickOpenFilter.addEventListener("input", filterQuickOpen);
+  quickOpenFilter.addEventListener("keydown", event => {
+    if (event.isComposing || !["ArrowDown", "ArrowUp"].includes(event.key) || !quickOpenShown.length) return;
+    event.preventDefault();
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    selectQuickOpen(Math.min(quickOpenShown.length - 1, Math.max(0, quickOpenActive + step)));
+  });
+  $("quick-open-form").addEventListener("submit", event => {
+    event.preventDefault();
+    return chooseQuickOpen(quickOpenActive).catch(showError);
+  });
+  $("quick-open-cancel").addEventListener("click", () => quickOpen.close());
+  quickOpen.addEventListener("close", () => {
+    if (quickOpen.open) return;
+    quickOpenEntries = [];
+    quickOpenShown = [];
+    quickOpenResults.replaceChildren();
+    selectQuickOpen(-1, false);
+  });
 
   let noticeTimer = 0;
   function notify(message, ms = 4500) {
@@ -1104,11 +1264,11 @@
     for (let i = 0; i < a.length; i++) set(a[i], b[i]);
   }
 
-  function markMissing(img) {
+  function markMissing(img, title = "Check the relative image path or enable HTTPS images in View.") {
     const message = document.createElement("span");
     message.className = "asset-missing";
     message.textContent = "Image unavailable" + (img.alt ? " · " + img.alt : "");
-    message.title = "Check the relative image path or enable HTTPS images in View.";
+    message.title = title;
     img.replaceWith(message);
   }
   els.preview.addEventListener("error", event => {
@@ -2383,6 +2543,7 @@
     new: () => runFileAction(() => openWindow({kind:"new"})),
     new_tab: () => runFileAction(() => invoke("open_document_window", {request:{kind:"new"}, tab:true})),
     open: () => runFileAction(chooseAndOpen),
+    quick_open: () => runFileAction(showQuickOpen),
     new_template: () => runFileAction(newFromTemplate),
     compare_disk: () => runFileAction(compareWithDisk),
     rename: () => runFileAction(renameDocument),
@@ -2400,6 +2561,7 @@
       await T.dialog.message(message, {title:"Check Document"});
     }),
     document_outline: toggleSidebar,
+    focus_mode: () => setFocusMode(!writing.focusParagraph),
     // The window reopens on the section that was open last.
     settings: () => { syncSettings(); showSettingsTab(settingsTab); settings.showModal(); },
     format_bar: () => {
@@ -2520,8 +2682,12 @@
     ...Object.keys(TABLE_EDITS), ...["note", "tip", "important", "warning", "caution"].map(kind => "callout_" + kind),
   ]);
 
+  function modalOpen() {
+    return (outline.open && !sidebarOpen) || quickOpen.open || comparison.open || settings.open || rename.open;
+  }
+
   async function runAction(id) {
-    if (((outline.open && !sidebarOpen) || comparison.open || settings.open || rename.open) && id !== "quit") {
+    if (modalOpen() && id !== "quit") {
       // Native check items toggle before the event arrives, even behind a dialog.
       syncChecks();
       return;

@@ -175,6 +175,17 @@ fn comparison_text(path: String) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
+fn quick_open_preview(
+    state: State<'_, AppState>,
+    path: String,
+    line_breaks: bool,
+) -> Result<kladje::markdown::QuickOpenPreview, String> {
+    state
+        .renderer
+        .quick_open_preview(Path::new(&path), line_breaks)
+}
+
+#[tauri::command(async)]
 fn write_file(
     window: WebviewWindow,
     docs: Windows<'_>,
@@ -321,6 +332,35 @@ fn recovery_clear(window: WebviewWindow, docs: Windows<'_>, id: String) -> Resul
         .recovery
         .clear(&id)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+fn open_documents(app: AppHandle, docs: Windows<'_>) -> Result<Vec<OpenDocument>, String> {
+    let documents: Vec<_> = lock(&docs)?
+        .windows
+        .iter()
+        .filter(|(_, doc)| doc.ready && !doc.closing)
+        .map(|(label, doc)| (label.clone(), doc.source_path().map(Path::to_owned)))
+        .collect();
+    // Query native windows after releasing the document lock.
+    Ok(documents
+        .into_iter()
+        .filter_map(|(label, path)| {
+            let window = app.get_webview_window(&label)?;
+            Some(OpenDocument {
+                label,
+                path,
+                title: window.title().unwrap_or_default(),
+            })
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+struct OpenDocument {
+    label: String,
+    path: Option<PathBuf>,
+    title: String,
 }
 
 #[tauri::command(async)]
@@ -820,6 +860,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
     let mut file = file
         .item(&item("new_template", "New from Template…", None)?)
         .item(&item("open", "Open…", Some("CmdOrCtrl+O"))?)
+        .item(&item(
+            "quick_open",
+            "Quick Open…",
+            Some("CmdOrCtrl+Shift+O"),
+        )?)
         .item(&recent)
         .item(&item(
             "reveal",
@@ -1009,6 +1054,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         )?)
         .item(&item("check_document", "Check Document…", None)?)
         .item(&check("document_outline", "Document Outline", None)?)
+        .item(&check("focus_mode", "Focus Mode", Some("CmdOrCtrl+Alt+P"))?)
         .item(&check(
             "format_bar",
             "Formatting Bar",
@@ -1168,6 +1214,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             setup,
+            open_documents,
             open_document_window,
             take_fragment,
             document_ready,
@@ -1187,6 +1234,7 @@ fn main() {
             render,
             read_file,
             comparison_text,
+            quick_open_preview,
             write_file,
             save_protected_copy,
             move_document,

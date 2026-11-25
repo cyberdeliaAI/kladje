@@ -72,6 +72,26 @@
     </form>
   </dialog>
   </div>
+  <dialog id="quick-open" aria-labelledby="quick-open-title">
+    <form id="quick-open-form">
+      <h2 id="quick-open-title">Quick Open</h2>
+      <input id="quick-open-filter" type="search" role="combobox" aria-label="Search open and recent documents"
+        aria-autocomplete="list" aria-controls="quick-open-results" aria-expanded="false"
+        placeholder="Search open and recent documents" autocomplete="off" spellcheck="false" autofocus>
+      <div class="quick-open-body">
+        <div id="quick-open-results" role="listbox" aria-label="Documents" hidden></div>
+        <section id="quick-open-preview" aria-labelledby="quick-open-preview-title" hidden>
+          <h3 id="quick-open-preview-title">Saved preview</h3>
+          <div id="quick-open-excerpt" class="markdown-body" tabindex="0" aria-labelledby="quick-open-preview-title"></div>
+        </section>
+      </div>
+      <p id="quick-open-status" role="status"></p>
+      <div class="dialog-actions">
+        <button type="button" id="quick-open-cancel">Cancel</button>
+        <button type="submit" id="quick-open-go" disabled>Open</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="settings" aria-labelledby="settings-title">
     <form method="dialog" id="settings-form">
       <header class="settings-head">

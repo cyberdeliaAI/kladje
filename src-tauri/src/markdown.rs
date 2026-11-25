@@ -45,6 +45,14 @@ pub enum Target {
     Preview,
     /// Standalone export: clean markup, ids as written.
     Export,
+    /// Quick Open: a small saved excerpt without navigable links or shared ids.
+    QuickOpen,
+}
+
+#[derive(serde::Serialize)]
+pub struct QuickOpenPreview {
+    pub html: String,
+    pub truncated: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -223,6 +231,25 @@ impl Renderer {
         .map_err(|_| "Preview unavailable. Your source is still open.".to_owned())?
     }
 
+    pub fn quick_open_preview(
+        &self,
+        path: &Path,
+        line_breaks: bool,
+    ) -> Result<QuickOpenPreview, String> {
+        let excerpt = crate::fileio::document_excerpt(path)?;
+        let rendered = self.render_with_breaks(
+            &excerpt.markdown,
+            Target::QuickOpen,
+            Some(path),
+            false,
+            line_breaks,
+        )?;
+        Ok(QuickOpenPreview {
+            html: rendered.html,
+            truncated: excerpt.truncated,
+        })
+    }
+
     fn render_inner(
         &self,
         markdown: &str,
@@ -356,14 +383,17 @@ impl Renderer {
         .map_err(|_| "Could not format Markdown.")?;
         let usage = Arc::new(Mutex::new(ImageUsage {
             assets: Default::default(),
-            remaining: crate::images::DOCUMENT_IMAGE_LIMIT,
+            remaining: if target == Target::QuickOpen {
+                256 * 1024
+            } else {
+                crate::images::DOCUMENT_IMAGE_LIMIT
+            },
             images: 0,
             attempts: 0,
             accepted: 0,
         }));
-        let prefix = (target == Target::Preview).then_some(PREVIEW_ID_PREFIX);
         let clean = sanitizer(
-            prefix,
+            target,
             source.map(Path::to_owned),
             remote && target == Target::Preview,
             usage.clone(),
@@ -522,7 +552,7 @@ fn comrak_options(target: Target) -> Options<'static> {
     o.extension.footnotes = true;
     o.extension.alerts = true;
     o.extension.shortcodes = true;
-    o.extension.header_id_prefix = Some(String::new());
+    o.extension.header_id_prefix = (target != Target::QuickOpen).then(String::new);
     // Common extras
     o.extension.superscript = true;
     o.extension.subscript = true;
@@ -667,7 +697,7 @@ fn latex_to_mathml(latex: &str, display: bool) -> String {
 }
 
 fn sanitizer(
-    id_prefix: Option<&'static str>,
+    target: Target,
     source: Option<PathBuf>,
     remote: bool,
     usage: Arc<Mutex<ImageUsage>>,
@@ -763,7 +793,11 @@ fn sanitizer(
             .into_iter()
             .collect(),
     );
-    b.id_prefix(id_prefix);
+    b.id_prefix((target == Target::Preview).then_some(PREVIEW_ID_PREFIX));
+    if target == Target::QuickOpen {
+        b.rm_generic_attributes(&["id", "data-sourcepos"]);
+        b.rm_tag_attributes("a", &["href", "name"]);
+    }
     b.set_tag_attribute_value("img", "referrerpolicy", "no-referrer");
     b.attribute_filter(move |element, attribute, value| {
         if attribute == "data-kladje-task" {
@@ -1015,6 +1049,34 @@ mod tests {
         assert!(!html.contains("data:text/html"), "{html}");
         assert!(!html.contains("<iframe"), "{html}");
         assert!(!html.contains("style="), "{html}");
+    }
+
+    #[test]
+    fn quick_open_renders_saved_markdown_without_links_or_remote_images() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("notes.md");
+        std::fs::write(
+            folder.path().join("icon.png"),
+            include_bytes!("../icons/32x32.png"),
+        )
+        .unwrap();
+        std::fs::write(
+            &path,
+            "# Notes\n\n**Bold**\nNext line\n\n- List item\n\n[Website](https://example.com)\n\n![Remote](https://example.com/remote.png)\n\n![Local](icon.png)\n",
+        )
+        .unwrap();
+        let renderer = Renderer::new();
+        let preview = renderer.quick_open_preview(&path, true).unwrap();
+        let html = preview.html;
+        assert!(!preview.truncated);
+        assert!(html.contains("<h1>Notes</h1>"), "{html}");
+        assert!(html.contains("<strong>Bold</strong><br"), "{html}");
+        assert!(html.contains("<li>List item</li>"), "{html}");
+        assert!(html.contains(">Website</a>"), "{html}");
+        assert!(html.contains("alt=\"Remote\""), "{html}");
+        assert!(html.contains("src=\"data:image/png;base64,"), "{html}");
+        assert!(!html.contains("href=") && !html.contains("id="), "{html}");
+        assert!(!html.contains("https://example.com"), "{html}");
     }
 
     #[test]

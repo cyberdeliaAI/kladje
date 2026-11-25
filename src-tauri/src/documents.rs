@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 pub enum Request {
     New,
     Guide,
+    Focus {
+        label: String,
+    },
     Open {
         path: PathBuf,
         fragment: Option<String>,
@@ -214,6 +217,13 @@ impl Documents {
         let mut binding = None;
         let mut anchor = None;
         let launch = match request {
+            Request::Focus { label } => {
+                let doc = self.get(&label)?;
+                if !doc.ready || doc.closing {
+                    return Err("This document window is unavailable.".into());
+                }
+                return Ok(Route::Focus(label));
+            }
             Request::Open { path, fragment } => {
                 fileio::markdown_path(&path)?;
                 if let Some(owner) = self.owner(&path, None)? {
