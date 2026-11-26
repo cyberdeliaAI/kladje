@@ -16,9 +16,8 @@ fn allowed(key: &str, value: &Value) -> bool {
         "split" => value.as_f64().is_some_and(|x| (0.0..=100.).contains(&x)),
         "sync" | "gutter" | "wrap" | "measure" | "autosave" | "pairing" | "linkPaste"
         | "htmlPaste" | "tablePaste" | "confirmImage" | "readingTime" | "focusParagraph"
-        | "typewriter" | "lineBreaks" | "formatBar" | "darkExport" | "pageNumbers" => {
-            value.is_boolean()
-        }
+        | "typewriter" | "lineBreaks" | "formatBar" | "darkExport" | "pageNumbers"
+        | "autoUpdate" => value.is_boolean(),
         _ => false,
     }
 }
@@ -78,6 +77,11 @@ impl Store {
         };
         self.loaded = Some(snapshot.clone());
         Ok(snapshot)
+    }
+
+    /// The values a window has read, without reading or creating the file.
+    pub fn loaded(&self) -> Option<&Values> {
+        self.loaded.as_ref().map(|snapshot| &snapshot.values)
     }
 
     pub fn set(&mut self, key: String, value: Value) -> Result<Snapshot, String> {

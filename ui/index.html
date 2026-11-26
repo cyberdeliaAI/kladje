@@ -113,6 +113,10 @@
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 15.5L9.6 3.5h.8L15 15.5M6.6 11.5h6.8"/></svg>
             <span>Appearance</span>
           </button>
+          <button type="button" role="tab" id="tab-updates" aria-controls="pane-updates" aria-selected="false" tabindex="-1">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 6v7.5M6.8 10.5L10 13.7l3.2-3.2"/></svg>
+            <span>Updates</span>
+          </button>
         </div>
       </header>
 
@@ -213,6 +217,32 @@
             <label><input type="radio" name="editorFont" value="mono"><span>Monospaced</span></label>
             <label><input type="radio" name="editorFont" value="sans"><span>Proportional</span></label>
           </div>
+        </div>
+      </section>
+
+      <section class="settings-pane" role="tabpanel" id="pane-updates" aria-labelledby="tab-updates" hidden>
+        <div class="setting-row">
+          <span class="setting-label" id="label-update">Kladje</span>
+          <div class="setting-options update-state" role="group" aria-labelledby="label-update">
+            <p class="update-title" id="update-title" role="status" aria-live="polite">Not checked yet</p>
+            <p class="setting-note" id="update-detail"></p>
+            <p class="setting-note update-error" id="update-error" hidden></p>
+            <div class="setting-inline update-actions">
+              <button type="button" id="update-action">Check Now</button>
+              <button type="button" id="update-page" hidden>View on GitHub</button>
+            </div>
+          </div>
+        </div>
+        <div class="setting-row">
+          <span class="setting-label" id="label-checking">Checking</span>
+          <div class="setting-options" role="group" aria-labelledby="label-checking">
+            <label><input type="checkbox" id="autoUpdate"> Check for updates automatically</label>
+            <p class="setting-note">Once a day, Kladje asks GitHub whether a newer version exists. The request says nothing about your documents or settings.</p>
+          </div>
+        </div>
+        <div class="setting-row" id="update-notes-row" hidden>
+          <span class="setting-label" id="label-notes">What’s new</span>
+          <div id="update-notes" class="markdown-body update-notes" tabindex="0" aria-labelledby="label-notes"></div>
         </div>
       </section>
 

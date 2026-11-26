@@ -75,6 +75,8 @@ async function app(initial = {}, configure = () => {}, drawImage) {
     setup: () => ({ pendingOpen: disk.path }), take_pending_open: () => null, read_file: () => ({ ...disk }),
     file_version: () => disk.version, render: () => "", log_message: ({ message }) => { if (message === "ready") ready.resolve(); },
     recovery_list: () => [], recovery_clear() {}, recovery_write() {},
+    update_status: () => ({current: "0.1.0", phase: "idle", available: null, checkedAgo: null, error: null, blocked: null}),
+    check_updates() {}, download_update() {}, install_update() {},
     write_file: ({content}) => { disk.content = content; return {version: disk.version, confirmed: true}; }, quit() { return events["prepare-quit"]({payload:{epoch:1,rememberWindow:true}}); },
   };
   const dialog = { message: () => "Cancel", ask: () => false };
@@ -1002,6 +1004,63 @@ test("the formatting bar runs menu actions, opens its menus and can be hidden", 
   assert.ok(a.calls.filter(([cmd]) => cmd === "set_menu_checks").at(-1)[1].checked.includes("format_bar"));
 });
 
+test("the Updates section shows each state and offers its one action", async () => {
+  const a = await app();
+  await a.menu("check_updates");
+  assert.equal(a.get("settings").open, true);
+  assert.equal(a.get("pane-updates").hidden, false);
+  assert.ok(a.calls.some(([cmd]) => cmd === "check_updates"));
+  const ran = cmd => a.calls.some(([name]) => name === cmd);
+  const show = status => a.events["update-status"]({payload: {current: "0.1.0", phase: "idle", available: null, checkedAgo: null, error: null, blocked: null, ...status}});
+  show({phase: "checking"});
+  assert.equal(a.get("update-title").textContent, "Checking for updates…");
+  assert.equal(a.get("update-action").disabled, true);
+  show({checkedAgo: 7200});
+  assert.equal(a.get("update-title").textContent, "Kladje is up to date");
+  assert.equal(a.get("update-detail").textContent, "Version 0.1.0 · checked 2 hours ago");
+  assert.equal(a.get("update-action").disabled, false);
+  assert.equal(a.get("update-notes-row").hidden, true);
+  const next = {version: "0.2.0", preview: true, page: "https://github.com/cyberdeliaAI/kladje/releases/tag/v0.2.0",
+    notesHtml: "<p>New</p>", downloadable: true};
+  show({available: next, checkedAgo: 0});
+  assert.equal(a.get("update-title").textContent, "Kladje 0.2.0 (preview) is available");
+  assert.equal(a.get("update-detail").textContent, "You have version 0.1.0.");
+  assert.equal(a.get("update-notes-row").hidden, false);
+  assert.equal(a.get("update-notes").innerHTML, "<p>New</p>");
+  assert.equal(a.get("update-page").hidden, false);
+  a.get("update-action").handlers.click();
+  assert.ok(ran("download_update"));
+  show({available: next, phase: "downloading"});
+  assert.equal(a.get("update-action").textContent, "Downloading…");
+  assert.equal(a.get("update-action").disabled, true);
+  show({available: next, phase: "ready"});
+  assert.equal(a.get("update-title").textContent, "Kladje 0.2.0 (preview) is ready to install");
+  assert.equal(a.get("update-action").textContent, "Install and Restart");
+  a.get("update-action").handlers.click();
+  assert.ok(ran("install_update"));
+  // A failed download keeps the release on offer and says why.
+  show({available: next, error: "Move Kladje to the Applications folder and open it from there before updating."});
+  assert.equal(a.get("update-error").hidden, false);
+  assert.equal(a.get("update-action").textContent, "Download Update");
+  // Without a file for this system, or in a copy that cannot replace itself, the release page is the way.
+  show({available: {...next, downloadable: false}, blocked: "This is a development build."});
+  assert.equal(a.get("update-action").textContent, "Download from GitHub");
+  assert.equal(a.get("update-detail").textContent, "You have version 0.1.0. This is a development build.");
+  assert.equal(a.get("update-page").hidden, true);
+  assert.equal(a.get("update-error").hidden, true);
+  show({error: "Kladje could not reach GitHub."});
+  assert.equal(a.get("update-title").textContent, "Could not check for updates");
+  assert.equal(a.get("update-action").textContent, "Try Again");
+  // Automatic checks are a remembered choice.
+  a.get("autoUpdate").checked = false;
+  a.get("autoUpdate").handlers.change();
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(a.settings().autoUpdate), "false");
+  // An update found in the background is announced in the window.
+  a.events["update-found"]({payload: "0.2.0"});
+  assert.match(a.get("notice").textContent, /^Kladje 0\.2\.0 is available\. Choose Check for Updates…/);
+});
+
 test("the settings window switches sections and mirrors the View menu", async () => {
   const a = await app();
   await a.menu("settings");
@@ -1012,6 +1071,8 @@ test("the settings window switches sections and mirrors the View menu", async ()
   assert.equal(a.get("pane-appearance").hidden, false);
   assert.equal(a.get("tab-appearance").attrs["aria-selected"], "true");
   a.get("tab-appearance").handlers.keydown({key: "ArrowRight", preventDefault() {}});
+  assert.equal(a.get("pane-updates").hidden, false);
+  a.get("tab-updates").handlers.keydown({key: "ArrowRight", preventDefault() {}});
   assert.equal(a.get("pane-general").hidden, false, "arrow keys wrap around the tabs");
   // A checkbox that mirrors a View menu item changes the same preference.
   a.get("pref-gutter").checked = true;

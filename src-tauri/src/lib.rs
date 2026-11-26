@@ -9,5 +9,6 @@ pub mod markdown;
 pub mod preferences;
 pub mod recovery;
 pub mod storage;
+pub mod updates;
 
 pub mod images;

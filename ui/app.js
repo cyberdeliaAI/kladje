@@ -83,7 +83,7 @@
   let syncEnabled = storedFlag("sync", true);
   let gutter = storedFlag("gutter", false), wrap = storedFlag("wrap", true), measure = storedFlag("measure", true);
   const settings = $("settings");
-  const writing = {pairing:true, linkPaste:true, htmlPaste:false, tablePaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:true, darkExport:false, pageNumbers:false, formatBar:true};
+  const writing = {pairing:true, linkPaste:true, htmlPaste:false, tablePaste:false, confirmImage:true, readingTime:false, focusParagraph:false, typewriter:false, lineBreaks:true, darkExport:false, pageNumbers:false, formatBar:true, autoUpdate:true};
   for (const [key, fallback] of Object.entries(writing)) {
     writing[key] = storedFlag(key, fallback);
     const control = $(key);
@@ -2486,10 +2486,11 @@
 
   // ---------------------------------------------------------------- settings window
 
-  const settingTabs = ["general", "editor", "preview", "appearance"];
+  const settingTabs = ["general", "editor", "preview", "appearance", "updates"];
   let settingsTab = "general";
   function showSettingsTab(name, focus = false) {
     settingsTab = name;
+    if (name === "updates") refreshUpdates();
     for (const tab of settingTabs) {
       const selected = tab === name;
       $("tab-" + tab).setAttribute("aria-selected", String(selected));
@@ -2520,6 +2521,80 @@
   $("zoom-smaller").addEventListener("click", () => setZoom(zoom - 0.1));
   $("zoom-larger").addEventListener("click", () => setZoom(zoom + 0.1));
   $("zoom-default").addEventListener("click", () => setZoom(1));
+  // The window reopens on the section that was open last.
+  function openSettings(tab = settingsTab) {
+    syncSettings();
+    showSettingsTab(tab);
+    if (!settings.open) settings.showModal();
+  }
+
+  // ---------------------------------------------------------------- updates
+
+  // The native side owns the update state for every window and sends each change.
+  let updateStatus = null, updateNotes = null;
+  const updateEls = {title: $("update-title"), detail: $("update-detail"), error: $("update-error"),
+    action: $("update-action"), page: $("update-page"), notesRow: $("update-notes-row"), notes: $("update-notes")};
+  function ago(seconds) {
+    if (seconds < 60) return "just now";
+    const [value, unit] = seconds < 3600 ? [Math.floor(seconds / 60), "minute"]
+      : seconds < 86400 ? [Math.floor(seconds / 3600), "hour"] : [Math.floor(seconds / 86400), "day"];
+    return `${value} ${unit}${value === 1 ? "" : "s"} ago`;
+  }
+  // What the Updates section says, and the one action it offers, in each state.
+  function describeUpdate(status) {
+    const {phase, available: next, current} = status;
+    const name = next && `Kladje ${next.version}${next.preview ? " (preview)" : ""}`;
+    switch (phase) {
+      case "checking":
+        return {title: "Checking for updates…", detail: "Asking GitHub for the latest release.", busy: "Checking…"};
+      case "downloading":
+        return {title: `Downloading ${name}…`, detail: "The download is verified before it can be installed. You can keep writing.", busy: "Downloading…"};
+      case "ready":
+        return {title: `${name} is ready to install`, detail: "Kladje first asks about unsaved changes, then installs the update and opens again.",
+          action: "Install and Restart", run: "install"};
+      case "installing":
+        return {title: `Installing ${name}…`, detail: "The update is installed once every window has closed.", busy: "Restarting…"};
+    }
+    if (next) return {title: `${name} is available`, detail: [`You have version ${current}.`, status.blocked].filter(Boolean).join(" "),
+      action: next.downloadable ? "Download Update" : "Download from GitHub", run: next.downloadable ? "download" : "page"};
+    if (status.error) return {title: "Could not check for updates", detail: `Version ${current}`, action: "Try Again", run: "check"};
+    if (status.checkedAgo != null) {
+      return {title: "Kladje is up to date", detail: `Version ${current} · checked ${ago(status.checkedAgo)}`, action: "Check Now", run: "check"};
+    }
+    return {title: "Not checked yet", detail: `Version ${current}`, action: "Check Now", run: "check"};
+  }
+  function showUpdates(status) {
+    updateStatus = status;
+    const view = describeUpdate(status), next = status.available;
+    updateEls.title.textContent = view.title;
+    updateEls.detail.textContent = view.detail;
+    updateEls.error.textContent = status.error || "";
+    updateEls.error.hidden = !status.error;
+    updateEls.action.textContent = view.busy || view.action;
+    updateEls.action.disabled = Boolean(view.busy);
+    updateEls.action.dataset.run = view.run || "";
+    updateEls.page.hidden = !next || view.run === "page";
+    updateEls.notesRow.hidden = !next?.notesHtml;
+    if (next?.notesHtml && next.notesHtml !== updateNotes) {
+      // The same native sanitizer as the preview has already run.
+      updateEls.notes.innerHTML = next.notesHtml;
+      updateNotes = next.notesHtml;
+    }
+  }
+  async function refreshUpdates() {
+    try { showUpdates(await invoke("update_status")); } catch (error) { report(error); }
+  }
+  const updateRuns = {
+    check: () => invoke("check_updates"),
+    download: () => invoke("download_update"),
+    install: () => invoke("install_update"),
+    page: () => updateStatus?.available && T.opener.openUrl(updateStatus.available.page),
+  };
+  updateEls.action.addEventListener("click", () => {
+    const run = updateRuns[updateEls.action.dataset.run];
+    if (run) Promise.resolve(run()).catch(showError);
+  });
+  updateEls.page.addEventListener("click", () => Promise.resolve(updateRuns.page()).catch(showError));
 
   const TABLE = "| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |";
   // Menu id → table-edit.mjs operation.
@@ -2562,8 +2637,11 @@
     }),
     document_outline: toggleSidebar,
     focus_mode: () => setFocusMode(!writing.focusParagraph),
-    // The window reopens on the section that was open last.
-    settings: () => { syncSettings(); showSettingsTab(settingsTab); settings.showModal(); },
+    settings: () => openSettings(),
+    check_updates: () => {
+      openSettings("updates");
+      return invoke("check_updates");
+    },
     format_bar: () => {
       writing.formatBar = !writing.formatBar;
       store.set("formatBar", writing.formatBar);
@@ -2687,7 +2765,9 @@
   }
 
   async function runAction(id) {
-    if (modalOpen() && id !== "quit") {
+    // Check for Updates… may switch the open Settings window to its Updates section.
+    const updatesOverSettings = id === "check_updates" && settings.open && !quickOpen.open && !comparison.open && !rename.open;
+    if (modalOpen() && id !== "quit" && !updatesOverSettings) {
       // Native check items toggle before the event arrives, even behind a dialog.
       syncChecks();
       return;
@@ -2751,6 +2831,12 @@
     }, target);
     const initialDocument = runFileAction(openInitialDocument).catch(showError);
     await T.event.listen("menu", (event) => runAction(event.payload), {target:appWindow.label});
+    await T.event.listen("update-status", ({payload}) => showUpdates(payload));
+    await T.event.listen("update-found", ({payload}) => {
+      const where = onMac ? "the Kladje menu" : "the Help menu";
+      notify(`Kladje ${payload} is available. Choose Check for Updates… in ${where} to install it.`, 12000);
+    }, target);
+    refreshUpdates();
     const drainOpenRequests = () => runFileAction(async () => {
       let path;
       while ((path = await invoke("take_pending_open"))) await tryOpen(path);
