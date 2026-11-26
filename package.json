@@ -1,7 +1,7 @@
 {
   "name": "kladje",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "description": "Kladje - a light, fast Markdown editor (Rust + Tauri)",
   "scripts": {
