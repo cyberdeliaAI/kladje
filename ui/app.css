@@ -11,6 +11,7 @@
   --text-faint: #626871;
   --border: #e3dfd8;
   --accent: #aa4d08;
+  --caution: #cf222e;
   --accent-soft: rgba(180, 83, 10, 0.14);
   --selection: rgba(180, 83, 10, 0.2);
   --focus: #b4530a;
@@ -37,6 +38,7 @@
   --text-faint: #9aa1ac;
   --border: #2b3038;
   --accent: #e9a23b;
+  --caution: #ff7b72;
   --accent-soft: rgba(233, 162, 59, 0.16);
   --selection: rgba(233, 162, 59, 0.24);
   --focus: #e9a23b;
@@ -589,6 +591,23 @@ dialog button { font: inherit; padding: .3rem .65rem; }
 .setting-inline { display: flex; align-items: center; gap: 6px; }
 .setting-inline output { min-width: 3.2rem; text-align: center; font-variant-numeric: tabular-nums; color: var(--text-muted); }
 #settings .dialog-actions { padding: 10px 16px 14px; border-top: 1px solid var(--border); }
+.update-state { gap: 4px; }
+.update-state .setting-note { margin-left: 0; }
+.update-title { margin: 0; color: var(--text); font-weight: 550; }
+.update-error { color: var(--caution); }
+.update-error[hidden], .update-actions button[hidden], .setting-row[hidden] { display: none; }
+.update-actions { margin-top: 6px; }
+/* Release notes use the preview's Markdown styles at the size of the settings. */
+#update-notes {
+  max-height: 11rem; overflow: auto; padding: .45rem .65rem;
+  border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere;
+}
+#update-notes > :first-child { margin-top: 0; }
+#update-notes > :last-child { margin-bottom: 0; }
+#update-notes :is(h1, h2, h3, h4, h5, h6) { margin: .7rem 0 .25rem; padding: 0; border: 0; font-size: 13px; line-height: 1.4; }
+#update-notes :is(p, ul, ol) { margin: .25rem 0; }
+#update-notes :is(ul, ol) { padding-left: 1.2rem; }
 
 /* Proportional editor font, for prose. */
 #app[data-editor-font="sans"] #editor-pane .cm-scroller { font-family: var(--sans); font-size: calc(15px * var(--zoom)); line-height: 1.65; }

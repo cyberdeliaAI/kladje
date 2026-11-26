@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod documents;
+mod updater;
 mod window_geometry;
 use documents::{Decision, Documents, Launch, Request, Route};
 use std::collections::VecDeque;
@@ -581,12 +582,17 @@ fn prompt_next(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Every window keeps its document. An update waiting for this quit waits on.
+fn cancel_quit(app: &AppHandle, epoch: u64) -> tauri::Result<()> {
+    updater::quit_cancelled(app);
+    app.emit("cancel-quit", epoch)
+}
+
 fn continue_quit(app: &AppHandle) -> Result<(), String> {
     if let Err(error) = prompt_next(app) {
         let attempt = lock(&app.state::<Mutex<Documents>>())?.quitting.take();
         if let Some(attempt) = attempt {
-            app.emit("cancel-quit", attempt.epoch)
-                .map_err(|e| e.to_string())?;
+            cancel_quit(app, attempt.epoch).map_err(|e| e.to_string())?;
         }
         return Err(error);
     }
@@ -627,10 +633,35 @@ fn document_ready(window: WebviewWindow, docs: Windows<'_>) -> Result<(), String
         .and_then(|q| q.waiting.front())
         .is_some_and(|s| s == window.label());
     drop(docs);
+    if window.is_focused().unwrap_or(false) {
+        announce_update(window.app_handle(), window.label());
+    }
     if waiting {
         continue_quit(window.app_handle())?;
     }
     Ok(())
+}
+
+/// Shows an available update once, in a window whose page already listens.
+/// A window focused while it still loads hears about it from document_ready.
+fn announce_update(app: &AppHandle, label: &str) {
+    let ready = app
+        .try_state::<Mutex<Documents>>()
+        .and_then(|docs| Some(docs.lock().ok()?.windows.get(label)?.ready))
+        .unwrap_or(false);
+    if ready {
+        updater::announce(app, label);
+    }
+}
+
+fn announce_update_in_focus(app: &AppHandle) {
+    if let Some(window) = app
+        .webview_windows()
+        .into_values()
+        .find(|window| window.is_focused().unwrap_or(false))
+    {
+        announce_update(app, window.label());
+    }
 }
 
 #[tauri::command]
@@ -653,7 +684,7 @@ fn quit_vote(
     let app = window.app_handle();
     match decision {
         Decision::Cancel => {
-            app.emit("cancel-quit", epoch).map_err(|e| e.to_string())?;
+            cancel_quit(app, epoch).map_err(|e| e.to_string())?;
             app.emit("open-requested", ()).map_err(|e| e.to_string())
         }
         Decision::Next => continue_quit(app),
@@ -681,7 +712,7 @@ fn remove_window(app: &AppHandle, label: &str) {
             let attempt = windows.interrupt_quit();
             drop(windows);
             if let Some(epoch) = attempt {
-                let _ = app.emit("cancel-quit", epoch);
+                let _ = cancel_quit(app, epoch);
             }
             let _ = app.emit("open-requested", ());
         }
@@ -752,6 +783,30 @@ fn sync_document_icon(window: WebviewWindow, docs: Windows<'_>) -> Result<(), St
     #[cfg(not(target_os = "macos"))]
     let _ = (window, docs);
     Ok(())
+}
+
+#[tauri::command]
+fn update_status(app: AppHandle) -> Result<updater::Status, String> {
+    updater::status(&app)
+}
+
+#[tauri::command]
+fn check_updates(app: AppHandle) {
+    std::thread::spawn(move || updater::check(&app, false));
+}
+
+#[tauri::command]
+fn download_update(app: AppHandle) -> Result<(), String> {
+    updater::download(&app)
+}
+
+/// Installing replaces Kladje after the regular quit, so every window first
+/// asks about its unsaved changes.
+#[tauri::command]
+fn install_update(window: WebviewWindow, docs: Windows<'_>) -> Result<(), String> {
+    let app = window.app_handle().clone();
+    updater::request_install(&app)?;
+    quit(window, docs).inspect_err(|_| updater::quit_cancelled(&app))
 }
 
 #[tauri::command]
@@ -1127,6 +1182,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
         // chance to ask about unsaved changes, so Quit is routed through it.
         let app_menu = SubmenuBuilder::new(app, "Kladje")
             .about(None)
+            .item(&item("check_updates", "Check for Updates…", None)?)
+            .separator()
             .item(&item("settings", "Settings…", Some("CmdOrCtrl+Comma"))?)
             .separator()
             .services()
@@ -1147,7 +1204,12 @@ fn build_menu(app: &AppHandle) -> tauri::Result<()> {
             .build()?;
         menu = menu.item(&window);
     }
-    let help = SubmenuBuilder::new(app, "Help").item(&item("guide", "Markdown Guide", None)?);
+    let mut help = SubmenuBuilder::new(app, "Help").item(&item("guide", "Markdown Guide", None)?);
+    if !cfg!(target_os = "macos") {
+        help = help
+            .separator()
+            .item(&item("check_updates", "Check for Updates…", None)?);
+    }
     #[cfg(windows)]
     let help = {
         let about = tauri::menu::AboutMetadataBuilder::new()
@@ -1202,7 +1264,7 @@ fn request_open(app: &AppHandle, path: PathBuf) {
         .try_state::<Mutex<Documents>>()
         .and_then(|docs| docs.lock().ok()?.interrupt_quit());
     if let Some(epoch) = epoch {
-        let _ = app.emit("cancel-quit", epoch);
+        let _ = cancel_quit(app, epoch);
     }
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(mut pending) = state.pending_open.lock() {
@@ -1243,6 +1305,7 @@ fn main() {
             app.manage(Mutex::new(preferences::Store::new(
                 app.path().app_data_dir()?.join("preferences.json"),
             )));
+            updater::init(app.handle())?;
             app.manage(Mutex::new(history::Store::new(
                 app.path().app_data_dir()?.join("recent-documents.json"),
             )));
@@ -1255,10 +1318,13 @@ fn main() {
             build_menu(app.handle())?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                remove_window(window.app_handle(), window.label());
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Destroyed => remove_window(window.app_handle(), window.label()),
+            // An update found in the background is announced where the user looks.
+            tauri::WindowEvent::Focused(true) => {
+                announce_update(window.app_handle(), window.label())
             }
+            _ => {}
         })
         .on_menu_event(|app, event| {
             route_menu(app, event.id().0.as_str());
@@ -1306,6 +1372,10 @@ fn main() {
             reveal_document,
             print_document,
             log_message,
+            update_status,
+            check_updates,
+            download_update,
+            install_update,
             quit
         ])
         .build(tauri::generate_context!())
@@ -1321,6 +1391,9 @@ fn main() {
                 api.prevent_exit();
                 route_menu(app, "quit");
             }
+        }
+        if let tauri::RunEvent::Exit = &event {
+            updater::exit(app);
         }
         // macOS delivers "open this document" as an event, not as an argument.
         #[cfg(target_os = "macos")]

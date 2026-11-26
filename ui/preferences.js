@@ -3,7 +3,7 @@
 async function openPreferences(bridge, legacy) {
   const keys = new Set(("view theme editorFont zoom split sync gutter wrap measure autosave " +
     "pairing linkPaste htmlPaste tablePaste confirmImage readingTime focusParagraph typewriter " +
-    "lineBreaks formatBar darkExport pageNumbers").split(" "));
+    "lineBreaks formatBar darkExport pageNumbers autoUpdate").split(" "));
   const seed = {};
   for (const key of keys) {
     const value = legacy.get(key);

@@ -15,6 +15,10 @@ Drag a photo into a field note, tick an item off a checklist, or open yesterday�
 
 Kladje works offline. Save with **⌘S** or turn on automatic saving. If another app changes a file while you have edits of your own, automatic saving pauses so you can compare the two versions. After an unexpected quit, Kladje can offer to restore a recent draft.
 
+## Updates
+
+Once a day, Kladje asks GitHub whether a newer version exists. The request says nothing about your documents or settings. Turn the check off in **Settings → Updates**, or choose **Check for Updates…** in the Kladje menu (the Help menu on Windows) to check yourself. On macOS and Windows, Kladje downloads the update and checks it against the checksum GitHub published. On macOS it also confirms Kladje’s Developer ID signature and Apple’s notarization. **Install and Restart** first asks about unsaved changes in every window.
+
 ## Availability
 
 The preview targets Apple silicon and Intel Macs, and Windows PCs with an x64 processor. See [Releases](https://github.com/cyberdeliaAI/kladje/releases) for installers.
