@@ -1,0 +1,29 @@
+name: Notify website of an app release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  notify-website:
+    if: github.repository == 'cyberdeliaAI/kladje' && (github.event_name == 'release' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Request a release check on kladje-site
+        env:
+          # Fine-grained token for kladje-site with Actions: Read and write.
+          GH_TOKEN: ${{ secrets.KLADJE_SITE_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Set the KLADJE_SITE_DISPATCH_TOKEN Actions secret to enable immediate website updates."
+            exit 1
+          fi
+          # The website chooses and validates the newest public release and
+          # skips FTPS if its downloads are already up to date.
+          gh workflow run siteground.yml --repo cyberdeliaAI/kladje-site --ref main \
+            -f operation=deploy -f release=auto
