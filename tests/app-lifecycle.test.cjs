@@ -115,7 +115,8 @@ async function app(initial = {}, configure = () => {}, drawImage) {
   }, fonts: { ready: Promise.resolve() } },
     FileReader: class { readAsDataURL(file) { this.result = "data:" + file.type + ";base64," + file.encoded; this.onload(); } },
     getComputedStyle: () => ({lineHeight:"18px"}), performance: { now: () => performance.now() + clock.skew }, Intl,
-    requestAnimationFrame: fn => setImmediate(fn), crypto: require("node:crypto").webcrypto, console, clearTimeout: id => pendingTimers.delete(id),
+    requestAnimationFrame: fn => setImmediate(fn), cancelAnimationFrame: clearImmediate,
+    crypto: require("node:crypto").webcrypto, console, clearTimeout: id => pendingTimers.delete(id),
     setTimeout(fn, delay) { pendingTimers.set(++nextTimer, {fn, delay}); return nextTimer; },
     localStorage: { getItem: k => values.get(k), setItem: (k,v) => values.set(k,v), removeItem: k => values.delete(k) } });
   vm.runInContext(source("document-session.js"),context);
@@ -849,6 +850,54 @@ test("the outline indents by level, numbers only repeated titles, follows the cu
   assert.equal(rows()[1].attrs["aria-selected"], "true");
   await list.handlers.dblclick(on(rows()[1]));
   assert.equal(went, 6);
+});
+
+test("outline jumps use the current preview layout and take over from a queued preview scroll", async () => {
+  const a = await app();
+  const pane = a.get("preview-pane");
+  const source = a.view.scroller;
+  const headings = [{line:20,text:"Introduction"},{line:120,text:"Middle"},{line:220,text:"Later"}];
+  a.api.document_headings = () => headings.map(heading => ({...heading,level:2}));
+  const frame = () => new Promise(setImmediate);
+  let line = 20, previewMovedEditor = false;
+  source.scrollHeight = pane.scrollHeight = 6000;
+  source.scrollTop = line * 12;
+  a.view.topLine = () => line;
+  a.view.cursor = () => ({line,column:1,lines:300});
+  a.view.goToLine = next => { line = next; source.scrollTop = line * 12; };
+  a.view.scrollToLine = () => { previewMovedEditor = true; };
+  a.get("preview").querySelectorAll = () => headings.map(heading => ({
+    getAttribute: () => String(heading.line),
+    getBoundingClientRect: () => ({
+      top: heading.line * (a.get("app").dataset.outline === "true" ? 15 : 10) - pane.scrollTop,
+    }),
+  }));
+
+  source.handlers.scroll();
+  await frame();
+  assert.equal(pane.scrollTop, 200);
+  await a.menu("document_outline");
+
+  async function jump(name) {
+    const input = a.get("heading-filter");
+    input.value = name;
+    input.handlers.input();
+    const list = a.get("heading-list");
+    const row = list.children[0];
+    list.handlers.click({target:{closest: selector => selector === ".heading-row" ? row : null}});
+    await frame();
+  }
+  await jump("Middle");
+  assert.equal(pane.scrollTop, 1800);
+
+  pane.handlers.wheel();
+  pane.handlers.scroll();
+  await jump("Later");
+  assert.equal(pane.scrollTop, 3300);
+  assert.equal(previewMovedEditor, false);
+  await a.menu("document_outline");
+  await frame();
+  assert.equal(pane.scrollTop, 2200);
 });
 
 test("rename, move and duplicate keep the window's edits, update recent documents and never replace a file", async () => {

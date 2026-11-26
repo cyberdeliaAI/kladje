@@ -1443,6 +1443,12 @@
       if (sidebarAgain) { sidebarAgain = false; refreshSidebar(); }
     }
   }
+  function remeasureAfterOutlineChange() {
+    // The sidebar reflows both panes without resizing the webview.
+    anchors = null;
+    editor.remeasure();
+    scheduleScrollSync(activePane);
+  }
   function hideOutline() {
     if (sidebarOpen) {
       sidebarOpen = false;
@@ -1451,7 +1457,7 @@
       els.app.dataset.outline = "false";
       $("outline-title").textContent = "Jump to Heading";
       syncChecks();
-      editor.remeasure();
+      remeasureAfterOutlineChange();
     }
     outline.close();
   }
@@ -1472,7 +1478,7 @@
     outline.show();
     headingFilter.focus();
     syncChecks();
-    editor.remeasure();
+    remeasureAfterOutlineChange();
     await refreshSidebar();
   }
   $("outline-toggle").addEventListener("click", () => runAction("document_outline"));
@@ -1486,6 +1492,7 @@
     if (viewMode === "preview" && await renderNow() && session.isCurrent(snapshot)) {
       const heading = els.preview.querySelector(`:is(h1,h2,h3,h4,h5,h6)[data-sourcepos^="${line}:"]`);
       if (heading) {
+        activePane = "preview";
         heading.setAttribute("tabindex", "-1");
         heading.focus({preventScroll:true});
         heading.scrollIntoView({block:"start"});
@@ -1494,8 +1501,10 @@
     }
     if (!session.isCurrent(snapshot)) return;
     if (viewMode === "preview") setView("editor");
+    activePane = "editor";
     editor.goToLine(line);
     editor.focus();
+    scheduleScrollSync("editor");
   }
   headingFilter.addEventListener("input", () => { headingPage = 0; filterHeadings(); });
   for (const [id, step] of [["heading-prev", -1], ["heading-next", 1]]) {
@@ -1671,13 +1680,16 @@
     els.previewPane.addEventListener(type, () => (activePane = "preview"), { capture: true, passive: true });
   }
   let syncFrame = 0;
-  const onScroll = (pane, sync) => () => {
+  function scheduleScrollSync(pane) {
     if (activePane !== pane) return;
     cancelAnimationFrame(syncFrame);
-    syncFrame = requestAnimationFrame(sync);
-  };
-  editor.scroller.addEventListener("scroll", onScroll("editor", syncFromEditor), { passive: true });
-  els.previewPane.addEventListener("scroll", onScroll("preview", syncFromPreview), { passive: true });
+    const sync = pane === "editor" ? syncFromEditor : syncFromPreview;
+    syncFrame = requestAnimationFrame(() => {
+      if (activePane === pane) sync();
+    });
+  }
+  editor.scroller.addEventListener("scroll", () => scheduleScrollSync("editor"), { passive: true });
+  els.previewPane.addEventListener("scroll", () => scheduleScrollSync("preview"), { passive: true });
 
   // Anything that changes the preview's layout invalidates the line map.
   const invalidate = () => (anchors = null);
