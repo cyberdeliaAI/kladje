@@ -14,7 +14,7 @@ function gate() {
   return { resolve, promise };
 }
 
-async function app(initial = {}, configure = () => {}, drawImage) {
+async function app(initial = {}, configure = () => {}, drawImage, platform = "") {
   const ready = gate(), events = {}, calls = [], values = new Map(Object.entries(initial));
   const disk = { path: "/notes/a.md", content: "original", version: { target: "/notes/a.md", digest: "a" } };
   const format = { encoding: "utf8", eol: "lf" };
@@ -106,7 +106,9 @@ async function app(initial = {}, configure = () => {}, drawImage) {
       dialog, window: { getCurrentWindow: () => nativeWindow }, event: { listen: (name, cb) => { events[name] = cb; } },
       webview: { getCurrentWebview: () => ({onDragDropEvent: cb => { events.drop = cb; }}) } },
   };
-  const context = vm.createContext({ window: win, document: { getElementById: get, documentElement: element(), createElement(tag) {
+  const context = vm.createContext({ window: win, navigator: {platform}, document: {
+    addEventListener: (name, cb) => { events[name] = cb; },
+    getElementById: get, documentElement: element(), createElement(tag) {
     const node = element();
     if (tag === "template") Object.defineProperty(node, "innerHTML", {set(html) {
       rendered.push(html);
@@ -138,7 +140,7 @@ async function app(initial = {}, configure = () => {}, drawImage) {
     return entry[1].fn();
   }
   const pending = delay => [...pendingTimers.values()].some(timer => timer.fn.name !== "pollDisk" && timer.delay === delay);
-  return { settings: () => nativeSettings, comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, pending, hooks, clock, rendered, view, pollDisk: () => fire(null,"pollDisk"), menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
+  return { settings: () => nativeSettings, comparisons, children, history:()=>history, disk, api, calls, dialog, events, get, values, fire, pending, hooks, clock, rendered, view, editorMenu: win.kladjeEditorMenu, pollDisk: () => fire(null,"pollDisk"), menu: id => events.menu({payload: id}), edit: v => view.replaceText(v), text: view.getText };
 }
 
 test("actual Save and Quit wait for outstanding I/O and retain later edits", async () => {
@@ -1010,6 +1012,33 @@ test("table, callout, footnote and date commands reach the editor and explain wh
   await a.menu("date_iso");
   assert.deepEqual(inserted.slice(0, 5), ["> [!WARNING]\n> line one\n> line two", "$$\nline one\nline two\n$$", "wrap ==", "footnote", inserted[4]]);
   assert.match(inserted[4], /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("Windows offers Markdown commands without cancelling the webview's context menu", async () => {
+  const a = await app({}, undefined, undefined, "Win32");
+  const executed = [];
+  a.view.setHeading = level => executed.push(level);
+  a.view.contextMenuAt = ({target}) => target === "preview" ? null : {
+    tableCommands: target === "table" ? ["moveDown"] : null,
+    restoreSelection() { executed.push("selection"); return true; },
+    chooseTable(command) { executed.push(command); },
+  };
+  const menuAt = target => {
+    a.events.contextmenu({
+      isTrusted: true, target,
+      preventDefault() { assert.fail("WebView2 should show its own menu"); },
+    });
+    return JSON.parse(a.editorMenu.take());
+  };
+  const paragraph = menuAt("paragraph");
+  assert.equal(paragraph.tableCommands, null);
+  a.editorMenu.choose(paragraph.id, "h2", false);
+  const table = menuAt("table");
+  assert.deepEqual(table.tableCommands, ["moveDown"]);
+  a.editorMenu.choose(paragraph.id, "h3", false);
+  a.editorMenu.choose(table.id, "moveDown", true);
+  assert.equal(menuAt("preview"), null);
+  assert.deepEqual(executed, ["selection", 2, "moveDown"]);
 });
 
 test("the formatting bar runs menu actions, opens its menus and can be hidden", async () => {

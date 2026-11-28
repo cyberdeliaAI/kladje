@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod documents;
+#[cfg(any(target_os = "macos", windows))]
+mod editor_context_menu;
 mod updater;
 mod window_geometry;
 use documents::{Decision, Documents, Launch, Request, Route};
@@ -485,8 +487,11 @@ fn configure_document(_window: &WebviewWindow) -> Result<(), String> {
             }
             let view = unsafe { &*platform.inner().cast::<objc2_web_kit::WKWebView>() };
             unsafe { view.configuration().preferences().setTabFocusesLinks(true) };
+            editor_context_menu::install(view);
         })
         .map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    editor_context_menu::install(_window).map_err(|e| e.to_string())?;
     Ok(())
 }
 

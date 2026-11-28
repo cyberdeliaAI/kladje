@@ -481,6 +481,7 @@
   // ---------------------------------------------------------------- formatting bar
 
   const onMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform || "");
+  const onWindows = typeof navigator !== "undefined" && /^Win/.test(navigator.platform || "");
 
   if (!onMac) $("page-numbers-option").hidden = true;
 
@@ -2774,6 +2775,34 @@
 
   function modalOpen() {
     return (outline.open && !sidebarOpen) || quickOpen.open || comparison.open || settings.open || rename.open;
+  }
+
+  if (onMac || onWindows) {
+    let editorMenu = null, menuId = 0;
+    document.addEventListener("contextmenu", event => {
+      editorMenu = null;
+      if (!event.isTrusted || initializing || closing || modalOpen()) return;
+      const menu = editor.contextMenuAt(event);
+      if (menu) editorMenu = {menu, id: ++menuId, time: performance.now(), taken: false};
+    }, true);
+    // The webview asks for the right-click context before showing its native menu.
+    window.kladjeEditorMenu = {
+      take() {
+        if (!editorMenu || editorMenu.taken || performance.now() - editorMenu.time > 2000) return null;
+        editorMenu.taken = true;
+        return JSON.stringify({id: editorMenu.id, tableCommands: editorMenu.menu.tableCommands});
+      },
+      choose(id, command, fromTable) {
+        if (!editorMenu?.taken || editorMenu.id !== id) return;
+        const { menu } = editorMenu;
+        editorMenu = null;
+        if (initializing || closing || modalOpen()) return;
+        if (fromTable) menu.chooseTable(command);
+        else if ((EDITING.has(command) || command === "insert_image") && menu.restoreSelection()) {
+          runAction(command);
+        }
+      },
+    };
   }
 
   async function runAction(id) {

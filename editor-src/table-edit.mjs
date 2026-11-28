@@ -27,9 +27,9 @@ function alignOf(cell) {
 }
 
 /** The table around the cursor, or null. Rows exclude the delimiter row. */
-export function readTable(state) {
-  if (state.selection.ranges.length !== 1) return null;
-  const head = state.selection.main.head;
+export function readTable(state, position) {
+  if (position === undefined && state.selection.ranges.length !== 1) return null;
+  const head = position ?? state.selection.main.head;
   const line = state.doc.lineAt(head);
   const tree = ensureSyntaxTree(state, line.to, 80);
   if (!tree) return null;
@@ -49,21 +49,42 @@ export function readTable(state) {
     rows.push({ line: at.number, prefix: state.sliceDoc(at.from, child.from), cells: cellsOf(state, child) });
   }
   const delimiterLine = state.doc.lineAt(delimiter.from);
-  const aligns = state.sliceDoc(delimiter.from, delimiter.to).trim().replace(/^\||\|$/g, "").split("|").map(alignOf);
+  const ruleText = state.sliceDoc(delimiter.from, delimiter.to);
+  const aligns = ruleText.trim().replace(/^\||\|$/g, "").split("|").map(alignOf);
   const first = state.doc.line(rows[0]?.line ?? delimiterLine.number);
   const last = state.doc.line(Math.max(delimiterLine.number, ...rows.map(r => r.line)));
   // The row and column of the cursor. The delimiter row counts as the header.
   let row = rows.findIndex(r => r.line === line.number);
   if (row < 0) row = 0;
   const cells = rows[row]?.cells || [];
-  let column = cells.findIndex((c, i) => head <= c.to || i + 1 === cells.length || head < cells[i + 1].from - 1);
-  if (column < 0) column = 0;
+  const columns = rows.reduce((max, r) => Math.max(max, r.cells.length), aligns.length);
+  const column = line.number === delimiterLine.number
+    ? Math.min(aligns.length - 1, ruleText.slice(0, Math.max(0, head - delimiter.from))
+        .replace(/^\s*\|/, "").split("|").length - 1)
+    : Math.max(0, cells.findIndex((c, i) => head <= c.to || i + 1 === cells.length || head < cells[i + 1].from - 1));
   return {
     from: first.from, to: last.to, delimiterLine: delimiterLine.number,
     prefix: state.sliceDoc(delimiterLine.from, delimiter.from),
     rows: rows.map(r => ({ prefix: r.prefix, cells: r.cells.map(c => c.text) })),
-    aligns, row, column,
+    aligns, row, column, columns,
   };
+}
+
+const tableActions = {
+  rowAbove: ({row}) => row > 0,
+  rowBelow: () => true,
+  columnBefore: () => true,
+  columnAfter: () => true,
+  moveUp: ({row}) => row > 1,
+  moveDown: ({row, rows}) => row > 0 && row < rows.length - 1,
+  moveLeft: ({column}) => column > 0,
+  moveRight: ({column, columns}) => column < columns - 1,
+  deleteRow: ({row}) => row > 0,
+  deleteColumn: ({columns}) => columns > 1,
+};
+
+export function tableMenuActions(table) {
+  return Object.keys(tableActions).filter(op => tableActions[op](table));
 }
 
 function pad(text, width, align) {
@@ -107,17 +128,16 @@ export function writeTable(table) {
  * Apply `op` to the table under the cursor. Returns a transaction spec or null
  * when the cursor is not in a table or the operation does not apply there.
  */
-export function tableEdit(state, op, arg) {
-  const table = readTable(state);
-  if (!table) return null;
+export function tableEdit(state, op, arg, position) {
+  const table = readTable(state, position);
+  if (!table || (Object.hasOwn(tableActions, op) && !tableActions[op](table))) return null;
   let { row, column } = table;
   const rows = table.rows.map(r => ({ ...r, cells: [...r.cells] }));
   const aligns = [...table.aligns];
-  const columns = Math.max(aligns.length, ...rows.map(r => r.cells.length));
+  const { columns } = table;
   const blank = () => ({ prefix: table.prefix, cells: Array(columns).fill("") });
   switch (op) {
     case "rowAbove":
-      if (row === 0) return null; // nothing goes above the header
       rows.splice(row, 0, blank());
       break;
     case "rowBelow":
@@ -125,17 +145,14 @@ export function tableEdit(state, op, arg) {
       row += 1;
       break;
     case "deleteRow":
-      if (row === 0) return null;
       rows.splice(row, 1);
       row = Math.min(row, rows.length - 1);
       break;
     case "moveUp":
-      if (row <= 1) return null;
       [rows[row - 1], rows[row]] = [rows[row], rows[row - 1]];
       row -= 1;
       break;
     case "moveDown":
-      if (row === 0 || row >= rows.length - 1) return null;
       [rows[row + 1], rows[row]] = [rows[row], rows[row + 1]];
       row += 1;
       break;
@@ -151,8 +168,17 @@ export function tableEdit(state, op, arg) {
       column = at;
       break;
     }
+    case "moveLeft":
+    case "moveRight": {
+      const destination = column + (op === "moveLeft" ? -1 : 1);
+      for (const r of rows) {
+        [r.cells[column], r.cells[destination]] = [r.cells[destination] ?? "", r.cells[column] ?? ""];
+      }
+      [aligns[column], aligns[destination]] = [aligns[destination] ?? "none", aligns[column] ?? "none"];
+      column = destination;
+      break;
+    }
     case "deleteColumn":
-      if (columns <= 1) return null;
       for (const r of rows) r.cells.splice(column, 1);
       aligns.splice(column, 1);
       column = Math.min(column, columns - 2);
