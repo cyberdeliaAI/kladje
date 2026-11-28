@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EditorState } from "@codemirror/state";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { readTable, tableEdit } from "../editor-src/table-edit.mjs";
+import { readTable, tableEdit, tableMenuActions } from "../editor-src/table-edit.mjs";
 
 const doc = "Intro\n\n| Name | Qty |\n| :-- | --: |\n| Apple \\| pear | 2 |\n| Fig | 10 |\n\nAfter";
 const at = (needle, text = doc) =>
@@ -58,6 +58,35 @@ test("columns are added before or after the cursor, deleted and aligned", () => 
   assert.equal(run("deleteColumn", "1", null, "| A |\n| --- |\n| 1 |"), null, "the last column stays");
   assert.deepEqual(body(run("align", "Qty", "center").text).slice(1, 3), ["| :------------ | :-: |", "| Apple \\| pear |  2  |"]);
   assert.deepEqual(body(run("align", "Name", "none").text)[1], "| ------------- | --: |");
+});
+
+test("context table commands use the clicked cell and move column alignment with its contents", () => {
+  const state = at("Intro");
+  const click = doc.indexOf("Qty");
+  const table = readTable(state, click);
+  assert.equal(table.column, 1);
+  assert.ok(tableMenuActions(table).includes("moveLeft"));
+  for (const op of ["moveRight", "moveUp", "moveDown", "deleteRow", "rowAbove"]) {
+    assert.ok(!tableMenuActions(table).includes(op));
+  }
+  assert.equal(tableEdit(state, "moveRight", undefined, click), null);
+  const next = state.update(tableEdit(state, "moveLeft", undefined, click)).state;
+  assert.deepEqual(readTable(next).aligns, ["right", "left"]);
+  assert.deepEqual(readTable(next).rows.map(row => row.cells), [
+    ["Qty", "Name"], ["2", "Apple \\| pear"], ["10", "Fig"],
+  ]);
+  assert.equal(readTable(next).column, 0);
+  assert.equal(readTable(state, doc.indexOf("After")), null);
+});
+
+test("a context click in the separator row uses the separator column and protects the header", () => {
+  const markdown = "| Wide first cell | B |\n| --- | ---: |\n| a | b |";
+  const state = at("Wide", markdown);
+  const position = markdown.indexOf("---:");
+  const table = readTable(state, position);
+  assert.deepEqual([table.row, table.column], [0, 1]);
+  assert.equal(tableEdit(state, "deleteRow", undefined, position), null);
+  assert.equal(tableEdit(state, "moveLeft", undefined, position).changes.insert.split("\n")[0], "|   B | Wide first cell |");
 });
 
 test("a table inside a quote keeps its prefix on every line", () => {

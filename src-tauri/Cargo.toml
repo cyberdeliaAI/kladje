@@ -40,12 +40,15 @@ libc = "0.2"
 # These bindings are already used by Tauri's macOS webview. Native margins
 # keep WebKit's page count and the system print sheet in agreement.
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSString", "NSURL", "NSValue", "NSDictionary"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSDocumentController", "NSPasteboard", "NSPrintInfo", "NSPrintOperation", "NSView", "NSWindow"] }
-objc2-web-kit = { version = "0.3", default-features = false, features = ["WKWebView", "WKWebViewConfiguration", "WKPreferences", "objc2-app-kit"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSDocumentController", "NSMenu", "NSMenuItem", "NSPasteboard", "NSPrintInfo", "NSPrintOperation", "NSView", "NSWindow"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["WKUIDelegate", "WKWebView", "WKWebViewConfiguration", "WKPreferences", "block2", "objc2-app-kit"] }
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
 windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Com",

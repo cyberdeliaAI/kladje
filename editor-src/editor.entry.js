@@ -10,7 +10,7 @@ import { documentLanguage } from "./markdown-language.mjs";
 import { spreadsheetPaste, urlOverSelection } from "./smart-paste.mjs";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { adjacentTableCell, tableRowChange } from "./table-row.mjs";
-import { readTable, tableEdit } from "./table-edit.mjs";
+import { readTable, tableEdit, tableMenuActions } from "./table-edit.mjs";
 import { footnoteChange } from "./footnote.mjs";
 import { counts, counted, counting, codePoints, countLimit, selectedProseWords, totals } from "./statistics.mjs";
 import { EditorState, EditorSelection, Compartment, Text } from "@codemirror/state";
@@ -160,6 +160,14 @@ function create(parent, options = {}) {
     return text;
   };
 
+  function editTable(op, arg, position) {
+    const change = tableEdit(view.state, op, arg, position);
+    if (!change) return false;
+    view.dispatch(change);
+    view.focus();
+    return true;
+  }
+
   const api = {
     setFrozen(frozen) {
       view.dispatch({effects:input.reconfigure(frozen ? [
@@ -175,12 +183,31 @@ function create(parent, options = {}) {
     },
     inTable: () => readTable(view.state) !== null,
     /** A structural table edit (see table-edit.mjs). False outside a table. */
-    editTable(op, arg) {
-      const change = tableEdit(view.state, op, arg);
-      if (!change) return false;
-      view.dispatch(change);
-      view.focus();
-      return true;
+    editTable,
+    contextMenuAt(event) {
+      const { state, contentDOM } = view;
+      if (state.readOnly || !contentDOM.contains(event.target)) return null;
+      const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (position === null) return null;
+      const table = readTable(state, position);
+      const tableCommands = table ? tableMenuActions(table) : null;
+      const insideSelection = state.selection.ranges.some(range =>
+        !range.empty && position >= range.from && position <= range.to);
+      const selection = insideSelection ? state.selection : EditorSelection.single(position);
+      const isCurrent = () => view.state.doc === state.doc && !view.state.readOnly;
+      return {
+        tableCommands,
+        restoreSelection() {
+          if (!isCurrent()) return false;
+          if (!view.state.selection.eq(selection)) view.dispatch({selection});
+          return true;
+        },
+        chooseTable(op) {
+          if (isCurrent() && tableCommands?.includes(op)) {
+            editTable(op, undefined, position);
+          }
+        },
+      };
     },
     insertFootnote() {
       view.dispatch(footnoteChange(view.state));
